@@ -107,7 +107,6 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
             "last_failure_phase": ctx.last_failure_phase,
         },
         "cert_status": ctx.cert_status,
-        "expected_fingerprint": ctx.expected_fingerprint,
         "phase": phase,
         "phase_reason": phase_reason,
         "headline": _headline(phase, phase_reason, raw, ctx.connected, ctx.last_telemetry_at),

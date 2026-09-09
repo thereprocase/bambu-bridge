@@ -10,7 +10,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Restore the deployed MQTT reconnect overflow guard and 15-second retry cap.
 - Restore structured HMS/stage decoding, job context, early-finish detection,
-  completed-layer false-positive suppression, and certificate fingerprint output.
+  and completed-layer false-positive suppression, while retaining the public
+  snapshot contract that keeps the expected certificate fingerprint internal.
 - Redact credentials before Uvicorn HTTP/WebSocket and structured log output.
 - Release terminal job payloads and remove completed lifecycle tasks from memory.
 - Bound buffered transfers to 64 MiB by default (BRIDGE_MAX_TRANSFER_BYTES),

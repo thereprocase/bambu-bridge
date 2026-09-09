@@ -52,4 +52,12 @@ jobs:
         run: uv run mypy src
 
       - name: Tests (pytest)
-        run: uv run pytest -q
+        run: uv run pytest -q --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: test-results.xml
+          if-no-files-found: ignore

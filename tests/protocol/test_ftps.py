@@ -16,6 +16,10 @@ def _insecure_ftps(port: int) -> FtpsTransfer:
     import ssl
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # Match the P1S transport contract; the generic mock server also offers
+    # TLS 1.3, whose shutdown behavior is not the device protocol under test.
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     return FtpsTransfer("127.0.0.1", ACCESS_CODE, port=port, ssl_context=ctx)
@@ -74,6 +78,13 @@ def test_ftps_tls_context_is_pinned_to_tls_1_2() -> None:
     assert ctx.minimum_version is ssl.TLSVersion.TLSv1_2
     assert ctx.maximum_version is ssl.TLSVersion.TLSv1_2
     assert ctx.verify_mode is ssl.CERT_NONE
+
+
+def test_cleanup_tolerates_peer_already_closed_control_channel() -> None:
+    ftp = MagicMock(spec=_ImplicitFTP_TLS)
+    ftp.quit.side_effect = EOFError
+    FtpsTransfer._close(ftp)
+    ftp.close.assert_called_once()
 
 
 @pytest.mark.asyncio

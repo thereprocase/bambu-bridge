@@ -177,12 +177,12 @@ async def test_print_failed_event_carries_structured_print_error(
             await mock_printer.push_report(
                 {"print": {
                     "gcode_state": "FAILED",
-                    "mc_print_error_code": "0300_1100_0001_0001",
+                    "mc_print_error_code": "0300_0200_0001_0001",
                 }}
             )
             failed = await _next(sub, lambda e: e.name == "print_failed")
             err = failed.data["print_error"]
-            assert err["code"] == "0300_1100_0001_0001"
+            assert err["code"] == "0300_0200_0001_0001"
             assert err["category"] == "thermal"
             assert err["severity"] == "error"
             assert "layer_num" in failed.data

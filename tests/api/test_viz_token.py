@@ -47,6 +47,15 @@ from tests.conftest import (
 )
 
 VIZ_TOKEN = "test-viz-only-token"
+
+
+@pytest.fixture(autouse=True)
+def _stable_file_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def revision(self: Any, name: str, *, remote_dir: str = "") -> tuple[int, str]:
+        return (1, "fixture-revision")
+    monkeypatch.setattr("bambu_bridge.protocol.ftps.FtpsTransfer.file_revision", revision)
+
+
 _MASTER_AUTH = {"Authorization": f"Bearer {API_KEY}"}
 _VIZ_BEARER = {"Authorization": f"Bearer {VIZ_TOKEN}"}
 

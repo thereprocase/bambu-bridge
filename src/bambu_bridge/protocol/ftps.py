@@ -270,7 +270,7 @@ class FtpsTransfer:
     def _close(ftp: _ImplicitFTP_TLS) -> None:
         try:
             ftp.quit()
-        except (OSError, ftplib.Error):  # best-effort; force the socket shut
+        except (OSError, EOFError, ftplib.Error):  # best-effort; preserve transfer errors
             ftp.close()
 
     @staticmethod
