@@ -1,0 +1,1644 @@
+<!DOCTYPE html>
+<!--
+  bambu-bridge print-progress viewer  (Goal G4, frontend)
+  ──────────────────────────────────────────────────────────────────────────
+  A dependency-free WebGL1 print-progress viewer, served as ONE static file.
+  No CDN, no fonts, no three.js — supply-chain doctrine forbids them, and a
+  LAN appliance must work fully offline.
+
+  Served at:  /api/v1/printers/{printer_id}/viz?token=TOKEN
+  Talks to :  GET …/viz/mesh         (Bearer TOKEN) → mesh JSON, once
+              GET …/printers/{id}    (Bearer TOKEN) → live state, every 3s
+
+  The script is organized top-down into small, mostly-pure helpers with
+  section headers. No build step, no minification — read it as-is.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Print Viewer</title>
+<style>
+  /* ── Theme tokens (Bauhaus kit) ──────────────────────────────────── */
+  :root{
+    --ink:#111113;          /* background     */
+    --paper:#F1EDE7;        /* warm paper     */
+    --amber:#FFB000;        /* highlight band */
+    --signal:#E5392E;       /* nozzle / live  */
+    --panel:rgba(20,20,22,.72);
+    --panel-edge:rgba(255,255,255,.10);
+    --text:#F1EDE7;
+    --text-dim:rgba(241,237,231,.55);
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);
+    color:var(--text);font-family:var(--font);
+    -webkit-user-select:none;user-select:none;touch-action:none;}
+  #gl{position:fixed;inset:0;display:block;width:100%;height:100%;}
+
+  /* ── Top-left job HUD ────────────────────────────────────────────── */
+  #hud{position:fixed;top:max(12px,env(safe-area-inset-top));
+    left:max(12px,env(safe-area-inset-left));pointer-events:none;
+    text-shadow:0 1px 3px rgba(0,0,0,.6);max-width:70vw;}
+  #hud .job{font-size:15px;font-weight:600;letter-spacing:.01em;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #hud .layer{font-size:28px;font-weight:700;margin-top:2px;
+    font-variant-numeric:tabular-nums;}
+  #hud .layer small{font-size:15px;font-weight:500;color:var(--text-dim);}
+  #cap{position:fixed;right:max(12px,env(safe-area-inset-right));
+    top:max(12px,env(safe-area-inset-top));pointer-events:none;
+    font-size:11px;color:var(--text-dim);text-align:right;
+    text-shadow:0 1px 3px rgba(0,0,0,.6);max-width:46vw;line-height:1.35;}
+  #cap a{pointer-events:auto;display:inline-block;padding:6px 0;}
+
+  /* ── Bottom control bar ──────────────────────────────────────────── */
+  #bar{position:fixed;left:0;right:0;
+    bottom:max(10px,env(safe-area-inset-bottom));
+    padding:0 max(12px,env(safe-area-inset-left));
+    display:flex;flex-direction:column;gap:10px;align-items:stretch;}
+  #slider{width:100%;height:44px;-webkit-appearance:none;appearance:none;
+    background:transparent;cursor:pointer;}
+  #slider::-webkit-slider-runnable-track{height:6px;border-radius:3px;
+    background:rgba(241,237,231,.22);}
+  #slider::-moz-range-track{height:6px;border-radius:3px;
+    background:rgba(241,237,231,.22);}
+  #slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;
+    width:26px;height:26px;border-radius:50%;background:var(--paper);
+    border:3px solid var(--amber);margin-top:-10px;
+    box-shadow:0 2px 6px rgba(0,0,0,.5);}
+  #slider::-moz-range-thumb{width:26px;height:26px;border-radius:50%;
+    background:var(--paper);border:3px solid var(--amber);
+    box-shadow:0 2px 6px rgba(0,0,0,.5);}
+  #row{display:flex;gap:8px;align-items:center;justify-content:center;
+    flex-wrap:wrap;}
+  .btn{min-width:44px;height:44px;padding:0 12px;border-radius:12px;
+    border:1px solid var(--panel-edge);background:var(--panel);
+    color:var(--text);font-family:var(--font);font-size:18px;font-weight:600;
+    display:inline-flex;align-items:center;justify-content:center;
+    cursor:pointer;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    touch-action:none;}
+  .btn:active{background:rgba(255,255,255,.14);}
+  #live{gap:7px;font-size:13px;letter-spacing:.04em;font-weight:700;
+    padding:0 14px;}
+  #live .dot{width:10px;height:10px;border-radius:50%;background:var(--signal);
+    box-shadow:0 0 8px var(--signal);}
+  #live.following{border-color:var(--signal);color:#fff;
+    background:linear-gradient(rgba(229,57,46,.22),rgba(229,57,46,.10));}
+  #live.following .dot{animation:pulse 1.25s ease-in-out infinite;}
+  #live.paused .dot{background:transparent;border:2px solid var(--text-dim);
+    box-shadow:none;}
+  #live.paused{color:var(--text-dim);}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1);}
+    50%{opacity:.35;transform:scale(.72);}}
+  #color{font-size:13px;font-weight:600;letter-spacing:.02em;}
+  #color .swatch{width:12px;height:12px;border-radius:3px;margin-right:7px;
+    border:1px solid rgba(255,255,255,.3);}
+
+  /* ── Overlays: loading + error ───────────────────────────────────── */
+  #overlay{position:fixed;inset:0;display:none;flex-direction:column;
+    align-items:center;justify-content:center;gap:16px;padding:24px;
+    text-align:center;background:rgba(17,17,19,.86);
+    backdrop-filter:blur(2px);z-index:10;}
+  #overlay.show{display:flex;}
+  .spinner{width:46px;height:46px;border-radius:50%;
+    border:4px solid rgba(241,237,231,.18);border-top-color:var(--amber);
+    animation:spin .9s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  #overlay .msg{font-size:16px;font-weight:600;max-width:34ch;line-height:1.4;}
+  #overlay .sub{font-size:13px;color:var(--text-dim);max-width:40ch;
+    line-height:1.45;margin-top:-6px;}
+  #overlay .icon{font-size:40px;}
+  #retry{margin-top:6px;padding:0 22px;height:46px;}
+  .hidden{display:none!important;}
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div id="hud">
+    <div class="job" id="jobName">—</div>
+    <div class="layer"><span id="layerNow">0</span>
+      <small>/ <span id="layerTot">0</span></small></div>
+  </div>
+  <div id="cap">Z-tracked · printer reports no XY · <a href="https://github.com/thereprocase/bambu-bridge/tree/v0.1.1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">Source &amp; AGPL license</a></div>
+
+  <div id="bar" class="hidden">
+    <input id="slider" type="range" min="0" max="1" value="0" step="1"
+           aria-label="layer">
+    <div id="row">
+      <button class="btn" id="rew"  title="hold to rewind">⏪</button>
+      <button class="btn" id="prev" title="step back">⏮</button>
+      <button class="btn" id="next" title="step forward">⏭</button>
+      <button class="btn" id="fwd"  title="hold to advance">⏩</button>
+      <button class="btn" id="live" title="live tracking">
+        <span class="dot"></span><span id="liveTxt">LIVE</span></button>
+      <button class="btn" id="color" title="toggle color mode">
+        <span class="swatch" id="swatch"></span><span id="colorTxt">Theme</span>
+      </button>
+    </div>
+  </div>
+
+  <div id="overlay" class="show">
+    <div class="spinner" id="spinner"></div>
+    <div class="icon hidden" id="ovIcon">⚠</div>
+    <div class="msg" id="ovMsg">fetching model…</div>
+    <div class="sub hidden" id="ovSub"></div>
+    <button class="btn hidden" id="retry">Retry</button>
+  </div>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════════════════
+   bambu-bridge viewer — application script
+
+   Sections:
+     0. Config & route parsing
+     1. Small math (vec/mat) helpers
+     2. Mesh parsing (base64 → typed arrays, normals, bbox)
+     3. WebGL: context, shaders, program, buffers
+     4. Scene drawing (solid pass, ghost pass, nozzle)
+     5. Camera (orbit / pan / zoom, framing)
+     6. Networking (mesh fetch, live poll)
+     7. UI wiring (slider, step/scrub buttons, live pill, color toggle)
+     8. Overlays (loading / error) + retry
+     9. Bootstrap, resize, context-loss, debug API
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── 0. Config & route parsing ───────────────────────────────────────── */
+// URL shape: /api/v1/printers/{printer_id}/viz?token=TOKEN
+const ROUTE = (() => {
+  const m = location.pathname.match(/\/printers\/([^/]+)\/viz/);
+  const printerId = m ? decodeURIComponent(m[1]) : "unknown";
+  const token = new URLSearchParams(location.search).get("token") || "";
+  const base = `/api/v1/printers/${encodeURIComponent(printerId)}`;
+  return { printerId, token, base };
+})();
+const POLL_MS = 3000;          // live-state cadence
+const SCRUB_PER_S = 10;        // hold-to-scrub speed
+const BAMBU_GREEN = [0x00/255, 0xAE/255, 0x42/255];
+
+/* ── Timing instrumentation ─────────────────────────────────────────────
+   Marks at: fetch start, headers received, body done, JSON/bin parse done,
+   WebGL buffer upload done, first requestAnimationFrame after scene ready.
+   Exposed via __viz.state().timings and logged once as:
+     console.log("QA viz.timings " + JSON.stringify({...}))
+   so the CDP rig and logcat both capture it without any extra protocol. */
+const _T = {
+  fetch_start: 0,
+  fetch_headers: 0,
+  fetch_body: 0,
+  parse: 0,
+  buffers: 0,
+  first_frame: 0,
+  bytes: 0,
+  segments: 0,
+  fmt: "json",
+};
+
+/* ── Client capability: binary toolpath format ──────────────────────────
+   ArrayBuffer + DataView are available in all Chromium-based WebViews.
+   We request fmt=bin and fall back to fmt=json only on parse failure. */
+const SUPPORTS_BIN_TOOLPATH = !!(window.ArrayBuffer && window.DataView);
+
+// Authorized fetch helper — Bearer token in header (contract).
+async function api(path, opts={}) {
+  const headers = Object.assign({ "Authorization": `Bearer ${ROUTE.token}` },
+                                opts.headers || {});
+  return fetch(ROUTE.base + path, Object.assign({}, opts, { headers }));
+}
+
+/* ── 1. Small math helpers ───────────────────────────────────────────────
+   Column-major 4x4 matrices stored as Float32Array(16), as WebGL expects.
+   Just enough linear algebra; no general-purpose library. */
+const V = {
+  sub:(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],
+  add:(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]],
+  scale:(a,s)=>[a[0]*s,a[1]*s,a[2]*s],
+  dot:(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2],
+  cross:(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],
+  len:(a)=>Math.hypot(a[0],a[1],a[2]),
+  norm:(a)=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];},
+};
+function mat4Identity(){const m=new Float32Array(16);m[0]=m[5]=m[10]=m[15]=1;return m;}
+function mat4Mul(a,b){ // a*b, both column-major
+  const o=new Float32Array(16);
+  for(let c=0;c<4;c++)for(let r=0;r<4;r++){
+    let s=0; for(let k=0;k<4;k++) s+=a[k*4+r]*b[c*4+k];
+    o[c*4+r]=s;
+  }
+  return o;
+}
+function mat4Perspective(fovy,aspect,near,far){
+  const f=1/Math.tan(fovy/2), nf=1/(near-far), m=new Float32Array(16);
+  m[0]=f/aspect; m[5]=f; m[10]=(far+near)*nf; m[11]=-1;
+  m[14]=2*far*near*nf; return m;
+}
+function mat4LookAt(eye,center,up){
+  const z=V.norm(V.sub(eye,center));
+  const x=V.norm(V.cross(up,z));
+  const y=V.cross(z,x);
+  const m=mat4Identity();
+  m[0]=x[0];m[4]=x[1];m[8]=x[2];
+  m[1]=y[0];m[5]=y[1];m[9]=y[2];
+  m[2]=z[0];m[6]=z[1];m[10]=z[2];
+  m[12]=-V.dot(x,eye); m[13]=-V.dot(y,eye); m[14]=-V.dot(z,eye);
+  return m;
+}
+// Normal matrix = inverse-transpose of the upper-left 3x3 of the model matrix.
+// Our model matrix is identity (mesh lives in world space), so this is identity
+// too; we keep the uniform for shader clarity / future model transforms.
+const NORMAL_MAT = (()=>{const m=new Float32Array(9);m[0]=m[4]=m[8]=1;return m;})();
+
+/* ── 2. Mesh parsing ──────────────────────────────────────────────────────
+   Decode the contract's base64 buffers into typed arrays, compute per-vertex
+   normals (the contract ships positions+indices only), and a bbox if absent. */
+function b64ToBytes(b64){
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i);
+  return out;
+}
+function parseMesh(j){
+  // positions: float32 LE xyz (mm, Z-up); indices: uint32 LE
+  const pos = new Float32Array(b64ToBytes(j.vertices_b64).buffer);
+  const idx = new Uint32Array(b64ToBytes(j.indices_b64).buffer);
+  const nV = pos.length/3;
+
+  // Per-vertex normals: area-weighted accumulation of face normals.
+  const nrm = new Float32Array(pos.length);
+  for(let t=0;t<idx.length;t+=3){
+    const a=idx[t]*3, b=idx[t+1]*3, c=idx[t+2]*3;
+    const ux=pos[b]-pos[a],uy=pos[b+1]-pos[a+1],uz=pos[b+2]-pos[a+2];
+    const vx=pos[c]-pos[a],vy=pos[c+1]-pos[a+1],vz=pos[c+2]-pos[a+2];
+    // cross(u,v) — magnitude carries triangle area for area weighting.
+    const nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    nrm[a]+=nx;nrm[a+1]+=ny;nrm[a+2]+=nz;
+    nrm[b]+=nx;nrm[b+1]+=ny;nrm[b+2]+=nz;
+    nrm[c]+=nx;nrm[c+1]+=ny;nrm[c+2]+=nz;
+  }
+  for(let i=0;i<nrm.length;i+=3){
+    const l=Math.hypot(nrm[i],nrm[i+1],nrm[i+2])||1;
+    nrm[i]/=l;nrm[i+1]/=l;nrm[i+2]/=l;
+  }
+
+  // bbox — trust the contract's if present, else derive.
+  let bb = j.bbox;
+  if(!bb || !bb.min || !bb.max){
+    const mn=[ Infinity, Infinity, Infinity], mx=[-Infinity,-Infinity,-Infinity];
+    for(let i=0;i<pos.length;i+=3)for(let k=0;k<3;k++){
+      const v=pos[i+k]; if(v<mn[k])mn[k]=v; if(v>mx[k])mx[k]=v;
+    }
+    bb={min:mn,max:mx};
+  }
+  const min=bb.min, max=bb.max;
+  const center=[(min[0]+max[0])/2,(min[1]+max[1])/2,(min[2]+max[2])/2];
+  const size=[max[0]-min[0],max[1]-min[1],max[2]-min[2]];
+  const zHeight=size[2];
+
+  // layer height: contract value, else bbox-height / total_layers fallback.
+  let layerH = (typeof j.layer_height_mm==="number" && j.layer_height_mm>0)
+             ? j.layer_height_mm : null;
+  const totalLayers = (typeof j.total_layers==="number") ? j.total_layers : null;
+  if(layerH===null && totalLayers && totalLayers>0) layerH = zHeight/totalLayers;
+  if(layerH===null || !(layerH>0)) layerH = zHeight/200 || 0.2;  // last resort
+
+  // filament base color — first non-null color, else null (Theme owns default).
+  let filamentColor=null;
+  if(Array.isArray(j.filaments)){
+    for(const f of j.filaments){ if(f && f.color){ filamentColor=hexToRgb(f.color); if(filamentColor)break; } }
+  }
+
+  return {
+    kind:"mesh",
+    pos, idx, nrm, min, max, center, size, zHeight, layerH,
+    totalLayers, filamentColor,
+    job:j.job||"model", indexCount:idx.length, vertexCount:nV,
+  };
+}
+/* ── 2b. Toolpath parsing ─────────────────────────────────────────────────
+   Bambu sliced archives carry no mesh: when /viz/mesh says geometry_available
+   is false, the toolpath IS the geometry. Decode the contract's positions_b64
+   (float32 LE xyz, GL_LINES vertex PAIRS, mm, Z-up) straight into a
+   Float32Array — no string splitting; ~6MB base64 must not spawn temp arrays. */
+function parseToolpath(j){
+  // Decode straight into the typed buffer. b64ToBytes already does one pass
+  // into a Uint8Array; we reinterpret its ArrayBuffer as float32 — no copies,
+  // no `.split(",")`, no intermediate JS-number array.
+  const bytes = b64ToBytes(j.positions_b64 || "");
+  // Guard against a non-multiple-of-12 payload (truncated last vertex/segment).
+  const usable = bytes.length - (bytes.length % 12);
+  const pos = new Float32Array(bytes.buffer, 0, usable/4);
+  const vertexCount = pos.length/3;            // GL_LINES → pairs of vertices
+  const segmentCount = (typeof j.segment_count==="number")
+                     ? j.segment_count : (vertexCount/2|0);
+
+  // bbox — trust the contract's, else derive (also gives us z-range fallbacks).
+  let bb = j.bbox;
+  if(!bb || !bb.min || !bb.max){
+    const mn=[ Infinity, Infinity, Infinity], mx=[-Infinity,-Infinity,-Infinity];
+    for(let i=0;i<pos.length;i+=3)for(let k=0;k<3;k++){
+      const v=pos[i+k]; if(v<mn[k])mn[k]=v; if(v>mx[k])mx[k]=v;
+    }
+    if(!isFinite(mn[0])){ mn[0]=mn[1]=mn[2]=0; mx[0]=mx[1]=mx[2]=0; }
+    bb={min:mn,max:mx};
+  }
+  const min=bb.min, max=bb.max;
+  const center=[(min[0]+max[0])/2,(min[1]+max[1])/2,(min[2]+max[2])/2];
+  const size=[max[0]-min[0],max[1]-min[1],max[2]-min[2]];
+  const zHeight=size[2];
+
+  // layer height: contract value → bbox z-extent/total_layers → /200 (mirrors
+  // the mesh path exactly). If both total_layers AND layer_height are null we
+  // fall back to scrubbing by Z range (layerH→/200 keeps clipZ math sane).
+  let layerH = (typeof j.layer_height_mm==="number" && j.layer_height_mm>0)
+             ? j.layer_height_mm : null;
+  const totalLayers = (typeof j.total_layers==="number") ? j.total_layers : null;
+  if(layerH===null && totalLayers && totalLayers>0) layerH = zHeight/totalLayers;
+  if(layerH===null || !(layerH>0)) layerH = zHeight/200 || 0.2;  // last resort
+
+  // filament base color — same convention as the mesh path.
+  let filamentColor=null;
+  if(Array.isArray(j.filaments)){
+    for(const f of j.filaments){ if(f && f.color){ filamentColor=hexToRgb(f.color); if(filamentColor)break; } }
+  }
+
+  // Per-vertex sequence index (0,1,2,…). The buffer is layer-ordered print
+  // order, so sequence == draw order; the reveal front sweeps it during LIVE.
+  const seq = new Float32Array(vertexCount);
+  for(let i=0;i<vertexCount;i++) seq[i]=i;
+
+  // Layer index: scan the layer-ordered buffer once, splitting into layers
+  // whenever Z rises by ≥ half a layer height. Each entry is the layer's Z and
+  // its inclusive vertex span [v0,v1] (in vertices) — used to map a printer
+  // layer_num to a vertex span and to a clip Z, via binary search at run time.
+  // Spiral-vase prints creep Z continuously, so we use a representative Z (the
+  // span's first vertex) and bucket fine creep within the half-layer threshold.
+  const layers=[];
+  if(vertexCount>0){
+    const thr=layerH*0.5;
+    let v0=0, zRef=pos[2];
+    for(let v=1; v<vertexCount; v++){
+      const z=pos[v*3+2];
+      if(z - zRef >= thr){
+        layers.push({z:pos[v0*3+2], v0, v1:v-1});
+        v0=v; zRef=z;
+      } else if(z > zRef){ zRef=z; }   // track the rising edge within a layer
+    }
+    layers.push({z:pos[v0*3+2], v0, v1:vertexCount-1});
+  }
+
+  return {
+    kind:"toolpath",
+    pos, seq, layers, min, max, center, size, zHeight, layerH,
+    totalLayers, filamentColor,
+    job:j.job||"print", vertexCount, segmentCount,
+    decimated:!!j.decimated, source:j.source_file||null,
+  };
+}
+
+/* ── 2c. Binary toolpath parsing ─────────────────────────────────────────
+   Parses the ?fmt=bin response: no JSON.parse on the positions, no base64
+   decode, no intermediate string. The typed array is sliced directly from
+   the wire bytes. This eliminates the dominant parse cost for large prints.
+
+   Wire format:
+     [0..3]   uint32-LE  header length H
+     [4..4+H) UTF-8 JSON header (scalars + pre-built layer_table)
+     [4+H..]  float32-LE positions (segment_count * 2 * 3 floats = N bytes)
+*/
+function parseToolpathBin(arrayBuffer){
+  if(arrayBuffer.byteLength < 4) throw new Error("bin: too short");
+  const dv = new DataView(arrayBuffer);
+  const hdrLen = dv.getUint32(0, true);          // little-endian
+  if(4 + hdrLen > arrayBuffer.byteLength) throw new Error("bin: header overflows");
+
+  // Decode the JSON header (TextDecoder avoids charCodeAt loop).
+  const hdrBytes = new Uint8Array(arrayBuffer, 4, hdrLen);
+  const hdrText = (typeof TextDecoder !== "undefined")
+                ? new TextDecoder("utf-8").decode(hdrBytes)
+                : String.fromCharCode.apply(null, hdrBytes);
+  const h = JSON.parse(hdrText);
+
+  // Positions: the remainder of the buffer, aligned to 4 bytes.
+  const posOffset = 4 + hdrLen;
+  const remaining = arrayBuffer.byteLength - posOffset;
+  // Guard against a non-multiple-of-12 payload (truncated last vertex/segment).
+  const usable = remaining - (remaining % 12);
+  // Float32Array over the original buffer — zero copy.
+  const pos = new Float32Array(arrayBuffer, posOffset, usable / 4);
+  const vertexCount = pos.length / 3;
+  const segmentCount = (typeof h.segment_count === "number")
+                     ? h.segment_count : (vertexCount / 2 | 0);
+
+  // bbox from header (always present in binary path).
+  const bb = (h.bbox && h.bbox.min && h.bbox.max) ? h.bbox
+           : { min:[0,0,0], max:[0,0,0] };
+  const min = bb.min, max = bb.max;
+  const center = [(min[0]+max[0])/2,(min[1]+max[1])/2,(min[2]+max[2])/2];
+  const size   = [max[0]-min[0],   max[1]-min[1],   max[2]-min[2]];
+  const zHeight = size[2];
+
+  let layerH = (typeof h.layer_height_mm === "number" && h.layer_height_mm > 0)
+             ? h.layer_height_mm : null;
+  const totalLayers = (typeof h.total_layers === "number") ? h.total_layers : null;
+  if(layerH === null && totalLayers && totalLayers > 0) layerH = zHeight / totalLayers;
+  if(layerH === null || !(layerH > 0)) layerH = zHeight / 200 || 0.2;
+
+  let filamentColor = null;
+  if(Array.isArray(h.filaments)){
+    for(const f of h.filaments){ if(f && f.color){ filamentColor=hexToRgb(f.color); if(filamentColor)break; } }
+  }
+
+  // Per-vertex sequence index — allocate and fill once.
+  const seq = new Float32Array(vertexCount);
+  for(let i = 0; i < vertexCount; i++) seq[i] = i;
+
+  // Layer index: use the pre-built table from the header when available,
+  // else fall back to the O(N) scan (same as parseToolpath).
+  let layers;
+  if(Array.isArray(h.layer_table) && h.layer_table.length > 0){
+    // Server ships [v0, v1, z] entries — convert to {v0, v1, z} objects.
+    layers = h.layer_table.map(e => ({v0: e[0]|0, v1: e[1]|0, z: e[2]}));
+  } else {
+    // Fallback scan (should not happen with a current server).
+    layers = [];
+    if(vertexCount > 0){
+      const thr = layerH * 0.5;
+      let v0 = 0, zRef = pos[2];
+      for(let v = 1; v < vertexCount; v++){
+        const z = pos[v*3+2];
+        if(z - zRef >= thr){
+          layers.push({z: pos[v0*3+2], v0, v1: v-1});
+          v0 = v; zRef = z;
+        } else if(z > zRef){ zRef = z; }
+      }
+      layers.push({z: pos[v0*3+2], v0, v1: vertexCount-1});
+    }
+  }
+
+  return {
+    kind:"toolpath",
+    pos, seq, layers, min, max, center, size, zHeight, layerH,
+    totalLayers, filamentColor,
+    job: h.job || "print", vertexCount, segmentCount,
+    decimated: !!h.decimated, source: h.source_file || null,
+  };
+}
+function hexToRgb(hex){
+  if(typeof hex!=="string") return null;
+  let h=hex.trim().replace(/^#/,"");
+  if(h.length===8) h=h.slice(0,6);                 // drop alpha if RGBA hex
+  if(h.length===3) h=h.split("").map(c=>c+c).join("");
+  if(!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return [parseInt(h.slice(0,2),16)/255,
+          parseInt(h.slice(2,4),16)/255,
+          parseInt(h.slice(4,6),16)/255];
+}
+
+/* ── 3. WebGL: context, shaders, program, buffers ─────────────────────────
+   Raw WebGL1. Shaders are template literals, commented inline. One program
+   handles both solid and ghost passes; a uniform selects ghost behavior. */
+const VERT_SRC = `
+  attribute vec3 aPos;      // world position (mm, Z-up)
+  attribute vec3 aNrm;      // per-vertex normal
+  uniform mat4 uProj;
+  uniform mat4 uView;
+  uniform mat3 uNormal;
+  varying vec3 vNrm;        // world normal
+  varying vec3 vWorld;      // world position (for worldZ clip + fresnel)
+  void main(){
+    vWorld = aPos;
+    vNrm   = normalize(uNormal * aNrm);
+    gl_Position = uProj * uView * vec4(aPos, 1.0);
+  }
+`;
+// Fragment: solid lit material below uClipZ; ghost above; amber band at clip.
+const FRAG_SRC = `
+  precision highp float;
+  varying vec3 vNrm;
+  varying vec3 vWorld;
+  uniform vec3  uEye;        // camera position, for fresnel + spec
+  uniform vec3  uColor;      // base material color
+  uniform vec3  uBand;       // highlight band emissive color
+  uniform float uClipZ;      // displayed layer height (world Z, mm)
+  uniform float uLayerH;     // one layer thickness (mm) — band width
+  uniform float uGhost;      // 0 = solid pass, 1 = ghost pass
+  uniform float uHemi;       // 1 = hemisphere/fresnel rich (Theme), 0 = plainer
+
+  // Two key lights + hemisphere ambient — subtle, no textures.
+  vec3 lambert(vec3 base, vec3 N){
+    vec3 L1 = normalize(vec3( 0.5, 0.35, 0.78));
+    vec3 L2 = normalize(vec3(-0.6,-0.2 , 0.35));
+    float d1 = max(dot(N,L1),0.0);
+    float d2 = max(dot(N,L2),0.0)*0.35;
+    // hemisphere ambient: sky tint above, ground tint below
+    float h  = 0.5 + 0.5*N.z;
+    vec3 sky = mix(vec3(0.30,0.31,0.34), vec3(0.42,0.44,0.50), uHemi);
+    vec3 grd = vec3(0.06,0.06,0.07);
+    vec3 amb = mix(grd, sky, h);
+    return base*(amb + d1*1.05 + d2);
+  }
+
+  void main(){
+    vec3 N = normalize(vNrm);
+    vec3 Vd = normalize(uEye - vWorld);
+    if(dot(N,Vd) < 0.0) N = -N;          // face the camera (single-sided mesh)
+
+    vec3 lit = lambert(uColor, N);
+
+    // Fresnel rim — gentle, only when uHemi (Theme) for that handsome edge.
+    float fres = pow(1.0 - max(dot(N,Vd),0.0), 3.0) * uHemi;
+    lit += fres * vec3(0.55,0.57,0.62);
+
+    // Emissive highlight band at the current layer.
+    float band = 1.0 - smoothstep(0.0, uLayerH, abs(vWorld.z - uClipZ));
+    lit = mix(lit, uBand, band * (1.0 - uGhost) * 0.9);
+
+    if(uGhost > 0.5){
+      // Ghost: above the clip plane only; faint additive-ish wash.
+      if(vWorld.z <= uClipZ) discard;     // solid pass already drew this
+      gl_FragColor = vec4(uColor*0.9 + 0.06, 0.08);
+    } else {
+      // Solid: below/at the clip plane only.
+      if(vWorld.z > uClipZ) discard;
+      gl_FragColor = vec4(lit, 1.0);
+    }
+  }
+`;
+/* Line (toolpath) program — sibling to the mesh program. Lines have no
+   normals, so they cannot share the lit FRAG_SRC; instead they share the
+   load-bearing CLIP/BAND/GHOST GLSL chunk below, so the two paths can never
+   drift apart in how they interpret uClipZ / uLayerH / uGhost. Lit shading is
+   replaced by a flat base color with a subtle depth-cue darkening so stacked
+   toolpath layers still read as 3D on a phone. */
+const LINE_VERT = `
+  attribute vec3 aPos;      // world position (mm, Z-up); GL_LINES vertex pairs
+  attribute float aSeq;     // global vertex sequence index (print/draw order)
+  uniform mat4 uProj;
+  uniform mat4 uView;
+  varying vec3 vWorld;      // world position (for worldZ clip + band)
+  varying float vSeq;       // sequence index, for the reveal front
+  void main(){
+    vWorld = aPos;
+    vSeq   = aSeq;
+    gl_Position = uProj * uView * vec4(aPos, 1.0);
+  }
+`;
+const LINE_FRAG = `
+  precision highp float;
+  varying vec3 vWorld;
+  varying float vSeq;
+  uniform vec3  uColor;      // base line color
+  uniform vec3  uBand;       // highlight band emissive color
+  uniform float uClipZ;      // current layer's world Z (mm)
+  uniform float uLayerH;     // one layer thickness (mm) — band width
+  uniform float uGhost;      // 0 = solid pass, 1 = ghost pass
+  uniform float uZmin;       // bbox min Z, for the depth-cue gradient
+  uniform float uZspan;      // bbox z-extent, for the depth-cue gradient
+  uniform float uReveal;     // reveal front: highest revealed seq on cur layer
+  uniform float uRevealOn;   // 1 = LIVE reveal-front active, 0 = whole-layer
+
+  void main(){
+    // Is this fragment in the CURRENT working layer's band?
+    float dz = abs(vWorld.z - uClipZ);
+    bool inCurLayer = dz <= uLayerH*0.5;
+    // Completed layers: strictly below the current layer band.
+    bool completed  = vWorld.z <= uClipZ - uLayerH*0.5;
+    // Reveal gate: when the front is active, the current layer is solid only up
+    // to the front (vSeq <= uReveal); otherwise the whole current layer is solid
+    // (scrub / non-printing — matches the prior whole-layer behavior).
+    bool curRevealed = inCurLayer && (uRevealOn < 0.5 || vSeq <= uReveal);
+    bool solid = completed || curRevealed;
+
+    // Emissive highlight band on the current layer's REVEALED portion only.
+    float band = (1.0 - smoothstep(0.0, uLayerH, dz)) * (curRevealed ? 1.0 : 0.0);
+
+    if(uGhost > 0.5){
+      // Ghost: everything the solid pass did NOT draw.
+      if(solid) discard;
+      gl_FragColor = vec4(uColor*0.9 + 0.06, 0.06);
+    } else {
+      if(!solid) discard;
+      // Depth cue: lower layers slightly darker so the stack reads as 3D even
+      // with 1px lines. Compensates for the lack of lit shading (lineWidth is
+      // clamped to 1 on most platforms — we lean on brightness, not ribbons).
+      float h = clamp((vWorld.z - uZmin) / max(uZspan, 1e-3), 0.0, 1.0);
+      vec3 col = uColor * (0.45 + 0.55*h);
+      col = mix(col, uBand, band * 0.9);  // amber/emissive at the working layer
+      gl_FragColor = vec4(col, 1.0);
+    }
+  }
+`;
+// Flat-shaded nozzle marker (cone+ring) — its own tiny program.
+const NOZ_VERT = `
+  attribute vec3 aPos;
+  uniform mat4 uProj; uniform mat4 uView; uniform vec3 uOrigin;
+  void main(){ gl_Position = uProj*uView*vec4(aPos+uOrigin,1.0); }
+`;
+const NOZ_FRAG = `
+  precision mediump float; uniform vec3 uColor; uniform float uAlpha;
+  void main(){ gl_FragColor = vec4(uColor, uAlpha); }
+`;
+
+function compile(gl, type, src){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+    throw new Error("shader: "+gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProgram(gl, vsrc, fsrc){
+  const p=gl.createProgram();
+  gl.attachShader(p,compile(gl,gl.VERTEX_SHADER,vsrc));
+  gl.attachShader(p,compile(gl,gl.FRAGMENT_SHADER,fsrc));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))
+    throw new Error("link: "+gl.getProgramInfoLog(p));
+  // Cache uniform + attribute locations lazily on first access.
+  const cache={u:{},a:{}};
+  return {
+    prog:p,
+    u(name){return cache.u[name] ?? (cache.u[name]=gl.getUniformLocation(p,name));},
+    a(name){return cache.a[name] ?? (cache.a[name]=gl.getAttribLocation(p,name));},
+  };
+}
+
+/* Build a small cone+ring geometry for the nozzle marker, in local space.
+   Cone points down (-Z) toward the part; ring sits at its base. */
+function nozzleGeometry(scale){
+  const verts=[]; const seg=16;
+  const r=scale, h=scale*2.2, ringR=scale*1.4;
+  // cone: apex at z=0 (touches surface), base ring at z=h
+  for(let i=0;i<seg;i++){
+    const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+    verts.push(0,0,0,
+               Math.cos(a0)*r,Math.sin(a0)*r,h,
+               Math.cos(a1)*r,Math.sin(a1)*r,h);
+  }
+  // flat ring (two tris per segment) slightly above base, as a collar
+  const z=h*1.02, ir=ringR*0.7, or=ringR;
+  for(let i=0;i<seg;i++){
+    const a0=(i/seg)*Math.PI*2, a1=((i+1)/seg)*Math.PI*2;
+    const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+    verts.push(c0*ir,s0*ir,z, c0*or,s0*or,z, c1*or,s1*or,z);
+    verts.push(c0*ir,s0*ir,z, c1*or,s1*or,z, c1*ir,s1*ir,z);
+  }
+  return new Float32Array(verts);
+}
+
+/* ── Renderer object: owns GL state, meshes, programs, draw ───────────── */
+function createRenderer(canvas){
+  let gl=null, prog=null, lineProg=null, nozProg=null;
+  let vbo=null, nbo=null, ibo=null, nozVbo=null, nozCount=0;
+  let lvbo=null, lsbo=null, lineCount=0;   // toolpath: pos + seq buffers + count
+  let mesh=null;                        // current geometry (mesh OR toolpath)
+  const R={ ready:false };
+
+  function getContext(){
+    const opts={antialias:true, alpha:false, premultipliedAlpha:false,
+                preserveDrawingBuffer:true, depth:true};
+    gl = canvas.getContext("webgl",opts) || canvas.getContext("experimental-webgl",opts);
+    if(!gl) throw new Error("WebGL unavailable");
+    // WebGL1 needs this extension before UNSIGNED_INT indices will draw at all;
+    // without it drawElements(…,UNSIGNED_INT,…) silently renders nothing.
+    R.uintIndex = !!gl.getExtension("OES_element_index_uint");
+    prog     = makeProgram(gl, VERT_SRC, FRAG_SRC);
+    lineProg = makeProgram(gl, LINE_VERT, LINE_FRAG);
+    nozProg  = makeProgram(gl, NOZ_VERT, NOZ_FRAG);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+  }
+
+  // (Re)upload mesh buffers. Called on first load and after context loss.
+  function uploadMesh(m){
+    mesh=m;
+    vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
+    gl.bufferData(gl.ARRAY_BUFFER,m.pos,gl.STATIC_DRAW);
+    nbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,nbo);
+    gl.bufferData(gl.ARRAY_BUFFER,m.nrm,gl.STATIC_DRAW);
+    // Choose index buffer type: prefer uint32; if the uint-index extension is
+    // unavailable, fall back to uint16 (valid only when vertices ≤ 65535).
+    ibo=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibo);
+    if(R.uintIndex){
+      R.idxType=gl.UNSIGNED_INT;
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,m.idx,gl.STATIC_DRAW);
+    } else if(m.vertexCount<=65535){
+      R.idxType=gl.UNSIGNED_SHORT;
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(m.idx),gl.STATIC_DRAW);
+    } else {
+      R.idxType=gl.UNSIGNED_INT;   // last resort; will warn but mesh is huge
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,m.idx,gl.STATIC_DRAW);
+    }
+    buildNozzle(m);
+    R.ready=true;
+  }
+
+  // (Re)upload a toolpath (GL_LINES vertex pairs). Mirrors uploadMesh: one
+  // static VBO, plus the shared nozzle marker sized to the footprint.
+  function uploadToolpath(m){
+    mesh=m;
+    lvbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,lvbo);
+    gl.bufferData(gl.ARRAY_BUFFER,m.pos,gl.STATIC_DRAW);
+    lsbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,lsbo);
+    gl.bufferData(gl.ARRAY_BUFFER,m.seq,gl.STATIC_DRAW);
+    lineCount=m.vertexCount;
+    buildNozzle(m);
+    R.ready=true;
+  }
+
+  function buildNozzle(m){
+    const nozScale=Math.max(m.size[0],m.size[1])*0.04 + 0.6;
+    const ng=nozzleGeometry(nozScale); nozCount=ng.length/3;
+    nozVbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,nozVbo);
+    gl.bufferData(gl.ARRAY_BUFFER,ng,gl.STATIC_DRAW);
+  }
+
+  function bindAttrib(p,name,buf,size){
+    const loc=p.a(name); if(loc<0) return;
+    gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc,size,gl.FLOAT,false,0,0);
+  }
+
+  /* ── 4. Scene drawing ──────────────────────────────────────────────── */
+  function draw(view, proj, eye, params){
+    const {clipZ, color, band, hemi, nozOrigin, nozAlpha, w, h} = params;
+    gl.viewport(0,0,w,h);
+    const bg = params.bg;
+    gl.clearColor(bg[0],bg[1],bg[2],1);
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    if(!R.ready||!mesh) return;
+
+    if(mesh.kind==="toolpath") drawToolpath(view,proj,eye,params);
+    else                       drawMesh(view,proj,eye,params);
+
+    // NOZZLE MARKER — drawn last, over everything, signal-red. Shared.
+    if(nozOrigin){
+      gl.useProgram(nozProg.prog);
+      gl.uniformMatrix4fv(nozProg.u("uProj"),false,proj);
+      gl.uniformMatrix4fv(nozProg.u("uView"),false,view);
+      gl.uniform3fv(nozProg.u("uOrigin"),nozOrigin);
+      gl.uniform3fv(nozProg.u("uColor"),[0.90,0.22,0.18]);
+      gl.uniform1f(nozProg.u("uAlpha"),nozAlpha);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+      bindAttrib(nozProg,"aPos",nozVbo,3);
+      gl.drawArrays(gl.TRIANGLES,0,nozCount);
+    }
+    gl.depthMask(true);
+  }
+
+  function drawMesh(view, proj, eye, params){
+    const {clipZ, color, band, hemi} = params;
+    // SOLID PASS — opaque, depth-write on.
+    gl.useProgram(prog.prog);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.uniformMatrix4fv(prog.u("uProj"),false,proj);
+    gl.uniformMatrix4fv(prog.u("uView"),false,view);
+    gl.uniformMatrix3fv(prog.u("uNormal"),false,NORMAL_MAT);
+    gl.uniform3fv(prog.u("uEye"),eye);
+    gl.uniform3fv(prog.u("uColor"),color);
+    gl.uniform3fv(prog.u("uBand"),band);
+    gl.uniform1f(prog.u("uClipZ"),clipZ);
+    gl.uniform1f(prog.u("uLayerH"),mesh.layerH);
+    gl.uniform1f(prog.u("uHemi"),hemi);
+    gl.uniform1f(prog.u("uGhost"),0.0);
+    bindAttrib(prog,"aPos",vbo,3);
+    bindAttrib(prog,"aNrm",nbo,3);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ibo);
+    gl.drawElements(gl.TRIANGLES,mesh.indexCount,R.idxType,0);
+
+    // GHOST PASS — translucent, depth-test on but depth-write OFF so the
+    // ghost never occludes itself harshly; additive-ish blend for a wash.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);     // additive — keeps it airy
+    gl.depthMask(false);
+    gl.uniform1f(prog.u("uGhost"),1.0);
+    gl.drawElements(gl.TRIANGLES,mesh.indexCount,R.idxType,0);
+    gl.depthMask(true);
+  }
+
+  // Toolpath line draw: two passes mirroring the mesh solid/ghost design.
+  // SOLID pass = vertices with worldZ ≤ uClipZ (full color, depth-write on);
+  // GHOST pass = above the clip (alpha wash, depth-write off). gl.LINES.
+  function drawToolpath(view, proj, eye, params){
+    const {clipZ, color, band, reveal, revealOn} = params;
+    const m=mesh;
+    gl.useProgram(lineProg.prog);
+    gl.uniformMatrix4fv(lineProg.u("uProj"),false,proj);
+    gl.uniformMatrix4fv(lineProg.u("uView"),false,view);
+    gl.uniform3fv(lineProg.u("uColor"),color);
+    gl.uniform3fv(lineProg.u("uBand"),band);
+    gl.uniform1f(lineProg.u("uClipZ"),clipZ);
+    gl.uniform1f(lineProg.u("uLayerH"),m.layerH);
+    gl.uniform1f(lineProg.u("uZmin"),m.min[2]);
+    gl.uniform1f(lineProg.u("uZspan"),m.size[2]);
+    gl.uniform1f(lineProg.u("uReveal"),reveal);
+    gl.uniform1f(lineProg.u("uRevealOn"),revealOn?1.0:0.0);
+    bindAttrib(lineProg,"aPos",lvbo,3);
+    bindAttrib(lineProg,"aSeq",lsbo,1);
+    // lineWidth is clamped to 1 on most platforms — we compensate with the
+    // depth-cue brightness ramp + amber band, NOT ribbon quads (v1 upgrade path).
+    gl.lineWidth(1);
+
+    // SOLID PASS — opaque, depth-write on (fragment discards worldZ > clip).
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.uniform1f(lineProg.u("uGhost"),0.0);
+    gl.drawArrays(gl.LINES,0,lineCount);
+
+    // GHOST PASS — translucent above the clip; depth-write OFF, additive wash.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.depthMask(false);
+    gl.uniform1f(lineProg.u("uGhost"),1.0);
+    gl.drawArrays(gl.LINES,0,lineCount);
+    gl.depthMask(true);
+  }
+
+  R.getContext=getContext;
+  R.uploadMesh=uploadMesh;
+  R.uploadToolpath=uploadToolpath;
+  R.draw=draw;
+  R.glRef=()=>gl;
+  R.mesh=()=>mesh;
+  R.reinit=()=>{ R.ready=false; getContext();
+    if(mesh){ mesh.kind==="toolpath" ? uploadToolpath(mesh) : uploadMesh(mesh); } };
+  return R;
+}
+
+/* ── 5. Camera ────────────────────────────────────────────────────────────
+   Orbit camera around a target, spherical coords. Pan moves the target on the
+   view plane. Zoom changes radius. Near/far derived from radius. */
+function createCamera(){
+  const cam={
+    target:[0,0,0], radius:200, yaw:0.7, pitch:0.9,
+    minR:1, maxR:5000, fov:45*Math.PI/180,
+    velYaw:0, velPitch:0,            // inertia
+  };
+  // Z-up world: build eye from spherical (pitch from XY-plane).
+  function eye(){
+    const cp=Math.cos(cam.pitch), sp=Math.sin(cam.pitch);
+    const cy=Math.cos(cam.yaw),  sy=Math.sin(cam.yaw);
+    return [
+      cam.target[0] + cam.radius*cp*cy,
+      cam.target[1] + cam.radius*cp*sy,
+      cam.target[2] + cam.radius*sp,
+    ];
+  }
+  function view(){ return mat4LookAt(eye(), cam.target, [0,0,1]); }
+  function proj(aspect){
+    const r=cam.radius;
+    return mat4Perspective(cam.fov, aspect, Math.max(r*0.01,0.1), r*8+100);
+  }
+  // Auto-frame a bbox: center target, pick radius so it fits the fov.
+  function frame(center,size){
+    cam.target=center.slice();
+    const extent=Math.max(size[0],size[1],size[2], 1);
+    cam.radius=Math.min(cam.maxR, (extent*0.5)/Math.tan(cam.fov/2)*1.9 + extent);
+    cam.yaw=0.7; cam.pitch=0.55;
+  }
+  function orbit(dx,dy){
+    cam.yaw   -= dx*0.01;
+    cam.pitch += dy*0.01;
+    const lim=Math.PI/2-0.02;
+    cam.pitch=Math.max(-lim,Math.min(lim,cam.pitch));
+    cam.velYaw=-dx*0.01; cam.velPitch=dy*0.01;
+  }
+  function zoom(factor){
+    cam.radius=Math.max(cam.minR,Math.min(cam.maxR,cam.radius*factor));
+  }
+  function pan(dx,dy,aspect){
+    // Move target along the camera's right/up axes, scaled by radius.
+    const e=eye(), f=V.norm(V.sub(cam.target,e));
+    const right=V.norm(V.cross(f,[0,0,1]));
+    const up=V.cross(right,f);
+    const s=cam.radius*0.0016;
+    cam.target=V.add(cam.target, V.add(V.scale(right,-dx*s), V.scale(up,dy*s)));
+  }
+  function inertia(){
+    if(Math.abs(cam.velYaw)<1e-4 && Math.abs(cam.velPitch)<1e-4) return false;
+    cam.yaw   += cam.velYaw;
+    cam.pitch += cam.velPitch;
+    const lim=Math.PI/2-0.02;
+    cam.pitch=Math.max(-lim,Math.min(lim,cam.pitch));
+    cam.velYaw*=0.90; cam.velPitch*=0.90;
+    return true;
+  }
+  return {cam,eye,view,proj,frame,orbit,zoom,pan,inertia};
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   APPLICATION STATE & WIRING
+   ════════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById("gl");
+const renderer = createRenderer(canvas);
+const camera   = createCamera();
+
+const STATE = {
+  mesh:null,             // current geometry (mesh OR toolpath; kind distinguishes)
+  mode:"mesh",           // "mesh" | "toolpath"
+  displayedLayer:0,      // integer layer currently shown
+  liveLayer:0,           // last layer reported by the printer
+  totalLayers:0,         // 0 → derive from bbox/200 fallback
+  following:true,        // LIVE mode
+  phase:"unknown",
+  colorMode:"theme",     // "theme" | "filament"
+  hasFilamentColor:false,
+  pollTimer:null,
+  t0:performance.now(),
+  needsDraw:true,
+  loadState:"loading",   // "loading" | "ready" | "error" — exposed via __viz.state()
+
+  // ── Reveal-front pacing (toolpath LIVE only) ──────────────────────────
+  reveal:0,              // current reveal front, in vertex-sequence space
+  spanStart:0,           // current layer's first vertex (seq)
+  spanEnd:0,             // current layer's last vertex (seq)
+  revealT0:0,            // perf-time when the current layer's sweep started
+  estLayerSec:30,        // estimated seconds per layer (bootstrap then EMA)
+  remainingMin:null,     // printer's reported time-remaining (minutes)
+  layerChanges:0,        // how many layer ticks observed (for EMA warmup)
+  lastLayerChangeAt:0,   // perf-time of the last layer_num change
+  lastLayerNum:null,     // previous layer_num (to detect changes)
+};
+
+/* ── 6. Networking ────────────────────────────────────────────────────── */
+async function loadMesh(){
+  showLoading("fetching model…");
+  _T.fetch_start = performance.now();
+  let res;
+  try { res = await api("/viz/mesh"); }
+  catch(e){ return showError("network", "Could not reach the printer bridge."); }
+  _T.fetch_headers = performance.now();
+  if(res.status===401||res.status===403)
+    return showError("auth","Your access token was rejected or expired. Open the viewer again from the app or your Home Assistant dashboard.");
+  if(res.status===404)
+    return showError("nojob","No active job to visualize.","Start a print, then reopen this view.");
+  if(res.status===422)
+    return showError("parse","Couldn't parse this model's G-code.","The slicer file may be unsupported.");
+  if(!res.ok)
+    return showError("network",`Unexpected server response (${res.status}).`);
+  let j;
+  try { j=await res.json(); } catch(e){ return showError("parse","Malformed mesh response."); }
+  _T.fetch_body = performance.now();
+  _T.fmt = "json";
+
+  // Sliced Bambu archives carry no mesh: the backend signals this with
+  // geometry_available:false (empty vertex/triangle arrays) and we switch to
+  // the toolpath render path — a first-class mode, not a fallback hack.
+  if(j.geometry_available === false){
+    return loadToolpath();
+  }
+
+  const t_parse0 = performance.now();
+  let mesh;
+  try { mesh=parseMesh(j); } catch(e){ return showError("parse","Mesh data was corrupt."); }
+  _T.parse = performance.now() - t_parse0;
+  _T.bytes = j.vertices_b64 ? Math.round(j.vertices_b64.length * 0.75) : 0;
+  _T.segments = 0;
+  applyMesh(mesh);
+}
+
+// Second fetch: the gcode toolpath. Has its own loading state, and on failure
+// shows exactly one error (loadMesh already returned, so no double-overlay).
+// Requests fmt=bin when the browser supports ArrayBuffer — eliminates
+// JSON.parse and base64-decode from the critical path.
+async function loadToolpath(){
+  showLoading("loading toolpath…");
+  // fmt=bin: response is [uint32-LE hdrLen][JSON header][float32-LE positions]
+  const useBin = SUPPORTS_BIN_TOOLPATH;
+  const path = useBin ? "/viz/toolpath?fmt=bin" : "/viz/toolpath";
+
+  _T.fetch_start = performance.now();
+  let res;
+  try { res = await api(path); }
+  catch(e){ return showError("network", "Could not reach the printer bridge."); }
+  _T.fetch_headers = performance.now();
+  if(res.status===401||res.status===403)
+    return showError("auth","Your access token was rejected or expired. Open the viewer again from the app or your Home Assistant dashboard.");
+  if(res.status===404)
+    return showError("nojob","No active job to visualize.","Start a print, then reopen this view.");
+  if(res.status===422)
+    return showError("parse","Couldn't parse this print's G-code.","The slicer file may be unsupported.");
+  if(!res.ok)
+    return showError("network",`Unexpected server response (${res.status}).`);
+
+  let tp;
+  if(useBin){
+    // Binary path: arrayBuffer() → parse header + typed float32 slice.
+    let buf;
+    try { buf = await res.arrayBuffer(); }
+    catch(e){ return showError("parse","Could not read binary toolpath."); }
+    _T.fetch_body = performance.now();
+    _T.bytes = buf.byteLength;
+    _T.fmt = "bin";
+    const t_parse0 = performance.now();
+    try { tp = parseToolpathBin(buf); }
+    catch(e){ return showError("parse","Toolpath binary data was corrupt."); }
+    _T.parse = performance.now() - t_parse0;
+  } else {
+    let j;
+    try { j=await res.json(); } catch(e){ return showError("parse","Malformed toolpath response."); }
+    _T.fetch_body = performance.now();
+    _T.fmt = "json";
+    const t_parse0 = performance.now();
+    try { tp=parseToolpath(j); } catch(e){ return showError("parse","Toolpath data was corrupt."); }
+    _T.parse = performance.now() - t_parse0;
+    _T.bytes = j.positions_b64 ? Math.round(j.positions_b64.length * 0.75) : 0;
+  }
+  _T.segments = tp ? tp.segmentCount : 0;
+
+  // segment_count can legitimately be 0 (gcode had no extrusions) — friendly state.
+  if(!tp || !tp.segmentCount || tp.vertexCount<2){
+    return showError("nojob","No toolpath to show yet.",
+      "This print's G-code has no extrusion moves to draw.");
+  }
+  applyToolpath(tp);
+}
+
+function applyMesh(mesh){
+  STATE.mesh=mesh;
+  STATE.mode="mesh";
+  STATE.totalLayers = mesh.totalLayers && mesh.totalLayers>0
+                    ? mesh.totalLayers
+                    : Math.max(1, Math.round(mesh.zHeight/mesh.layerH));
+  STATE.hasFilamentColor = !!mesh.filamentColor;
+  // Default color mode: Filament if a real color exists, else Theme.
+  STATE.colorMode = STATE.hasFilamentColor ? "filament" : "theme";
+  const t_buf0 = performance.now();
+  renderer.uploadMesh(mesh);
+  _T.buffers = performance.now() - t_buf0;
+  camera.frame(mesh.center, mesh.size);
+
+  // Slider 0..totalLayers
+  slider.min=0; slider.max=STATE.totalLayers; slider.step=1;
+  setDisplayedLayer(STATE.following ? STATE.liveLayer : 0, false);
+  document.getElementById("jobName").textContent = mesh.job;
+  document.getElementById("bar").classList.remove("hidden");
+  hideOverlay();
+  updateColorChip();
+  updateLivePill();
+  STATE.needsDraw=true;
+  STATE._awaitFirstFrame=true;
+}
+
+function applyToolpath(tp){
+  STATE.mesh=tp;                       // unified geometry slot (kind distinguishes)
+  STATE.mode="toolpath";
+  STATE.totalLayers = tp.totalLayers && tp.totalLayers>0
+                    ? tp.totalLayers
+                    : Math.max(1, Math.round(tp.zHeight/tp.layerH));
+  STATE.hasFilamentColor = !!tp.filamentColor;
+  STATE.colorMode = STATE.hasFilamentColor ? "filament" : "theme";
+  const t_buf0 = performance.now();
+  renderer.uploadToolpath(tp);
+  _T.buffers = performance.now() - t_buf0;
+  camera.frame(tp.center, tp.size);
+
+  slider.min=0; slider.max=STATE.totalLayers; slider.step=1;
+  setDisplayedLayer(STATE.following ? STATE.liveLayer : 0, false);
+  document.getElementById("jobName").textContent = tp.job;
+  document.getElementById("bar").classList.remove("hidden");
+  // We genuinely have layer XY in toolpath mode — update the caption, drop the
+  // "no XY" disclaimer (kept only for Z-tracked mesh mode).
+  document.getElementById("cap").textContent = "layer-tracked toolpath";
+  hideOverlay();
+  updateColorChip();
+  updateLivePill();
+  // Initialize the reveal front at the current live layer's span start.
+  snapRevealToLayer(STATE.displayedLayer, true);
+  STATE.needsDraw=true;
+  STATE._awaitFirstFrame=true;
+}
+
+/* ── Reveal-front pacing (toolpath LIVE) ──────────────────────────────────
+   The buffer is layer-ordered; layer N maps to a vertex span. We pick the span
+   by the printer's layer_num (1-based) clamped to our layer index. clipZ comes
+   from the span's representative Z so the band sits exactly on the working
+   layer even when our layer count and the printer's disagree slightly. */
+function layerSpan(tp, layerIdx){
+  const L=tp.layers;
+  if(!L || L.length===0) return null;
+  const i=Math.max(0, Math.min(L.length-1, layerIdx));
+  return L[i];
+}
+// Snap the reveal front to a layer: set span + clip Z, restart the sweep clock.
+// `resetReveal` puts the front at the span start (new layer); else preserve frac.
+function snapRevealToLayer(layerNum, resetReveal){
+  const tp=STATE.mesh;
+  if(!tp || tp.kind!=="toolpath") return;
+  // layer_num is 1-based from the printer; our index is 0-based.
+  const sp=layerSpan(tp, (layerNum>0?layerNum-1:0));
+  if(!sp) return;
+  STATE.spanStart=sp.v0; STATE.spanEnd=sp.v1;
+  STATE.curLayerZ=sp.z;
+  if(resetReveal){ STATE.reveal=sp.v0; STATE.revealT0=performance.now(); }
+}
+// Fold a fresh poll into the per-layer duration estimate.
+function updatePacing(prevLayer, newLayer, now){
+  // Bootstrap from time-remaining / layers-left (clamped 5..600 s).
+  if(STATE.remainingMin!=null && STATE.totalLayers>newLayer){
+    const boot=(STATE.remainingMin*60)/Math.max(1, STATE.totalLayers-newLayer);
+    const clamped=Math.max(5, Math.min(600, boot));
+    // Until we've measured two layer changes, trust the bootstrap outright.
+    if(STATE.layerChanges<2) STATE.estLayerSec=clamped;
+  }
+  if(prevLayer!=null && newLayer>prevLayer){
+    if(STATE.lastLayerChangeAt>0){
+      const measured=(now-STATE.lastLayerChangeAt)/1000/Math.max(1,newLayer-prevLayer);
+      if(measured>0.5 && measured<3600){
+        STATE.layerChanges++;
+        // EMA blend once we have a measurement (alpha 0.3).
+        STATE.estLayerSec = STATE.layerChanges<2
+          ? measured
+          : STATE.estLayerSec*0.7 + measured*0.3;
+      }
+    }
+    STATE.lastLayerChangeAt=now;
+  }
+}
+
+async function pollState(){
+  if(document.hidden) return;
+  let res;
+  try { res = await api(""); } catch(e){ return; }   // transient; keep polling
+  if(!res.ok) return;
+  let s; try { s=await res.json(); } catch(e){ return; }
+  const job=s.job||{};
+  STATE.phase = s.phase || "unknown";
+  const ln = intOr(job.layer_num, STATE.liveLayer);
+  const tot= intOr(job.total_layer_num, 0);
+  // time-remaining: accept common field names (minutes).
+  const rem = (job.remaining_time!=null) ? Number(job.remaining_time)
+            : (s.remaining_min!=null)    ? Number(s.remaining_min) : null;
+  if(rem!=null && isFinite(rem)) STATE.remainingMin=rem;
+
+  const prevLayer=STATE.lastLayerNum;
+  STATE.liveLayer = ln;
+  if(tot>0 && tot!==STATE.totalLayers && (!STATE.mesh || !STATE.mesh.totalLayers)){
+    STATE.totalLayers=tot; slider.max=tot;          // live total refines fallback
+  }
+
+  // Toolpath LIVE: maintain the per-layer pacing estimate and, on a layer
+  // change, snap the reveal front to the new layer's span start.
+  if(STATE.mode==="toolpath"){
+    updatePacing(prevLayer, ln, performance.now());
+    if(prevLayer!==ln && STATE.following){
+      snapRevealToLayer(ln, true);
+    }
+  }
+  STATE.lastLayerNum=ln;
+
+  if(STATE.following){
+    setDisplayedLayer(STATE.liveLayer, false);
+  }
+  updateLivePill();
+}
+function intOr(v,d){ const n=parseInt(v,10); return Number.isFinite(n)?n:d; }
+
+function startPolling(){
+  if(STATE.pollTimer) return;
+  pollState();
+  STATE.pollTimer=setInterval(pollState, POLL_MS);
+}
+function stopPolling(){
+  if(STATE.pollTimer){ clearInterval(STATE.pollTimer); STATE.pollTimer=null; }
+}
+
+/* ── 7. UI wiring ─────────────────────────────────────────────────────── */
+const slider    = document.getElementById("slider");
+const liveBtn   = document.getElementById("live");
+const colorBtn  = document.getElementById("color");
+
+// Clamp + apply a displayed layer, update HUD + slider. `userScrub` pauses live.
+function setDisplayedLayer(n, userScrub){
+  const max=STATE.totalLayers||1;
+  n=Math.max(0,Math.min(max, Math.round(n)));
+  STATE.displayedLayer=n;
+  if(userScrub && STATE.following){ STATE.following=false; updateLivePill(); }
+  document.getElementById("layerNow").textContent=n;
+  document.getElementById("layerTot").textContent=max;
+  if(parseInt(slider.value,10)!==n) slider.value=n;
+  STATE.needsDraw=true;
+}
+
+slider.addEventListener("input", ()=> setDisplayedLayer(parseInt(slider.value,10), true));
+
+// Step buttons ⏮ / ⏭
+document.getElementById("prev").addEventListener("click",
+  ()=> setDisplayedLayer(STATE.displayedLayer-1, true));
+document.getElementById("next").addEventListener("click",
+  ()=> setDisplayedLayer(STATE.displayedLayer+1, true));
+
+// Hold-to-scrub ⏪ / ⏩ — pointerdown starts autorepeat, pointerup stops.
+function holdScrub(btnId, dir){
+  const btn=document.getElementById(btnId);
+  let raf=null, last=0;
+  const step=(ts)=>{
+    if(!last) last=ts;
+    const dt=(ts-last)/1000; last=ts;
+    setDisplayedLayer(STATE.displayedLayer + dir*SCRUB_PER_S*dt, true);
+    raf=requestAnimationFrame(step);
+  };
+  const start=(e)=>{ e.preventDefault();
+    setDisplayedLayer(STATE.displayedLayer+dir, true);  // immediate nudge
+    last=0; raf=requestAnimationFrame(step);
+    btn.setPointerCapture && e.pointerId!=null && btn.setPointerCapture(e.pointerId);
+  };
+  const stop=()=>{ if(raf){cancelAnimationFrame(raf);raf=null;} };
+  btn.addEventListener("pointerdown",start);
+  btn.addEventListener("pointerup",stop);
+  btn.addEventListener("pointercancel",stop);
+  btn.addEventListener("pointerleave",stop);
+}
+holdScrub("rew", -1);
+holdScrub("fwd", +1);
+
+// LIVE pill — tap toggles back to following; updates classes/label.
+liveBtn.addEventListener("click", ()=>{
+  STATE.following=true;
+  setDisplayedLayer(STATE.liveLayer, false);
+  updateLivePill();
+});
+function updateLivePill(){
+  const txt=document.getElementById("liveTxt");
+  if(STATE.following){
+    liveBtn.classList.add("following"); liveBtn.classList.remove("paused");
+    txt.textContent="LIVE";
+  } else {
+    liveBtn.classList.add("paused"); liveBtn.classList.remove("following");
+    txt.textContent="RETURN TO LIVE";
+  }
+}
+
+// Color toggle chip — Filament / Theme.
+colorBtn.addEventListener("click", ()=>{
+  STATE.colorMode = STATE.colorMode==="theme" ? "filament" : "theme";
+  updateColorChip(); STATE.needsDraw=true;
+});
+function updateColorChip(){
+  const txt=document.getElementById("colorTxt");
+  const sw=document.getElementById("swatch");
+  txt.textContent = STATE.colorMode==="theme" ? "Theme" : "Filament";
+  const c=activeColor();
+  sw.style.background=`rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0})`;
+}
+// The base material color for the active mode.
+function activeColor(){
+  if(STATE.colorMode==="filament"){
+    if(STATE.mesh && STATE.mesh.filamentColor) return STATE.mesh.filamentColor;
+    return BAMBU_GREEN;                       // fallback Bambu green
+  }
+  return [0xF1/255,0xED/255,0xE7/255];        // Theme: warm paper
+}
+
+/* ── 8. Overlays (loading / error) + retry ────────────────────────────── */
+const overlay=document.getElementById("overlay");
+
+// Post a JSON message to a React Native WebView if one is present.
+// window.ReactNativeWebView is injected by the RN WebView component and is
+// absent in all other environments (browser, CDP gate, HA iframe).
+// Always call _rnwv_post IN ADDITION to console.log — both channels are kept
+// so the CDP gate (which listens to console events) continues to work.
+function _rnwv_post(obj){
+  if(window.ReactNativeWebView){
+    window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+  }
+}
+
+function showLoading(msg){
+  STATE.loadState="loading";
+  _rnwv_post({type:"viz.state", state:"loading"});
+  overlay.classList.add("show");
+  document.getElementById("spinner").classList.remove("hidden");
+  document.getElementById("ovIcon").classList.add("hidden");
+  document.getElementById("ovMsg").textContent=msg;
+  document.getElementById("ovSub").classList.add("hidden");
+  document.getElementById("retry").classList.add("hidden");
+}
+function showError(kind, msg, sub){
+  STATE.loadState="error";
+  _rnwv_post({type:"viz.state", state:"error"});
+  overlay.classList.add("show");
+  document.getElementById("spinner").classList.add("hidden");
+  document.getElementById("ovIcon").classList.remove("hidden");
+  document.getElementById("ovIcon").textContent = kind==="auth" ? "⛔" : "⚠";
+  document.getElementById("ovMsg").textContent=msg;
+  const subEl=document.getElementById("ovSub");
+  if(sub){ subEl.textContent=sub; subEl.classList.remove("hidden"); }
+  else subEl.classList.add("hidden");
+  const retry=document.getElementById("retry");
+  retry.classList.remove("hidden");
+  retry.textContent = kind==="auth" ? "Try again" : "Retry";
+}
+function hideOverlay(){
+  STATE.loadState="ready";
+  _rnwv_post({type:"viz.state", state:"ready"});
+  overlay.classList.remove("show");
+}
+document.getElementById("retry").addEventListener("click", ()=>{
+  // Reset timing state so a fresh fetch gets clean measurements.
+  _T.fetch_start=_T.fetch_headers=_T.fetch_body=_T.parse=_T.buffers=_T.first_frame=0;
+  _T.bytes=_T.segments=0; _T.fmt="json";
+  loadMesh();
+});
+
+/* ── 9. Bootstrap, render loop, resize, context-loss, debug ───────────── */
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1, 2.5);   // cap for phone perf
+  const w=Math.max(1,Math.round(canvas.clientWidth*dpr));
+  const h=Math.max(1,Math.round(canvas.clientHeight*dpr));
+  if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; STATE.needsDraw=true; }
+}
+window.addEventListener("resize", resize);
+
+// Last below-clip vertex's XY — a true toolpath estimate of the head position
+// on the current layer. Scans the float32 buffer (no allocation) and caches by
+// clipZ so per-frame redraws while idle don't re-scan ~6MB of vertices.
+let _nozCache={z:NaN, xy:null};
+function lastSolidEndpoint(m, clipZ){
+  if(_nozCache.z===clipZ) return _nozCache.xy;
+  const p=m.pos; let bx=null,by=null,bz=-Infinity;
+  // Walk forward; the toolpath is layer-ordered, so the LAST vertex at or below
+  // clipZ (and at the highest such Z) is the most recently printed point.
+  for(let i=0;i<p.length;i+=3){
+    const z=p[i+2];
+    if(z<=clipZ && z>=bz){ bz=z; bx=p[i]; by=p[i+1]; }
+  }
+  _nozCache={z:clipZ, xy:(bx===null?null:[bx,by])};
+  return _nozCache.xy;
+}
+
+// World XYZ at the reveal front: interpolate inside the segment straddling the
+// fractional front so the nozzle glides rather than hops vertex-to-vertex.
+function revealFrontPos(m, frontSeq){
+  const p=m.pos;
+  let i=Math.floor(frontSeq);
+  const maxV=m.vertexCount-1;
+  if(i<0) i=0; if(i>maxV) i=maxV;
+  // GL_LINES pairs: segment is (2k, 2k+1). Interpolate toward the pair's end.
+  const a=i, b=Math.min(maxV, i+ (i%2===0?1:0));   // bias to the pair endpoint
+  const f=Math.max(0,Math.min(1, frontSeq-i));
+  const ax=p[a*3],ay=p[a*3+1],az=p[a*3+2];
+  const bx=p[b*3],by=p[b*3+1],bz=p[b*3+2];
+  return [ax+(bx-ax)*f, ay+(by-ay)*f, az+(bz-az)*f];
+}
+
+// Theme palette resolved per-frame so toggles take effect immediately.
+function frameParams(w,h){
+  const m=STATE.mesh;
+  const isTP = m && m.kind==="toolpath";
+  const theme = STATE.colorMode==="theme";
+  const color = activeColor();
+
+  // Reveal front is active only in toolpath LIVE-follow while printing.
+  const revealOn = !!(isTP && STATE.following && STATE.phase==="printing");
+
+  // clipZ: in toolpath LIVE we lock the band to the current layer's own Z (from
+  // its vertex span) so the front and band sit on the real working layer; else
+  // (mesh, or scrubbed toolpath) we derive clipZ from displayedLayer as before.
+  let clipZ;
+  if(revealOn && STATE.curLayerZ!=null){
+    clipZ = STATE.curLayerZ;
+  } else {
+    clipZ = m ? (STATE.displayedLayer * m.layerH + (m.min?m.min[2]:0)) : 0;
+  }
+
+  // Band color: amber in Theme, a brightened tint of base in Filament.
+  const band = theme ? [1.0,0xB0/255,0.0]
+                     : [Math.min(1,color[0]*1.6+0.2),
+                        Math.min(1,color[1]*1.6+0.2),
+                        Math.min(1,color[2]*1.6+0.2)];
+  const bg = theme ? [0x11/255,0x11/255,0x13/255] : [0x0c/255,0x0d/255,0x0f/255];
+
+  // Nozzle placement:
+  //  • mesh mode        → bbox-center XY (no real XY), clipZ + offset.
+  //  • toolpath LIVE    → rides the reveal front (true XY on the working layer).
+  //  • toolpath scrubbed→ endpoint of the last below-clip vertex pair.
+  let nozOrigin=null, nozAlpha=1;
+  if(m){
+    const t=(performance.now()-STATE.t0)/1000;
+    const bob=(STATE.following && STATE.phase==="printing")
+              ? Math.sin(t*2.2)*m.layerH*0.6 : 0;   // gentler now the front moves
+    const off=Math.max(m.layerH*2, m.size[2]*0.01);
+    if(isTP && revealOn){
+      const fp=revealFrontPos(m, STATE.reveal);
+      nozOrigin=[fp[0], fp[1], fp[2]+off+bob];
+    } else if(isTP){
+      const xy=lastSolidEndpoint(m, clipZ);
+      if(xy) nozOrigin=[xy[0], xy[1], clipZ+off+bob];
+      else   nozOrigin=[m.center[0], m.center[1], clipZ+off+bob];
+    } else {
+      nozOrigin=[m.center[0], m.center[1], clipZ+off+bob];
+    }
+  }
+  return { clipZ, color, band, hemi: theme?1.0:0.35, bg,
+           nozOrigin, nozAlpha, w, h,
+           reveal: STATE.reveal, revealOn };
+}
+
+function render(){
+  resize();
+  const w=canvas.width, h=canvas.height;
+  const moving=camera.inertia();
+  if(moving) STATE.needsDraw=true;
+
+  // Reveal-front advance (toolpath LIVE while printing). Sweep the current
+  // layer's vertex span over estLayerSec, then HOLD at spanEnd — a stalled
+  // front at 100% is honest; the next layer tick snaps it forward. This is the
+  // only thing that keeps the loop continuously running while following.
+  const revealActive = STATE.mode==="toolpath" && STATE.following
+                    && STATE.phase==="printing";
+  if(revealActive){
+    advanceReveal(performance.now());
+    STATE.needsDraw=true;
+  }
+
+  // Bob (mesh + toolpath) also needs continuous frames while following+printing.
+  const animating = STATE.mesh && STATE.following && STATE.phase==="printing";
+  if(STATE.needsDraw || animating){
+    const aspect=w/Math.max(1,h);
+    renderer.draw(camera.view(), camera.proj(aspect), camera.eye(),
+                  frameParams(w,h));
+    STATE.needsDraw=false;
+
+    // First-frame timing: record when the scene first draws after load, then
+    // emit the QA log line exactly once so the CDP rig and logcat see it.
+    if(STATE._awaitFirstFrame){
+      STATE._awaitFirstFrame=false;
+      _T.first_frame = performance.now();
+      const fetch_ms   = Math.round(_T.fetch_body - _T.fetch_start);
+      const parse_ms   = Math.round(_T.parse);
+      const buffers_ms = Math.round(_T.buffers);
+      const first_frame_ms = Math.round(_T.first_frame - _T.fetch_start);
+      const _timings_payload = {
+        fetch_ms, parse_ms, buffers_ms, first_frame_ms,
+        bytes: _T.bytes, segments: _T.segments, fmt: _T.fmt,
+      };
+      // console.log is kept for the CDP gate and browser devtools.
+      console.log("QA viz.timings " + JSON.stringify(_timings_payload));
+      // postMessage for React Native WebView (Android logcat does not
+      // receive WebView console output; the app receives this via onMessage).
+      _rnwv_post({type:"viz.timings", ..._timings_payload});
+    }
+  }
+  requestAnimationFrame(render);
+}
+
+// Linearly sweep the reveal front across the current layer span in estLayerSec,
+// holding at spanEnd (no loop). Called per-frame while LIVE+printing.
+function advanceReveal(now){
+  const span=Math.max(1, STATE.spanEnd-STATE.spanStart);
+  const dur=Math.max(0.5, STATE.estLayerSec);
+  const elapsed=(now-STATE.revealT0)/1000;
+  const frac=Math.max(0, Math.min(1, elapsed/dur));
+  STATE.reveal=STATE.spanStart + frac*span;
+}
+
+/* ── Pointer input: orbit / pan / zoom, mouse + touch ─────────────────── */
+(function inputWiring(){
+  const pointers=new Map();
+  let lastPan=null, pinchDist=0, mode=null;   // mode: "orbit"|"pan"
+  canvas.addEventListener("pointerdown",(e)=>{
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pointers.size===1){
+      // right-drag → pan, else orbit
+      mode = (e.button===2) ? "pan" : "orbit";
+      lastPan={x:e.clientX,y:e.clientY};
+    } else if(pointers.size===2){
+      mode="pan";
+      const p=[...pointers.values()];
+      pinchDist=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y);
+      lastPan=midpoint();
+    }
+  });
+  canvas.addEventListener("pointermove",(e)=>{
+    if(!pointers.has(e.pointerId)) return;
+    const prev=pointers.get(e.pointerId);
+    const dx=e.clientX-prev.x, dy=e.clientY-prev.y;
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    const aspect=canvas.width/Math.max(1,canvas.height);
+    if(pointers.size>=2){
+      // pinch zoom + two-finger pan
+      const p=[...pointers.values()];
+      const d=Math.hypot(p[0].x-p[1].x,p[0].y-p[1].y);
+      if(pinchDist>0) camera.zoom(pinchDist/d);
+      pinchDist=d;
+      const mid=midpoint();
+      if(lastPan) camera.pan(mid.x-lastPan.x, mid.y-lastPan.y, aspect);
+      lastPan=mid;
+    } else if(mode==="pan"){
+      camera.pan(dx,dy,aspect);
+    } else {
+      camera.orbit(dx,dy);
+    }
+    STATE.needsDraw=true;
+  });
+  function up(e){
+    pointers.delete(e.pointerId);
+    if(pointers.size<2) pinchDist=0;
+    if(pointers.size===0){ mode=null; lastPan=null; }
+    else lastPan=midpoint();
+  }
+  canvas.addEventListener("pointerup",up);
+  canvas.addEventListener("pointercancel",up);
+  canvas.addEventListener("contextmenu",(e)=>e.preventDefault());
+  canvas.addEventListener("wheel",(e)=>{
+    e.preventDefault();
+    camera.zoom(Math.pow(1.0015, e.deltaY));
+    STATE.needsDraw=true;
+  },{passive:false});
+  function midpoint(){
+    const p=[...pointers.values()];
+    if(p.length===0) return {x:0,y:0};
+    let x=0,y=0; for(const q of p){x+=q.x;y+=q.y;}
+    return {x:x/p.length,y:y/p.length};
+  }
+})();
+
+/* ── WebGL context-loss: pause, then reinit on restore ────────────────── */
+canvas.addEventListener("webglcontextlost",(e)=>{
+  e.preventDefault();                      // required so 'restored' can fire
+  STATE.needsDraw=false;
+});
+canvas.addEventListener("webglcontextrestored",()=>{
+  try { renderer.reinit(); STATE.needsDraw=true; }
+  catch(err){ showError("network","Graphics context was lost and could not recover."); }
+});
+
+/* ── Visibility: stop polling when hidden, resume when shown ───────────── */
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden) stopPolling();
+  else { startPolling(); STATE.needsDraw=true; }
+});
+
+/* ── Debug API for headless validation & device QA ────────────────────── */
+window.__viz = {
+  setLayer(n){ setDisplayedLayer(n, true); },
+  setLiveLayer(n){ STATE.liveLayer=n;
+    if(STATE.mode==="toolpath") snapRevealToLayer(n, true);
+    if(STATE.following) setDisplayedLayer(n,false); updateLivePill(); },
+  setFollowing(b){ STATE.following=!!b;
+    if(b) setDisplayedLayer(STATE.liveLayer,false); updateLivePill(); },
+  setPhase(p){ STATE.phase=p; STATE.needsDraw=true; },
+  setColorMode(m){ STATE.colorMode=(m==="filament"?"filament":"theme"); updateColorChip(); STATE.needsDraw=true; },
+  toggleColor(){ colorBtn.click(); },
+  frameAll(){ if(STATE.mesh) camera.frame(STATE.mesh.center,STATE.mesh.size); STATE.needsDraw=true; },
+  // Render an error/loading overlay on demand (QA + device validation).
+  showError(kind,msg,sub){ showError(kind,msg,sub); },
+  showLoading(msg){ showLoading(msg||"fetching model…"); },
+  hideOverlay(){ hideOverlay(); },
+  mode(){ return STATE.mode; },        // "mesh" | "toolpath"
+  // Set the reveal front to a fraction (0..1) of the current layer span. Back-
+  // dates the sweep clock so the per-frame advance reproduces this frac rather
+  // than overwriting it on the next tick (lets QA freeze the front for a shot).
+  setReveal(frac){
+    frac=Math.max(0,Math.min(1, Number(frac)||0));
+    const span=Math.max(1, STATE.spanEnd-STATE.spanStart);
+    STATE.reveal=STATE.spanStart + frac*span;
+    STATE.revealT0=performance.now() - frac*Math.max(0.5,STATE.estLayerSec)*1000;
+    STATE.needsDraw=true;
+  },
+  setEstLayerSec(s){ STATE.estLayerSec=Math.max(0.5, Number(s)||30); },
+  state(){
+    const span=Math.max(1, STATE.spanEnd-STATE.spanStart);
+    const revealFrac=(STATE.mode==="toolpath")
+      ? Math.max(0,Math.min(1,(STATE.reveal-STATE.spanStart)/span)) : null;
+    // timings: ms for each phase from fetch_start baseline (0 = not yet measured).
+    const timings = {
+      fetch_ms:   _T.fetch_body  ? Math.round(_T.fetch_body  - _T.fetch_start) : null,
+      parse_ms:   _T.parse       ? Math.round(_T.parse)                         : null,
+      buffers_ms: _T.buffers     ? Math.round(_T.buffers)                       : null,
+      first_frame_ms: _T.first_frame ? Math.round(_T.first_frame - _T.fetch_start) : null,
+      bytes:    _T.bytes,
+      segments: _T.segments,
+      fmt:      _T.fmt,
+    };
+    return {
+      displayedLayer:STATE.displayedLayer, liveLayer:STATE.liveLayer,
+      totalLayers:STATE.totalLayers, following:STATE.following,
+      phase:STATE.phase, colorMode:STATE.colorMode, mode:STATE.mode,
+      hasFilamentColor:STATE.hasFilamentColor,
+      ready: STATE.loadState==="ready",   // true only when geometry is loaded with no error
+      loadState: STATE.loadState,         // "loading" | "ready" | "error"
+      segmentCount:(STATE.mesh&&STATE.mesh.kind==="toolpath")?STATE.mesh.segmentCount:null,
+      revealFrac, estLayerSec:STATE.estLayerSec,
+      timings }; },
+};
+
+/* ── Go ───────────────────────────────────────────────────────────────── */
+function boot(){
+  try { renderer.getContext(); }
+  catch(e){ return showError("network","Your browser could not start WebGL."); }
+  resize();
+  render();
+  startPolling();
+  loadMesh();
+}
+boot();
+</script>
+</body>
+</html>

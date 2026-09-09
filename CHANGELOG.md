@@ -1,0 +1,75 @@
+# Changelog
+
+All notable changes to Bambu Bridge are documented here.
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.1] — 2026-09-09
+
+- Prepared a fresh public source history with operator data and private captures excluded.
+- License the combined release under AGPL-3.0-only and retain third-party notices.
+- Add corresponding-source links and a Gridline project site.
+- Include complete notices in the Home Assistant build context.
+- Document the limits of HMS provenance and hardware validation.
+
+## [0.1.0] — 2026-06-13
+
+Local development baseline, not a prior release from this repository. Covers the full P1S LAN bridge stack from wire protocol
+to companion-app API and Home Assistant integration.
+
+### Added
+
+#### 3D Print-Progress Viewer
+- 3MF mesh extraction and gcode toolpath parsing (`protocol/threemf.py`,
+  `protocol/gcode_path.py`).
+- Binary toolpath format with 4-byte-aligned header for efficient transfer.
+- `VizCache` service pre-warms toolpath data in the background after a file
+  is sliced and uploaded.
+- ETag / 304 Not Modified + gzip compression on the viz endpoint; client-side
+  timing instrumentation.
+- React Native `postMessage` bridge for WebView-based viewer.
+
+#### Layered Control Surface
+- Four-tier safety model: GREEN (normal), YELLOW (caution), RED (stop-only),
+  BLACK (emergency / e-stop); all guards are fail-closed.
+- Advanced router (`api/advanced.py`) exposes tier-gated commands; filament
+  management (`api/filament.py`) likewise tier-gated.
+
+#### Sliced-Date Persistence and SD Listing
+- Sliced dates persisted in SQLite and returned newest-first in the SD-card
+  file listing (`api/files.py`, `slicedoc/`).
+
+#### Home Assistant Integration and Add-on
+- HA custom integration (`homeassistant/integration/`) with config flow, 15+
+  entity platforms (sensor, binary sensor, camera, button, fan, light, number,
+  select), diagnostics, and Lovelace example automations.
+- HA Supervisor add-on (`homeassistant/addon/`): multi-arch Docker image
+  (amd64 / aarch64 on Alpine 3.20 Python 3.12); vendor-sync script keeps
+  add-on source in lockstep with the main tree.
+
+#### Push Notifications
+- ntfy dispatcher (`push/ntfy.py`) sends print-done / spaghetti-detected
+  events to a self-hosted ntfy server.
+
+#### Spaghetti Detection
+- Optional computer-vision layer (`vision/`) wraps a local detector model;
+  disabled by default (`spaghetti_detection: false`).
+
+#### Release Infrastructure
+- `Makefile` with `build`, `verify-dist`, `integration-zip`, `addon-vendor`,
+  `addon-vendor-check`, `bump-version`, and `export-release` targets.
+- `scripts/export-release.sh` produces a clean release tree via `git archive`
+  with a safety guard that aborts on any sensitive-keyword hit.
+- `deploy/install.sh` substitutes the invoking `$USER` into the systemd unit
+  and installs it.
+- `homeassistant/integration/release-zip.sh` packages the HA integration into
+  a distributable zip.
+- `RELEASING.md` documents the four version sites and the new-repo release
+  flow (dev history never pushed).
+- Full MIT `LICENSE` file; pyproject classifiers, keywords, and project URLs.
+- `pytest-timeout` declared in dev dependencies; 30-second per-test timeout.
+
+[Unreleased]: https://github.com/thereprocase/bambu-bridge/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/thereprocase/bambu-bridge/releases/tag/v0.1.1

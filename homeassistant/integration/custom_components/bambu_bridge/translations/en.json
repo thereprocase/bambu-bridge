@@ -1,0 +1,96 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Bambu Bridge",
+        "description": "Enter the address of your bambu-bridge server and its API key. The bridge talks to the printer; Home Assistant talks only to the bridge.",
+        "data": {
+          "base_url": "Bridge base URL",
+          "api_key": "API key"
+        },
+        "data_description": {
+          "base_url": "For example http://192.168.1.10:8080 — host and port only, no /api path.",
+          "api_key": "The bearer token configured on the bridge (BRIDGE_API_KEY)."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the bridge at that URL. Check the host, port, and that the bridge is running.",
+      "invalid_auth": "The bridge rejected that API key.",
+      "unknown": "Unexpected error talking to the bridge."
+    },
+    "abort": {
+      "already_configured": "This bridge is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "nozzle_temp": { "name": "Nozzle temperature" },
+      "nozzle_target": { "name": "Nozzle target" },
+      "bed_temp": { "name": "Bed temperature" },
+      "bed_target": { "name": "Bed target" },
+      "chamber_temp": { "name": "Chamber temperature" },
+      "progress": { "name": "Progress" },
+      "current_layer": { "name": "Current layer" },
+      "total_layers": { "name": "Total layers" },
+      "time_remaining": { "name": "Time remaining" },
+      "print_started": { "name": "Print started" },
+      "phase": {
+        "name": "Phase",
+        "state": {
+          "idle": "Idle",
+          "preparing": "Preparing",
+          "printing": "Printing",
+          "paused": "Paused",
+          "completed": "Completed",
+          "failed": "Failed",
+          "unknown": "Unknown"
+        }
+      },
+      "job_name": { "name": "Job" },
+      "headline": { "name": "Status" },
+      "print_speed": { "name": "Print speed" },
+      "flow": { "name": "Flow" },
+      "ams_active_slot": { "name": "AMS active slot" },
+      "ams_slot": { "name": "AMS slot {slot}" }
+    },
+    "binary_sensor": {
+      "connected": { "name": "Connected" },
+      "printing": { "name": "Printing" },
+      "paused": { "name": "Paused" },
+      "problem": { "name": "Problem" }
+    },
+    "button": {
+      "pause": { "name": "Pause" },
+      "resume": { "name": "Resume" },
+      "stop": { "name": "Stop" },
+      "home": { "name": "Home axes" }
+    },
+    "camera": {
+      "camera": { "name": "Camera" }
+    },
+    "light": {
+      "chamber_light": { "name": "Chamber light" }
+    },
+    "number": {
+      "nozzle_target": { "name": "Nozzle target temperature" },
+      "bed_target": { "name": "Bed target temperature" }
+    },
+    "fan": {
+      "part_fan": { "name": "Part cooling fan" },
+      "aux_fan": { "name": "Auxiliary fan" },
+      "chamber_fan": { "name": "Chamber fan" }
+    },
+    "select": {
+      "print_speed_level": {
+        "name": "Print speed",
+        "state": {
+          "silent": "Silent",
+          "standard": "Standard",
+          "sport": "Sport",
+          "ludicrous": "Ludicrous"
+        }
+      }
+    }
+  }
+}

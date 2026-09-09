@@ -1,0 +1,13 @@
+# Daily DB backup at 03:30 (±15 min jitter so a fleet doesn't sync-thunder),
+# with catch-up if the box was off. Enable: systemctl enable --now
+# bambu-bridge-backup.timer
+[Unit]
+Description=Bambu Bridge — daily DB backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

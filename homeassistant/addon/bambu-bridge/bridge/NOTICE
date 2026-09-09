@@ -1,0 +1,14 @@
+Bambu Bridge 0.1.1
+Copyright (c) 2026 Bambu Bridge contributors
+
+This distribution is licensed under GNU AGPL version 3 only. See LICENSE.
+The maintainer confirmed that the implementation is personal work.
+
+The HMS module's earlier documentation referenced Bambu Studio (Bambu Lab,
+AGPL-3.0) and ha-bambulab (MIT). These references and the community project's
+notice are retained. The release does not claim that these references grant
+rights to proprietary Bambu plugins, firmware, services, logos or print models.
+
+The original contributor MIT notice is retained in LICENSES/MIT-original.txt;
+ha-bambulab's notice is in LICENSES/ha-bambulab-MIT.txt.
+See THIRD_PARTY.md for the scope and limitations of the provenance review.

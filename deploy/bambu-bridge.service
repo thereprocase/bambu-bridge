@@ -1,0 +1,68 @@
+# systemd unit for the Bambu Bridge (see deploy/DEPLOY.md).
+#
+# !! IMPORTANT: User= and Group= MUST be set to the user that will run the
+# !! bridge. Use deploy/install.sh to install this unit — it substitutes the
+# !! correct user automatically. Do NOT edit this template file directly.
+#
+# Runs as the unit's `User=` inside the host's WSL2 distro, 24/7. The unit
+# auto-starts when systemd reaches multi-user.target — which happens whenever
+# WSL2 itself starts (see DEPLOY.md for the one-time Windows-side trick to
+# keep WSL2 alive across logins / boots).
+#
+# Install layout — all paths use systemd's `%h` user-home specifier so the
+# unit is portable across users without sed-substitution at install time:
+#   %h/bambu-bridge                 code + .venv (read-only at run)
+#   %h/.config/bambu-bridge/        bridge.env (chmod 600; optional, the
+#                                   defaults below cover everything except
+#                                   BRIDGE_API_KEY)
+#   %h/.local/share/bambu-bridge/   jobs.db + files/ + backups/
+#
+# The bridge binds :8080 (>1024) so it needs no capabilities at all.
+
+[Unit]
+Description=Bambu Bridge — self-hosted P1S LAN intermediary
+Documentation=https://github.com/thereprocase/bambu-bridge
+# Needs the LAN up to reach the printer (MQTT 8883 / FTPS 990 / camera 6000).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# PLACEHOLDER — deploy/install.sh substitutes the real user at install time.
+User=BRIDGE_USER_PLACEHOLDER
+Group=BRIDGE_USER_PLACEHOLDER
+WorkingDirectory=%h/bambu-bridge
+# Path defaults — overridable in EnvironmentFile. `%h` IS expanded in
+# Environment= / WorkingDirectory= / ExecStart=, but NOT inside the
+# EnvironmentFile body (that's literal); so the storage paths live here.
+Environment=BRIDGE_DB_PATH=%h/.local/share/bambu-bridge/jobs.db
+Environment=BRIDGE_FILES_DIR=%h/.local/share/bambu-bridge/files
+# Bring in BRIDGE_API_KEY etc. (file is optional; '-' prefix tolerates absence).
+EnvironmentFile=-%h/.config/bambu-bridge/bridge.env
+ExecStart=%h/bambu-bridge/.venv/bin/bambu-bridge
+
+Restart=on-failure
+RestartSec=5
+# A failed restart loop should back off, not hammer the printer (gotcha #3:
+# the P1S accepts only ~3 MQTT clients).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Moderate hardening — this is a personal LAN box, not a multi-tenant host.
+# ProtectHome is *off* on purpose: we run AS repro and write under ~/.
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

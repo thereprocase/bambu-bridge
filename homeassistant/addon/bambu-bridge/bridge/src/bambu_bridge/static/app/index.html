@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!--
+  Bambu Bridge — web SPA shell
+  ──────────────────────────────────────────────────────────────────────────
+  Build-free, dependency-free, no-CDN single-page app served by the bridge
+  itself as static package-data under src/bambu_bridge/static/app/.
+
+  This shell is DUMB and UNAUTHENTICATED — it exposes no printer data. Every
+  byte of data still requires the Bearer key, captured at first run and stored
+  in localStorage (bbl.apiKey). The shell just boots main.js, which decides
+  onboarding-vs-dashboard from the stored key.
+
+  No inline logic beyond the module import. Read every file as-is — no build,
+  no minify, no transpile.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101113">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Bambu Bridge — watch and control your printer over your own network.">
+  <title>Bambu Bridge</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23101113'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23FFB000'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app/styles.css">
+  <link rel="manifest" href="/app/manifest.webmanifest">
+</head>
+<body>
+  <noscript>
+    <div style="padding:24px;max-width:560px;margin:0 auto;font-family:sans-serif;color:#F1F1F1;">
+      <h1 style="font-size:20px;">Bambu Bridge needs JavaScript</h1>
+      <p>This app is a JavaScript single-page app served by your bridge. Enable
+      JavaScript in your browser to connect to your printer.</p>
+    </div>
+  </noscript>
+
+  <!--
+    #app is the single mount root. main.js renders the active screen into it.
+    The nav skeleton below is the bottom-tab/left-rail chrome; main.js wires
+    its active state and hides it while the onboarding wizard owns the screen.
+    The CSS switches it from a bottom tab bar (phone) to a left rail (desktop).
+  -->
+  <div id="app"></div>
+
+  <nav id="nav" class="nav" hidden aria-label="Primary">
+    <a class="nav__item" data-route="#/" href="#/">
+      <svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>
+      </svg>
+      <span>Printer</span>
+    </a>
+    <a class="nav__item" data-route="#/print" href="#/print">
+      <svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/>
+        <rect x="6" y="14" width="12" height="7"/>
+      </svg>
+      <span>Print</span>
+    </a>
+    <a class="nav__item" data-route="#/settings" href="#/settings">
+      <svg class="nav__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      <span>Settings</span>
+    </a>
+  </nav>
+
+  <script type="module" src="/app/main.js"></script>
+</body>
+</html>

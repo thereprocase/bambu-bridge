@@ -1,0 +1,132 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bambu-bridge"
+version = "0.1.1"
+description = "Self-hosted intermediary server for the Bambu P1S LAN protocol"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-only" }
+license-files = ["LICENSE", "NOTICE", "LICENSES/*"]
+authors = [{ name = "Bambu Bridge" }]
+keywords = ["bambu", "3d-printing", "fastapi", "home-assistant", "mqtt", "iot"]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Topic :: Printing",
+    "Topic :: Home Automation",
+    "Intended Audience :: End Users/Desktop",
+    "Development Status :: 4 - Beta",
+]
+
+# Deps pinned to a minor series (patch releases allowed).
+dependencies = [
+    "fastapi~=0.115.0",
+    "uvicorn[standard]~=0.32.0",
+    "aiomqtt~=2.3.0",
+    "aioftp~=0.23.0",
+    "aiosqlite~=0.20.0",
+    "pydantic~=2.9.0",
+    "pydantic-settings~=2.6.0",
+    "structlog~=24.4.0",
+    "httpx~=0.27.0",
+    "python-multipart~=0.0.12",
+    "cryptography~=48.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.3.0",
+    "pytest-asyncio~=0.24.0",
+    "ruff~=0.7.0",
+    "mypy~=1.13.0",
+    "pre-commit~=4.0.0",
+    "types-aiofiles~=24.1.0",
+    "amqtt~=0.11.0",          # in-process MQTT broker for the mock-printer fixture
+    "trustme~=1.2.0",         # throwaway self-signed certs for TLS round-trip tests
+]
+
+[project.urls]
+Homepage = "https://github.com/thereprocase/bambu-bridge"
+Source   = "https://github.com/thereprocase/bambu-bridge"
+Issues   = "https://github.com/thereprocase/bambu-bridge/issues"
+
+[project.scripts]
+bambu-bridge = "bambu_bridge.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bambu_bridge"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "tests/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "LICENSES/",
+    "THIRD_PARTY.md",
+    "VALIDATION.md",
+    "pyproject.toml",
+]
+exclude = [
+    "dev-notes/",
+    "homeassistant/",
+    "tools/",
+    "*.md.bak",
+    "p1s-ca.pem.example",
+    ".local/",
+    "probes/",
+    "scripts/",
+    "deploy/",
+]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "ASYNC", # flake8-async
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "B008",      # FastAPI Depends() in defaults is idiomatic
+    "ASYNC109",  # a `timeout=` kwarg on network coroutines is a deliberate API
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately poll with sleep loops against live in-process servers.
+"tests/**" = ["B011", "ASYNC110"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["bambu_bridge"]
+mypy_path = "src"
+warn_unreachable = true
+disallow_any_generics = true
+
+[[tool.mypy.overrides]]
+module = ["aioftp.*", "aiomqtt.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

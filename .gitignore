@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local config / data
+.local/
+.env
+*.db
+*.db-wal
+*.db-shm
+/var/
+files/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# === Investigation artifacts — SENSITIVE, never commit (Aragorn/Gollum/Gimli) ===
+# Printer-specific TLS chain (Subject CN = serial). Keep the .example template only.
+p1s-ca.pem
+*.pem
+!p1s-ca.pem.example
+# Telemetry captures expose serial, AMS chip/unit IDs, encoded IP, job names
+*.jsonl
+mqtt-log-*
+p1s-push_status-*
+p1s-capture*
+# Camera frames may reveal the physical workspace
+probes/*.jpg
+# Ephemeral trial logs (not findings)
+*.err
+probes/orca_*.log
+probes/orca_help.txt
+probes/disp_*.log
+probes/sliced/
+# NOTE: src/, p1s-ca.pem.example and probes/*.gcode(.3mf)/*.stl/*.json ARE tracked.
+
+# === Internal development notes — relocated out of the tracked tree (release) ===
+# War-council reviews, investigation logs and ops notes live on-disk under
+# dev-notes/ but are not shipped. SILVER-ACCESS.md/CONNECTING.md additionally
+# purged from history (they held infra access notes). Never re-track these.
+dev-notes/
+/SILVER-ACCESS.md
+/CONNECTING.md
+/REPORT.md
+/FOLLOWUP.md
+/SYNTHESIS-*.md
+/recommend-*.md
+
+# regenerable HA deploy bundle
+homeassistant-deploy.tar.gz

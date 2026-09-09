@@ -1,0 +1,27 @@
+name: Bambu Bridge
+version: "0.1.1"
+slug: bambu_bridge
+description: >-
+  LAN bridge for Bambu Lab printers — a translated REST/WebSocket API that
+  feeds the Bambu Bridge Home Assistant integration and the companion app.
+url: "https://github.com/thereprocase/bambu-bridge/tree/main/homeassistant/addon"
+arch:
+  - amd64
+  - aarch64
+init: false
+startup: application
+boot: auto
+# Host networking: the bridge binds :8080 directly on the host so the
+# integration and the phone app reach it at http://<ha-host>:8080. Outbound
+# printer connections (MQTT 8883 / FTPS 990 / camera 6000) work either way.
+host_network: true
+options:
+  api_key: ""
+  log_level: info
+  spaghetti_detection: false
+schema:
+  api_key: str
+  log_level: list(debug|info|warning|error)
+  spaghetti_detection: bool
+  ntfy_url: "url?"
+  ntfy_topic: "str?"

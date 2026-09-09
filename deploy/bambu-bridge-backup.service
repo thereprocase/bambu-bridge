@@ -1,0 +1,19 @@
+# Oneshot paired with bambu-bridge-backup.timer. Runs as the same user as
+# the main unit so the backup lands beside the live DB.
+#
+# Paths use the systemd %h specifier (expands to the unit's user's HOME),
+# matching bambu-bridge.service. EnvironmentFile uses the '-' tolerance
+# prefix so a missing env file doesn't hard-fail the unit.
+[Unit]
+Description=Bambu Bridge — SQLite online backup
+After=bambu-bridge.service
+
+[Service]
+Type=oneshot
+User=repro
+Group=repro
+EnvironmentFile=-%h/.config/bambu-bridge/bridge.env
+ExecStart=%h/bambu-bridge/deploy/backup.sh
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
