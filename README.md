@@ -20,7 +20,7 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.1.2 is an AGPL-3.0-only source release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.1.3 is an AGPL-3.0-only source release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
 

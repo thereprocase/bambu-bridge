@@ -24,10 +24,16 @@ def redact(value: str) -> str:
 
 def _record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
     record = _original_factory(*args, **kwargs)
-    # Redact after interpolation, including Uvicorn's WebSocket request logger.
-    # A handler/root-logger filter alone misses non-propagating Uvicorn loggers.
-    record.msg = redact(record.getMessage())
-    record.args = ()
+    # AccessFormatter unpacks the five HTTP access arguments itself. Preserve
+    # their types and shape while redacting the request target before any sink.
+    if record.name == "uvicorn.access" and isinstance(record.args, tuple) and len(record.args) == 5:
+        record.args = tuple(redact(value) if isinstance(value, str) else value
+                            for value in record.args)
+    else:
+        # WebSocket messages use the regular formatter. A handler/root-logger
+        # filter alone misses non-propagating Uvicorn loggers.
+        record.msg = redact(record.getMessage())
+        record.args = ()
     if record.exc_info:
         record.exc_text = redact("".join(traceback.format_exception(*record.exc_info)))
         record.exc_info = None

@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from uvicorn.logging import AccessFormatter
 
 from bambu_bridge import log_redaction
 from bambu_bridge.api import files, printers
@@ -62,6 +63,29 @@ def test_uvicorn_credentials_are_redacted_before_handlers() -> None:
                                                     "nested": {"message": secret}})
     assert secret not in json.dumps(event)
     assert "12345678" not in json.dumps(event)
+
+
+@pytest.mark.parametrize("status_code", [200, 401])
+def test_uvicorn_http_access_formatter_keeps_redacted_arguments(status_code: int) -> None:
+    secret = "synthetic-access-log-secret"
+    log_redaction.install(secret)
+    record = logging.getLogger("uvicorn.access").makeRecord(
+        "uvicorn.access", logging.INFO, __file__, 0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:12345", "GET", f"/status?token={secret}&api_key=unknown&view=1",
+         "1.1", status_code), None,
+    )
+    formatter = AccessFormatter(
+        '%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False,
+    )
+    rendered = formatter.format(record)
+    plain = logging.Formatter().format(record)
+    for output in (rendered, plain):
+        assert secret not in output
+        assert "unknown" not in output
+        assert "token=[REDACTED]&api_key=[REDACTED]&view=1" in output
+        assert str(status_code) in output
+    assert isinstance(record.args, tuple) and record.args[-1] == status_code
 
 
 class FakeJobs:

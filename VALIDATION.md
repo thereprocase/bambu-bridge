@@ -1,4 +1,17 @@
-# Validation — 0.1.2, 9 September 2026
+# Validation — 0.1.3, 9 September 2026
+
+The targeted release/HMS suite passes all 25 tests, including two regressions
+using Uvicorn's actual HTTP access formatter for successful and unauthorized
+responses. Both the native and plain formatters retain useful request/status
+fields while excluding known and generic query credentials.
+
+The release is gated by the complete Python 3.12/3.13 matrix, lint, typing,
+distribution/vendor checks and credential scanning. [CI runs and test reports](https://github.com/thereprocase/bambu-bridge/actions/workflows/test.yml)
+identify the tested commit for each release. Live read-only acceptance additionally
+checks telemetry, preview delivery, authentication, WebSocket redaction and
+absence of access-log formatter errors after deployment.
+
+## Previous release — 0.1.2, 9 September 2026
 
 The complete Linux suite passed on **Python 3.12 and Python 3.13**:
 **852 passing tests and nine skips on each version**. Ruff and strict mypy also

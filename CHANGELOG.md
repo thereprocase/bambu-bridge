@@ -6,6 +6,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-09-09
+
+- Fix HTTP access logging with Uvicorn's native formatter. Credential redaction
+  now preserves the five typed arguments that formatter requires; 0.1.2's
+  interpolation caused access-log formatting errors even when requests succeeded.
+- Exercise successful and unauthorized HTTP requests with the actual access
+  formatter, and retain credential redaction in both structured and plain logs.
+
+
 ## [0.1.2] — 2026-09-09
 
 - Restore the deployed MQTT reconnect overflow guard and 15-second retry cap.
