@@ -25,11 +25,22 @@ operator would need to debug a misclassification.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from bambu_bridge.hms import lookup as hms_lookup
+from bambu_bridge.hms import (
+    JobContext,
+    decode_hms_entry,
+    stage_text,
+)
+from bambu_bridge.hms import (
+    lookup as hms_lookup,
+)
+from bambu_bridge.hms import (
+    wiki_url as hms_wiki_url,
+)
 
 # --------------------------------------------------------------------------- #
 # Types
@@ -83,6 +94,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
     benign default so partial state still produces a coherent shape.
     """
     phase, phase_reason = _phase_and_reason(raw)
+    job_ctx = _job_context(raw)
     return {
         "printer_id": ctx.printer_id,
         "serial": ctx.serial,
@@ -95,10 +107,13 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
             "last_failure_phase": ctx.last_failure_phase,
         },
         "cert_status": ctx.cert_status,
+        "expected_fingerprint": ctx.expected_fingerprint,
         "phase": phase,
         "phase_reason": phase_reason,
         "headline": _headline(phase, phase_reason, raw, ctx.connected, ctx.last_telemetry_at),
         "job": _job_block(raw, phase, ctx),
+        "job_context": job_ctx,
+        "job_anomaly": _job_anomaly(raw),
         "temps": _temps(raw),
         "cooling": _cooling(raw),
         "lights": _lights(raw),
@@ -106,6 +121,8 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
         "motion": _motion(raw),
         "ams": _ams(raw, ctx),
         "print_error": _print_error(raw),
+        "stage": _stage(raw),
+        "hms": _hms_list(raw, job_ctx),
         "_raw": _raw_passthrough(raw),
     }
 
@@ -183,6 +200,110 @@ def _print_error_active(raw: dict[str, Any]) -> bool:
         code = raw.get("mc_print_error_code")
         return code not in (None, 0, "0", "")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Stage ids that correspond to filament unload/retract/cut operations.
+# These indicate the printer is in the "finishing" unload phase even when
+# gcode_state may still read RUNNING or PAUSE.
+# Source: hms.py _STAGE_TEXT table.
+#   22 = "Filament unloading"
+#    4 = "Changing filament" (covers mid-print filament swap unload+load)
+# ---------------------------------------------------------------------------
+_UNLOAD_STAGE_IDS: frozenset[int] = frozenset({4, 22})
+
+
+def _job_context(raw: dict[str, Any]) -> JobContext:
+    """Derive the job_context root field.
+
+    Returns one of "no_job" | "printing" | "finishing" | "done".
+
+    Classification rules:
+    - "no_job":    gcode_state IDLE (or absent/unknown with no job indicators).
+    - "done":      gcode_state FINISH.
+    - "finishing": gcode_state RUNNING or PAUSE with mc_percent >= 97, OR
+                   stg_cur is a filament-unload/cut/retract-family stage id
+                   (see _UNLOAD_STAGE_IDS).  PAUSE at 99–100% falls here —
+                   that is the primary operator scenario (AMS retract jam after
+                   last layer, printer paused waiting for the user).
+    - "printing":  gcode_state RUNNING/PAUSE/PREPARE/SLICING with percent < 97
+                   (or percent absent), and stg_cur is not an unload stage.
+
+    Edge choices:
+    - PREPARE/SLICING (no percent): classified "printing" because a job is in
+      progress and the operator needs to treat errors as actionable.
+    - Unknown/absent gcode_state: classified "no_job" — insufficient signal.
+    - Percent coercion via _as_int handles string/float values from the P1S.
+    """
+    gs = raw.get("gcode_state")
+
+    if gs == "FINISH":
+        return "done"
+
+    if gs in (None, "UNKNOWN", "IDLE"):
+        return "no_job"
+
+    # For all active states, check stg_cur for unload-family stages first —
+    # these dominate regardless of percent.
+    stage_id = _as_int(raw.get("stg_cur"))
+    if stage_id is not None and stage_id in _UNLOAD_STAGE_IDS:
+        return "finishing"
+
+    # Check percent for RUNNING/PAUSE/FAILED at >= 97. FAILED deliberately
+    # classifies by job position, NOT "no_job": a failed print's own HMS
+    # entries must never be marked stale (stale is no_job-only), and a
+    # failure during end-of-print cleanup still earns the finishing-context
+    # advice ("your part is complete").
+    if gs in ("RUNNING", "PAUSE", "FAILED"):
+        pct = _as_int(raw.get("mc_percent"))
+        if pct is not None and pct >= 97:
+            return "finishing"
+
+    return "printing"
+
+
+def _job_anomaly(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Detect a silent-stop anomaly: FINISH with percent well short of 100.
+
+    Returns a structured anomaly object when gcode_state == FINISH and
+    coerced mc_percent is present and < 99, AND the layer data does not
+    indicate a complete print.  Returns None in all other cases.
+
+    The most common root cause is SD-card degradation (0x0500C011): the
+    printer stops mid-print but reports FINISH/IDLE with a low percent —
+    no error code is raised.  This is a pure translate-layer derivation
+    (stateless); the APK renders it as a warning card.
+
+    Layer-completion guard (device-proven bug fix): the P1S under-reports
+    mc_percent after FINISH — a cleanly completed 581/581-layer print was
+    observed at ~97% after FINISH.  When both layer_num and total_layer_num
+    are present and total > 0 and layer_num >= total_layer_num, the print
+    completed all layers and the low percent is a firmware under-count, not
+    a silent stop.  Suppress the anomaly in that case.
+    """
+    gs = raw.get("gcode_state")
+    if gs != "FINISH":
+        return None
+    pct = _as_int(raw.get("mc_percent"))
+    if pct is None:
+        return None
+    if pct >= 99:
+        return None
+    # Layer-completion guard: if layer_num >= total_layer_num (both present,
+    # total > 0) the printer reached its final layer — suppress the false
+    # positive that fires when mc_percent is under-reported after FINISH.
+    layer = _as_int(raw.get("layer_num"))
+    total = _as_int(raw.get("total_layer_num"))
+    if layer is not None and total is not None and total > 0 and layer >= total:
+        return None
+    return {
+        "type": "short_finish",
+        "text": (
+            f"Print ended early — printer reports finished at {pct}%. "
+            "This can indicate a silent SD-card failure."
+        ),
+        "percent": pct,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -608,12 +729,79 @@ def build_print_error(code: Any) -> dict[str, Any] | None:
         "category": entry["category"],
         "severity": entry["severity"],
         "remediation": entry["remediation"],
+        "wiki_url": hms_wiki_url(hex_form),
         "_raw": code,
     }
 
 
 def _print_error(raw: dict[str, Any]) -> dict[str, Any] | None:
     return build_print_error(raw.get("mc_print_error_code") or raw.get("print_error"))
+
+
+# --------------------------------------------------------------------------- #
+# stage block — stg_cur sub-stage decoding
+# --------------------------------------------------------------------------- #
+
+
+def _stage(raw: dict[str, Any]) -> dict[str, Any]:
+    """Translate ``stg_cur`` → ``{"id": <int|None>, "text": <str|None>}``.
+
+    The P1S ships ``stg_cur`` as a number-or-string (coerced via ``_as_int``).
+    255 / -1 are idle sentinels: id is preserved but text is ``None`` so
+    clients can distinguish "idle/no sub-stage" from an unknown id.
+    """
+    raw_val = raw.get("stg_cur")
+    stage_id = _as_int(raw_val)
+    if stage_id is None:
+        return {"id": None, "text": None}
+    return {"id": stage_id, "text": stage_text(stage_id)}
+
+
+# --------------------------------------------------------------------------- #
+# hms block — active HMS health-management entries
+# --------------------------------------------------------------------------- #
+
+
+def _hms_list(raw: dict[str, Any], job_context: JobContext | None = None) -> list[dict[str, Any]]:
+    """Decode the MQTT ``hms[]`` array into a list of structured entries.
+
+    Each entry in the printer's ``hms`` payload is ``{"attr": int, "code": int}``.
+    The P1S can ship these as ints or as strings — both are coerced.
+
+    Returns an empty list when the printer reports no active HMS entries.
+    Each decoded entry mirrors the shape of ``build_print_error`` plus
+    ``wiki_url`` and the phase-aware fields: ``{code, hex, text, category,
+    severity, remediation, wiki_url, context_note, stale, _raw}``.
+
+    ``job_context`` is passed through to ``decode_hms_entry`` to populate
+    ``context_note`` and ``stale``.  When None (the default) those fields
+    default to null/false for backward compatibility.
+    """
+    hms_raw = raw.get("hms")
+    if not isinstance(hms_raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in hms_raw:
+        if not isinstance(item, dict):
+            continue
+        attr = _as_int(item.get("attr"))
+        code = _as_int(item.get("code"))
+        if attr is None or code is None:
+            continue
+        decoded = decode_hms_entry(attr, code, job_context)
+        result.append({
+            "code": f"{attr}:{code}",
+            "hex": decoded["hex"],
+            "text": decoded["user_message"],
+            "category": decoded["category"],
+            "severity": decoded["severity"],
+            "remediation": decoded["remediation"],
+            "wiki_url": decoded["wiki_url"],
+            "context_note": decoded["context_note"],
+            "stale": decoded["stale"],
+            "_raw": item,
+        })
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -629,8 +817,22 @@ def _raw_passthrough(raw: dict[str, Any]) -> dict[str, Any]:
     firmware addition, an obscure category like `system` or `liveview`,
     an undocumented count) lives here for the APK's dev-mode inspector
     and the operator's debug log.
+
+    Non-finite floats are scrubbed to None: json.dumps renders them as
+    Infinity/NaN, which JSON.parse rejects — one such value anywhere in
+    the passthrough would drop the whole WS snapshot client-side.
     """
-    return dict(raw)
+    return {k: _scrub_nonfinite(v) for k, v in raw.items()}
+
+
+def _scrub_nonfinite(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _scrub_nonfinite(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_nonfinite(v) for v in value]
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -667,7 +869,9 @@ def _as_int(value: Any) -> int | None:
         return None  # bool is int subclass — exclude
     try:
         return int(float(value))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
+        # OverflowError: int(float("inf")) / int(float("-inf")) — not caught by
+        # ValueError or TypeError; treat infinity as unparseable (return None).
         return None
 
 
@@ -677,6 +881,9 @@ def _as_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     try:
-        return float(value)
+        result = float(value)
     except (ValueError, TypeError):
         return None
+    # json.dumps renders inf/nan as the non-standard tokens Infinity/NaN,
+    # which JSON.parse rejects — one such value drops the whole WS snapshot.
+    return result if math.isfinite(result) else None

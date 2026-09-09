@@ -64,9 +64,14 @@ if TYPE_CHECKING:
 
 import structlog
 
+from bambu_bridge.config import Settings
 from bambu_bridge.protocol.tls import insecure_tls_context
 
 log = structlog.get_logger(__name__)
+
+
+class TransferTooLarge(ValueError):
+    """A buffered transfer exceeded the configured memory budget."""
 
 # Maximum number of per-file MDTM round-trips issued as a fallback.
 # Beyond this cap the files receive modified_at = None rather than hanging
@@ -245,6 +250,7 @@ class FtpsTransfer:
         self.port = port
         self._access_code = access_code
         self._ssl_context = ssl_context
+        self._max_bytes = Settings().bridge_max_transfer_bytes
         self._log = log.bind(ip=ip)
 
     # ----------------------------------------------------------------- #
@@ -284,8 +290,17 @@ class FtpsTransfer:
     def _download(self, remote_path: str) -> bytes:
         ftp = self._connect()
         chunks: list[bytes] = []
+        total = 0
+
+        def receive(chunk: bytes) -> None:
+            nonlocal total
+            total += len(chunk)
+            if total > self._max_bytes:
+                raise TransferTooLarge(f"File exceeds {self._max_bytes} byte transfer limit")
+            chunks.append(chunk)
+
         try:
-            ftp.retrbinary(f"RETR {remote_path}", chunks.append)
+            ftp.retrbinary(f"RETR {remote_path}", receive)
         finally:
             self._close(ftp)
         return b"".join(chunks)
@@ -498,6 +513,8 @@ class FtpsTransfer:
         remote_dir: str = UPLOAD_DIR_PERSISTENT,
     ) -> str:
         """Upload ``data`` as ``/<remote_dir>/<name>``; return the remote path."""
+        if len(data) > self._max_bytes:
+            raise TransferTooLarge(f"File exceeds {self._max_bytes} byte transfer limit")
         remote_path = self._remote_path(remote_dir, name)
         await asyncio.to_thread(self._upload, data, remote_path)
         self._log.info("ftps.uploaded", path=remote_path, size=len(data))
@@ -512,8 +529,30 @@ class FtpsTransfer:
     ) -> str:
         """Upload a local file; return the remote path."""
         fname = name or PurePosixPath(local_path).name
-        data = await asyncio.to_thread(Path(local_path).read_bytes)
+        def read() -> bytes:
+            with Path(local_path).open("rb") as stream:
+                return stream.read(self._max_bytes + 1)
+
+        data = await asyncio.to_thread(read)
         return await self.upload_bytes(data, fname, remote_dir=remote_dir)
+
+    def _file_revision(self, remote_path: str) -> tuple[int, str] | None:
+        ftp = self._connect()
+        try:
+            ftp.voidcmd("TYPE I")
+            size = ftp.size(remote_path)
+            modified = ftp.sendcmd(f"MDTM {remote_path}")
+            if size is None or not modified.startswith("213 "):
+                return None
+            return size, modified[4:].strip()
+        except ftplib.error_perm:
+            # Firmware without SIZE/MDTM must re-fetch, not trust an old name.
+            return None
+        finally:
+            self._close(ftp)
+
+    async def file_revision(self, name: str, *, remote_dir: str = "") -> tuple[int, str] | None:
+        return await asyncio.to_thread(self._file_revision, self._remote_path(remote_dir, name))
 
     async def download_bytes(
         self, name: str, *, remote_dir: str = UPLOAD_DIR_PERSISTENT

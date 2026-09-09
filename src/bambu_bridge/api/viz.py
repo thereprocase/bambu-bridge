@@ -83,6 +83,7 @@ import json as _json
 import struct
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -119,7 +120,9 @@ _GZIP_LEVEL = 6
 _BIN_GZIP_MIN_SAVINGS = 0.15
 
 
-def _viz_etag(filename: str, size: int, repr_fmt: str = "json") -> str:
+def _viz_etag(
+    filename: str, size: int, repr_fmt: str = "json", revision: str = ""
+) -> str:
     """Return a strong ETag for ONE representation of a viz resource.
 
     A strong ETag must identify a single representation (RFC 7232 §2.3): a
@@ -130,7 +133,7 @@ def _viz_etag(filename: str, size: int, repr_fmt: str = "json") -> str:
 
     The value is double-quoted as required by RFC 7232 §2.3.
     """
-    return f'"{filename}:{size}:{repr_fmt}"'
+    return f'"{quote(filename, safe="")}:{size}:{revision}:{repr_fmt}"'
 
 
 def _wants_gzip(request: Request) -> bool:
@@ -299,7 +302,11 @@ async def get_viz_mesh(
             detail=f"3MF file for job {job_name!r} not found on printer storage.",
         )
 
-    _, filename = location
+    remote_dir, filename = location
+    try:
+        await _get_viz_cache(request).validate_revision(printer_id, ftps, remote_dir, filename)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FTPS metadata failed: {exc}") from exc
 
     # ---- Try cache ----------------------------------------------------- #
     viz_cache = _get_viz_cache(request)
@@ -314,7 +321,7 @@ async def get_viz_mesh(
         # We know the file size from the cache key — derive the ETag and
         # check If-None-Match *before* serialising the payload.
         cached_size = cache_key_hit[2]
-        etag = _viz_etag(filename, cached_size)
+        etag = _viz_etag(filename, cached_size, revision=viz_cache.content_id(printer_id, filename))
         if request.headers.get("If-None-Match") == etag:
             return Response(
                 status_code=304,
@@ -374,7 +381,7 @@ async def get_viz_mesh(
             filename=filename,
             kind="mesh",
         )
-    etag = _viz_etag(filename, file_size)
+    etag = _viz_etag(filename, file_size, revision=viz_cache.content_id(printer_id, filename))
     return _mesh_response(
         mesh=mesh,
         job_name=job_name,
@@ -659,7 +666,11 @@ async def get_viz_toolpath(
             detail=f"3MF file for job {job_name!r} not found on printer storage.",
         )
 
-    _, filename = location
+    remote_dir, filename = location
+    try:
+        await _get_viz_cache(request).validate_revision(printer_id, ftps, remote_dir, filename)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FTPS metadata failed: {exc}") from exc
 
     # ---- Try toolpath cache -------------------------------------------- #
     viz_cache = _get_viz_cache(request)
@@ -672,7 +683,7 @@ async def get_viz_toolpath(
         # representation-specific (folds in fmt) so a json-cached client never
         # gets a 304 for the bin body and vice versa.
         cached_size = tp_cache_key_hit[2]
-        etag = _viz_etag(filename, cached_size, fmt)
+        etag = _viz_etag(filename, cached_size, fmt, viz_cache.content_id(printer_id, filename))
         if request.headers.get("If-None-Match") == etag:
             return Response(
                 status_code=304,
@@ -736,7 +747,7 @@ async def get_viz_toolpath(
             filename=filename,
             kind="toolpath",
         )
-    etag = _viz_etag(filename, file_size, fmt)
+    etag = _viz_etag(filename, file_size, fmt, viz_cache.content_id(printer_id, filename))
     return _toolpath_response(
         tp=tp,
         job_name=job_name,

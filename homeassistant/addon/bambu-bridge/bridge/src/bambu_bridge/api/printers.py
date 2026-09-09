@@ -119,9 +119,14 @@ def _host_blocked_by_ssrf_policy(
 class UpdatePrinter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    friendly_name: str | None = None
-    ip: str | None = None
-    access_code: str | None = None
+    friendly_name: str | None = Field(default=None, min_length=1, max_length=64)
+    ip: str | None = Field(default=None, min_length=1, max_length=64)
+    access_code: str | None = Field(default=None, min_length=8, max_length=8, pattern=r"^[0-9]{8}$")
+
+    @field_validator("ip")
+    @classmethod
+    def validate_ip(cls, value: str | None) -> str | None:
+        return RegisterPrinter._validate_host_is_ip(value) if value is not None else None
 
 
 def get_registry(request: Request) -> Registry:
@@ -274,12 +279,22 @@ async def register_printer(
 async def update_printer(
     printer_id: str,
     body: UpdatePrinter,
+    request: Request,
     registry: Registry = Depends(get_registry),
 ) -> Any:
     try:
         registry.get(printer_id)
     except PrinterNotFoundError:
         return errors.not_found("printer", printer_id)
+    if body.ip is not None:
+        blocked = _host_blocked_by_ssrf_policy(
+            body.ip, allow_loopback=request.app.state.settings.bridge_allow_loopback_host
+        )
+        if blocked is not None:
+            return errors.invalid_input(
+                f"ip {body.ip!r} is not allowed: {blocked} addresses are blocked.",
+                issues=[{"field": "ip", "policy": blocked}],
+            )
     service = await registry.update(
         printer_id,
         friendly_name=body.friendly_name,

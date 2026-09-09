@@ -17,18 +17,21 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
+from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.protocol.ftps import (
     UPLOAD_DIR_CACHE,
     UPLOAD_DIR_PERSISTENT,
     FileEntry,
     FtpsTransfer,
     SlicedDateMemo,
+    TransferTooLarge,
     sort_files_newest_first,
 )
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
@@ -76,7 +79,7 @@ async def upload_file(
     """Upload a 3MF to the printer's root storage (``/``); return its path."""
     ftps = _ftps_for(request, registry, printer_id)
     name = PurePosixPath(file.filename or "upload.3mf").name
-    data = await file.read()
+    data = await read_upload(file)
     try:
         path = await ftps.upload_bytes(data, name, remote_dir=UPLOAD_DIR_PERSISTENT)
     except Exception as exc:  # noqa: BLE001 — FTPS failure -> 502
@@ -84,6 +87,9 @@ async def upload_file(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"FTPS upload failed: {exc!s}",
         ) from exc
+    cache = getattr(request.app.state, "viz_cache_obj", None)
+    if cache is not None:
+        cache.invalidate(printer_id, name)
     return {"path": path, "name": name}
 
 
@@ -193,6 +199,8 @@ async def download_file(
     ftps = _ftps_for(request, registry, printer_id)
     try:
         data = await ftps.download_bytes(safe, remote_dir=remote_dir)
+    except TransferTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -201,7 +209,10 @@ async def download_file(
     return Response(
         content=data,
         media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{safe}"'},
+        headers={
+            "Content-Disposition": "attachment; filename=download; filename*=UTF-8''"
+            + quote(safe, safe=""),
+        },
     )
 
 
@@ -231,4 +242,7 @@ async def delete_file(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"FTPS delete failed: {exc!s}",
         ) from exc
+    cache = getattr(request.app.state, "viz_cache_obj", None)
+    if cache is not None:
+        cache.invalidate(printer_id, safe)
     return {"deleted": safe}

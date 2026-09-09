@@ -13,10 +13,12 @@ def test_known_runout_code_warn() -> None:
     assert entry["remediation"] is not None
 
 
-def test_known_external_spool_runout() -> None:
+def test_gcode_pause_is_not_mislabeled_as_external_spool_runout() -> None:
     entry = lookup("0300_8013_0002_0001")
     assert entry["severity"] == "warn"
-    assert "external" in entry["user_message"].lower()
+    assert entry["category"] == "mainboard"
+    assert "pause command" in entry["user_message"].lower()
+    assert "spool" not in str(entry["remediation"]).lower()
 
 
 def test_unmapped_code_falls_through() -> None:

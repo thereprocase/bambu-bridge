@@ -622,3 +622,10 @@ async def test_fill_toolpath_find_3mf_cache_fallback(
     assert downloaded_from == [UPLOAD_DIR_CACHE], (
         f"download must target /cache, got {downloaded_from!r}"
     )
+
+
+@pytest.fixture(autouse=True)
+def _stable_file_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def revision(self: Any, name: str, *, remote_dir: str = "") -> tuple[int, str]:
+        return (1, "fixture-revision")
+    monkeypatch.setattr("bambu_bridge.protocol.ftps.FtpsTransfer.file_revision", revision)

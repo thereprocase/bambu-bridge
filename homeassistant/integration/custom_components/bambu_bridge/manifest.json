@@ -1,7 +1,7 @@
 {
   "domain": "bambu_bridge",
   "name": "Bambu Bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "documentation": "https://github.com/thereprocase/bambu-bridge/tree/main/homeassistant/integration",
   "issue_tracker": "https://github.com/thereprocase/bambu-bridge/issues",
   "codeowners": ["@repro"],

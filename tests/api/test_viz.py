@@ -2842,3 +2842,10 @@ async def test_viz_works_for_finished_job(
             assert r_tp.json()["segment_count"] == 4
 
     await asyncio.to_thread(run)
+
+
+@pytest.fixture(autouse=True)
+def _stable_file_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def revision(self: Any, name: str, *, remote_dir: str = "") -> tuple[int, str]:
+        return (1, "fixture-revision")
+    monkeypatch.setattr("bambu_bridge.protocol.ftps.FtpsTransfer.file_revision", revision)

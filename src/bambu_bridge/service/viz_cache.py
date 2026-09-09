@@ -27,6 +27,7 @@ includes the file size so a re-sliced file with the same name is never stale.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import PurePosixPath
 
 import structlog
@@ -170,6 +171,9 @@ class VizCache:
         # Exposed as plain dicts so api/viz.py can read/write them directly.
         self.mesh_cache: dict[_CacheKey, Mesh3MF] = {}
         self.toolpath_cache: dict[_CacheKey, GcodeToolpath] = {}
+        self._revisions: dict[tuple[str, str], tuple[str, tuple[int, str]]] = {}
+        self._digests: dict[tuple[str, str], str] = {}
+        self._fill_lock = asyncio.Lock()
         self._ftps_port = ftps_port
         # Optional sliced-date memo: filled whenever a .gcode.3mf is downloaded
         # for pre-warm.  When None the feature is disabled (tests that don't
@@ -181,6 +185,44 @@ class VizCache:
     # ------------------------------------------------------------------ #
     # Cache access helpers
     # ------------------------------------------------------------------ #
+
+    def invalidate(self, printer_id: str, filename: str | None = None) -> None:
+        """Forget a replaced file or all files when a new print starts."""
+        for cache in (self.mesh_cache, self.toolpath_cache):
+            for key in list(cache):
+                if key[0] == printer_id and (filename is None or key[1] == filename):
+                    del cache[key]
+        for metadata in (self._revisions, self._digests):
+            for file_key in list(metadata):
+                if file_key[0] == printer_id and (filename is None or file_key[1] == filename):
+                    del metadata[file_key]
+
+    async def validate_revision(
+        self, printer_id: str, ftps: FtpsTransfer, remote_dir: str, filename: str
+    ) -> None:
+        """Revalidate before both API conditional responses and pre-warm reuse."""
+        key = (printer_id, filename)
+        try:
+            revision = await ftps.file_revision(filename, remote_dir=remote_dir)
+        except Exception:
+            self.invalidate(printer_id, filename)
+            raise
+        current = (remote_dir, revision) if revision is not None else None
+        if current is None or self._revisions.get(key) != current:
+            self.invalidate(printer_id, filename)
+        if current is not None:
+            self._revisions[key] = current
+
+    def content_id(self, printer_id: str, filename: str) -> str:
+        return self._digests.get((printer_id, filename), "")
+
+    def _record_content(self, printer_id: str, filename: str, data: bytes) -> None:
+        self._digests[(printer_id, filename)] = hashlib.sha256(data).hexdigest()
+        live = {(k[0], k[1]) for k in (*self.mesh_cache, *self.toolpath_cache)}
+        for metadata in (self._revisions, self._digests):
+            for key in list(metadata):
+                if key not in live:
+                    del metadata[key]
 
     def put_mesh(self, key: _CacheKey, mesh: Mesh3MF) -> None:
         _cache_put_mesh(self.mesh_cache, key, mesh)
@@ -218,6 +260,12 @@ class VizCache:
     async def _run_fill_mesh(
         self, printer_id: str, ftps: FtpsTransfer, job_name: str
     ) -> tuple[str, Mesh3MF]:
+        async with self._fill_lock:
+            return await self._fill_mesh(printer_id, ftps, job_name)
+
+    async def _fill_mesh(
+        self, printer_id: str, ftps: FtpsTransfer, job_name: str
+    ) -> tuple[str, Mesh3MF]:
         """Download, memo-fill, parse, and cache the mesh.
 
         Returns ``(filename, mesh)`` on success.
@@ -238,7 +286,12 @@ class VizCache:
             )
         remote_dir, filename = location
 
-        # Cache hit — skip the download.
+        try:
+            await self.validate_revision(printer_id, ftps, remote_dir, filename)
+        except Exception as exc:
+            raise VizFillError("download", f"FTPS metadata failed: {exc}") from exc
+
+        # Reuse only after checking the remote file's revision and directory.
         if self.lookup_mesh(printer_id, filename) is not None:
             hit = self.lookup_mesh(printer_id, filename)
             assert hit is not None  # narrowing — checked above
@@ -261,12 +314,13 @@ class VizCache:
                 )
 
         try:
-            mesh = parse_3mf(data)
+            mesh = await asyncio.to_thread(parse_3mf, data)
         except (ParseError, Exception) as exc:  # noqa: BLE001
             raise VizFillError("parse", f"3MF parse error: {exc}") from exc
 
         key: _CacheKey = (printer_id, filename, len(data))
         self.put_mesh(key, mesh)
+        self._record_content(printer_id, filename, data)
         log.info(
             "viz.parsed",
             printer_id=printer_id,
@@ -277,6 +331,12 @@ class VizCache:
         return filename, mesh
 
     async def _run_fill_toolpath(
+        self, printer_id: str, ftps: FtpsTransfer, job_name: str
+    ) -> tuple[str, GcodeToolpath]:
+        async with self._fill_lock:
+            return await self._fill_toolpath(printer_id, ftps, job_name)
+
+    async def _fill_toolpath(
         self, printer_id: str, ftps: FtpsTransfer, job_name: str
     ) -> tuple[str, GcodeToolpath]:
         """Download, memo-fill, parse, and cache the toolpath.
@@ -298,7 +358,12 @@ class VizCache:
             )
         remote_dir, filename = location
 
-        # Cache hit — skip the download.
+        try:
+            await self.validate_revision(printer_id, ftps, remote_dir, filename)
+        except Exception as exc:
+            raise VizFillError("download", f"FTPS metadata failed: {exc}") from exc
+
+        # Reuse only after checking the remote file's revision and directory.
         if self.lookup_toolpath(printer_id, filename) is not None:
             hit = self.lookup_toolpath(printer_id, filename)
             assert hit is not None  # narrowing — checked above
@@ -323,12 +388,13 @@ class VizCache:
                 )
 
         try:
-            tp = parse_gcode_from_archive(data)
+            tp = await asyncio.to_thread(parse_gcode_from_archive, data)
         except (GcodeParseError, Exception) as exc:  # noqa: BLE001
             raise VizFillError("parse", f"Gcode parse error: {exc}") from exc
 
         key: _CacheKey = (printer_id, filename, len(data))
         self.put_toolpath(key, tp)
+        self._record_content(printer_id, filename, data)
         log.info(
             "viz.toolpath_parsed",
             printer_id=printer_id,
@@ -452,6 +518,7 @@ class VizCache:
             )
             return
 
+        self.invalidate(printer_id)
         self._inflight.add(guard_key)
         asyncio.create_task(
             self._prewarm_task(printer_id, ip, access_code, job_name, guard_key),

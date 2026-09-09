@@ -63,7 +63,8 @@ def create_app(
     camera_port: int = 6000,
 ) -> FastAPI:
     settings = settings or Settings()
-    configure_logging(settings.bridge_log_level, settings.bridge_log_format)
+    configure_logging(settings.bridge_log_level, settings.bridge_log_format,
+                      secrets=(settings.bridge_api_key, settings.bridge_viz_token))
 
     # Warn loudly when the API key is set but suspiciously short — empty is
     # handled by auth.py (fail-closed 503); a short key is a misconfiguration

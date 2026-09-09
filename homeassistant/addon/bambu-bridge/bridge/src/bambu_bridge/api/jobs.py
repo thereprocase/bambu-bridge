@@ -23,6 +23,7 @@ from fastapi import (
 from bambu_bridge.api import errors as api_errors
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
+from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.db.jobs import JobState
 from bambu_bridge.service.jobs import JobManager, JobNotFoundError
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
@@ -90,7 +91,7 @@ async def submit_job(
     belt-and-suspenders against any future async re-entry.)
     """
     name = file.filename or "upload.3mf"
-    data = await file.read()
+    data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
     report = slice_validate(data, expected_ams_mapping=ams)
     if not report.ok:

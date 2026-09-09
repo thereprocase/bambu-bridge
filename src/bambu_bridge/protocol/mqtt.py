@@ -44,7 +44,7 @@ ConnectionHandler = Callable[[], Awaitable[None]]
 SessionErrorHandler = Callable[[str, str], Awaitable[None]]
 
 _BACKOFF_START = 1.0
-_BACKOFF_CAP = 60.0
+_BACKOFF_CAP = 15.0  # LAN printer: recover fast after a blip
 _KEEPALIVE = 30
 _RECONNECT_FLOOR = 1.0  # gotcha #5: never faster than ~1/s
 _CONNECT_TIMEOUT = 10.0  # bound the connect; a hang must fail into _backoff
@@ -262,7 +262,12 @@ class MqttClient:
 
     @staticmethod
     def _backoff(attempt: int) -> float:
-        """Exponential backoff with jitter, floored at 1 s, capped at 60 s."""
-        base: float = min(_BACKOFF_CAP, _BACKOFF_START * (2.0 ** (attempt - 1)))
+        """Exponential backoff with jitter, floored at 1 s, capped at 15 s."""
+        # cap exponent before exponentiating: a long outage drives attempt high
+        # enough that 2.0 ** (attempt - 1) overflows float before min() can clamp
+        # it, which crashes the reconnect loop permanently. 2**32 already dwarfs
+        # _BACKOFF_CAP, so clamping the exponent changes no real-world delay.
+        exp: int = min(attempt - 1, 32)
+        base: float = min(_BACKOFF_CAP, _BACKOFF_START * (2.0 ** exp))
         jitter: float = random.uniform(0, base * 0.3)
         return max(_RECONNECT_FLOOR, min(_BACKOFF_CAP, base + jitter))

@@ -6,6 +6,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-09
+
+- Restore the deployed MQTT reconnect overflow guard and 15-second retry cap.
+- Restore structured HMS/stage decoding, job context, early-finish detection,
+  completed-layer false-positive suppression, and certificate fingerprint output.
+- Redact credentials before Uvicorn HTTP/WebSocket and structured log output.
+- Release terminal job payloads and remove completed lifecycle tasks from memory.
+- Bound buffered transfers to 64 MiB by default (BRIDGE_MAX_TRANSFER_BYTES),
+  reject oversized uploads with 413, and serialize preview fills.
+- Revalidate preview caches using remote size/modification metadata and directory;
+  use content hashes in representation-specific ETags, invalidate on file changes
+  and new prints, and re-fetch when firmware cannot report a revision.
+- Parse preview geometry away from the API event loop.
+- Validate updated printer connection fields and destinations before persistence.
+- Encode Unicode download filenames safely; retain directory-aware file deletion.
+- Keep the browser dashboard, viewer, and Home Assistant packages on matching source.
+
+Operators upgrading an older deployment should rotate API keys that previously
+appeared in request URLs after updating their clients. Existing journals are not
+rewritten by this release.
+
+
 ## [0.1.1] — 2026-09-09
 
 - Prepared a fresh public source history with operator data and private captures excluded.

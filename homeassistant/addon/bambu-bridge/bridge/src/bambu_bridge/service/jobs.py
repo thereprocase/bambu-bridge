@@ -162,6 +162,8 @@ class JobManager:
         )
         self._runs[job.id] = run
         run.start()
+        assert run._task is not None
+        run._task.add_done_callback(lambda _task: self._runs.pop(job.id, None))
         return job
 
     async def cancel(self, job_id: str) -> Job:
@@ -372,7 +374,7 @@ class JobManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._watch_tasks.clear()
-        for run in self._runs.values():
+        for run in list(self._runs.values()):
             await run.stop()
         self._runs.clear()
 
@@ -427,6 +429,12 @@ class JobRun:
     # ------------------------------------------------------------------ #
 
     async def _guarded(self) -> None:
+        try:
+            await self._execute()
+        finally:
+            self._file_bytes = b""
+
+    async def _execute(self) -> None:
         try:
             service = self._registry.get(self._job.printer_id)
         except PrinterNotFoundError:
@@ -502,6 +510,7 @@ class JobRun:
         except Exception as exc:  # noqa: BLE001
             await self._fail(f"upload_error: {exc!s}")
             return
+        self._file_bytes = b""
         await self._jobs.update(self._job.id, file_path=remote)
 
         await self._set(JobState.SUBMITTED, "project_file_published")

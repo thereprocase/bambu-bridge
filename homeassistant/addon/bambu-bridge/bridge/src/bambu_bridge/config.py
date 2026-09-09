@@ -15,7 +15,10 @@ import sys
 from typing import Literal
 
 import structlog
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from bambu_bridge.log_redaction import install, redact_event
 
 
 class Settings(BaseSettings):
@@ -43,6 +46,7 @@ class Settings(BaseSettings):
     # Storage
     bridge_db_path: str = "/var/lib/bambu-bridge/jobs.db"
     bridge_files_dir: str = "/var/lib/bambu-bridge/files"
+    bridge_max_transfer_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
 
     # Camera idle-linger: hold the upstream camera connection for this many
     # seconds after the last subscriber leaves, so a subsequent snapshot
@@ -65,8 +69,10 @@ class Settings(BaseSettings):
     ntfy_topic: str = ""
 
 
-def configure_logging(level: str = "info", fmt: str = "json") -> None:
+def configure_logging(level: str = "info", fmt: str = "json",
+                      *, secrets: tuple[str | None, ...] = ()) -> None:
     """structlog -> stdout (spec 12). systemd captures stdout to the journal."""
+    install(*secrets)
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level)
 
@@ -82,10 +88,11 @@ def configure_logging(level: str = "info", fmt: str = "json") -> None:
     if fmt == "json":
         processors += [
             structlog.processors.dict_tracebacks,
+            redact_event,
             structlog.processors.JSONRenderer(),
         ]
     else:
-        processors.append(structlog.dev.ConsoleRenderer())
+        processors.extend([redact_event, structlog.dev.ConsoleRenderer()])
 
     structlog.configure(
         processors=processors,
