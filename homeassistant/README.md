@@ -37,7 +37,8 @@ clients of the one bridge.
 
 ### 1. The add-on (the bridge)
 
-The repo has no git remote, so the add-on is installed as a *local* add-on.
+The supplied add-on is installed as a *local* add-on from this public source
+repository. It is not currently distributed through an add-on store repository.
 
 1. On the dev box, vendor the bridge source into the add-on build context:
    ```
