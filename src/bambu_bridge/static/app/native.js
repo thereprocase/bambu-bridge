@@ -64,16 +64,20 @@ export function mountNative(parent, app) {
     const copyCode = el('button', { class: 'btn btn--primary btn--sm', text: 'Copy native access code', disabled: true });
     const hint = el('p', { class: 'field__hint', role: 'status' });
     const refresh = el('button', { class: 'btn btn--ghost btn--sm', text: 'Refresh code', hidden: true });
+    const existing = el('input', { class: 'input input--mono', type: 'password', autocomplete: 'off',
+      maxlength: '8', 'aria-label': 'Existing native access code', placeholder: 'Current 8-character code' });
+    const saveExisting = el('button', { class: 'btn btn--ghost btn--sm', text: 'Save existing code' });
+    const recovery = el('div', { class: 'stack gap-2', hidden: true }, [existing, saveExisting]);
     output.appendChild(el('div', { class: 'field' }, [
       el('label', { class: 'field__label', text: 'Native access code' }), code,
-      el('div', { class: 'row gap-2', style: 'flex-wrap:wrap' }, [show, copyCode, refresh]), hint,
+      el('div', { class: 'row gap-2', style: 'flex-wrap:wrap' }, [show, copyCode, refresh]), hint, recovery,
     ]));
     const applyCode = (value) => {
       if (!current() || !output.contains(code)) return;
       code.value = value || ''; code.placeholder = value ? '' : 'Not saved yet';
-      show.disabled = copyCode.disabled = !value; refresh.hidden = !!value;
+      show.disabled = copyCode.disabled = !value; refresh.hidden = recovery.hidden = !!value;
       hint.textContent = value ? 'Come back here to show or copy this code whenever you need it. The same code works on all your computers. Replacing it means updating every computer.'
-        : 'This older setup saved only a hash. Reconnect an already configured Orca client, then refresh the code here. If you lost the code, replace it once; the new code will stay available here.';
+        : 'This older setup did not keep a copy. Paste the current code below to save it without changing it, or reconnect an already configured Orca client and refresh here. If it was lost, replace it once; the new code will stay available.';
     };
     const loadCode = async () => {
       refresh.disabled = true;
@@ -97,6 +101,15 @@ export function mountNative(parent, app) {
         show.setAttribute('aria-pressed', 'true'); show.setAttribute('aria-label', 'Hide native access code'); }
     });
     refresh.addEventListener('click', loadCode);
+    saveExisting.addEventListener('click', async () => {
+      saveExisting.disabled = true;
+      const res = await app.api.postJson('/native/access-code', { access_code: existing.value }, { cache: 'no-store' });
+      existing.value = '';
+      if (!current() || !output.contains(code)) return;
+      saveExisting.disabled = false;
+      if (!res.ok) { hint.textContent = res.message || 'Could not save that code.'; return; }
+      applyCode(res.data.access_code); toast('Existing native code saved.');
+    });
     if (data.access_code) applyCode(data.access_code); else loadCode();
     output.appendChild(el('ol', {}, [
       el('li', { text: 'In Orca, use a Bambu Lab P1S preset with “Use 3rd-party print host” turned OFF.' }),
