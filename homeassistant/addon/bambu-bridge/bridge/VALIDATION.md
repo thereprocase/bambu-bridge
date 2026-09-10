@@ -1,3 +1,24 @@
+# Separate native printer identity - 0.4.1
+
+A v0.4.0 setup completed, but subsequent Orca LAN discovery replaced
+the same-serial entry with the physical printer's name and address. Orca's
+DeviceCore/DevManager.cpp indexes those updates by device ID. The fix gives the
+bridge a separate persistent identity throughout native discovery, detection,
+TLS, MQTT and owner-generated setup. DeviceManager.cpp also saves access-code
+query replies; those are now answered locally or transposed before delivery.
+
+All 29 focused native/owner tests pass, including distinct/persistent identity,
+certificate binding, rejection of physical-serial topics, native password
+queries, unsolicited upstream credential reports, unchanged upstream snapshots,
+and reverse identity translation without changing file or AMS parameters.
+The shipped Windows helper is exercised against two-printer fixtures: the
+physical P1S entry and both code fields remain unchanged through fresh, existing
+and repeated bridge setup. Previous address-isolation and owner-auth checks
+remain covered. Final full CI counts are recorded in the release notes.
+
+Protocol fixtures do not establish actual Orca UI playback or a completed print.
+No physical print is started by the release checks.
+
 # Guided Orca setup and native address isolation - 0.4.0
 
 Local release checks on Ubuntu/WSL with Python 3.12 collected 924 tests:

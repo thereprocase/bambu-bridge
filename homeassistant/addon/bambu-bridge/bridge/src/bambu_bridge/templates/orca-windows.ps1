@@ -118,7 +118,7 @@
         }
         if (!(([IO.File]::ReadAllText($bundle) -replace '\s','').Contains($setup.certificate))) { throw 'Certificate update was not saved. No printer settings were changed.' }
 
-        Write-Host '3/3 Saving the bridge as your Orca printer...'
+        Write-Host '3/3 Adding Bridge P1S as a separate Orca printer...'
         if (Get-Process -Name 'orca-slicer','OrcaSlicer' -ErrorAction SilentlyContinue) { throw 'Orca reopened. Close it and run setup again.' }
         $before = [IO.File]::ReadAllBytes($configPath)
         $text = [Text.Encoding]::UTF8.GetString($before).TrimStart([char]0xFEFF)
@@ -147,6 +147,7 @@
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($configPath)) -ne [Convert]::ToBase64String($before)) { throw 'Orca settings changed during setup; run it again.' }
         [IO.File]::Replace("$backup.tmp", $configPath, $backup)
         Write-Host "Settings backup: $backup"
+        Write-Host 'Bridge P1S has its own serial. Your original P1S entry and its credentials were preserved.'
         Write-Host 'Ready! Open Orca > Device > choose Bridge P1S. Press the camera Play button, then return to the dashboard to check this computer.' -ForegroundColor Green
         if (!$cameraReachable) { Write-Host 'Printer configured; camera network check still needs attention.' -ForegroundColor Yellow }
         Write-Host 'After an Orca update, run a fresh setup command from the dashboard if the connection stops working.'

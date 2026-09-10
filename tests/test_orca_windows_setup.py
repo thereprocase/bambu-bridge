@@ -51,7 +51,7 @@ def run_setup_script(script, env):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell setup integration")
 def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
-    serial = "SETUPFIXTURE001"
+    serial = "01PBRIDGE000001"
     key, cert, _ = identity(tmp_path / "tls", common_name=serial, key_kind="rsa", host="127.0.0.1")
     _, other, _ = identity(tmp_path / "other-ca")
     original_certificates = other.read_bytes()
@@ -106,8 +106,9 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
             bundle.write_bytes(original_certificates)
             original = {
                 "app": {"unicode": "café", "nested": [True, False, 16777216]},
-                "local_machines": {"OTHERFIXTURE001": {"dev_ip": "192.0.2.2", "dev_name": "Other"}},
-                "user_access_code": {"OTHERFIXTURE001": "OTHER123"},
+                "local_machines": {"01PPHYSICAL0001": {"dev_ip": "192.0.2.2", "dev_name": "P1S"}},
+                "user_access_code": {"01PPHYSICAL0001": "OTHER123"},
+                "access_code": {"01PPHYSICAL0001": "OTHER123"},
             }
             if existing:
                 original["local_machines"][serial] = {"dev_ip": "192.0.2.33", "extra": "preserve"}
@@ -145,11 +146,14 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
                 parsed = json.loads(raw)
                 assert parsed["app"] == original["app"]
                 assert (
-                    parsed["local_machines"]["OTHERFIXTURE001"]
-                    == original["local_machines"]["OTHERFIXTURE001"]
+                    parsed["local_machines"]["01PPHYSICAL0001"]
+                    == original["local_machines"]["01PPHYSICAL0001"]
                 )
-                assert parsed["user_access_code"]["OTHERFIXTURE001"] == "OTHER123"
+                assert parsed["user_access_code"]["01PPHYSICAL0001"] == "OTHER123"
                 assert parsed["local_machines"][serial]["dev_ip"] == "127.0.0.1"
+                assert parsed["local_machines"][serial]["dev_name"] == "Bridge P1S"
+                assert len(parsed["local_machines"]) == 2
+                assert parsed["access_code"]["01PPHYSICAL0001"] == "OTHER123"
                 assert (
                     parsed["access_code"][serial]
                     == parsed["user_access_code"][serial]

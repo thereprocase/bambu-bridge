@@ -44,7 +44,7 @@ export function mountNativeGuide(parent, app, current, manual) {
     platform, windows, other,
   ]));
   guide.append(step(3, 'Open your printer in Orca', [
-    el('p', { text: 'Open Orca → Device → printer list → Bridge P1S. The helper has already entered your address and code.' }),
+    el('p', { text: 'Open Orca → Device → printer list → Bridge P1S. This is a separate printer from your original P1S. The helper adds its own serial, address and code; the original printer entry stays in place.' }),
     el('p', { text: 'Use a Bambu Lab P1S printer preset with “Use 3rd-party print host” off. Press Play in the camera panel to start live view.' }),
     el('p', { class: 'field__hint', text: 'When printing, choose AMS slots or the external spool in Orca’s print dialog. The physical printer decides which combinations it supports.' }),
   ]));
