@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import hashlib
 import hmac
 import ipaddress
 import json
+import re
 import secrets
 import socket
 import sqlite3
@@ -69,8 +71,46 @@ def rewrite_address(value: Any, old: str, new: str) -> Any:
     if isinstance(value, list):
         return [rewrite_address(v, old, new) for v in value]
     if isinstance(value, str):
-        return value.replace(old, new)
+        return re.sub(r"(?<![\d.])" + re.escape(old) + r"(?![\d.])", new, value)
     return value
+
+
+def native_report(payload: dict[str, Any], old: str, host: str) -> dict[str, Any]:
+    """Keep native clients on the gateway, including firmware's packed IPv4.
+
+    Orca consumes print.net.info[].ip as little-endian octets and replaces
+    its active device address with it, even after MQTT has connected.
+    """
+    report = payload.get("print")
+    network = report.get("net") if isinstance(report, dict) else None
+    interfaces = network.get("info") if isinstance(network, dict) else None
+    addresses = {old}
+    if isinstance(interfaces, list):
+        for interface in interfaces:
+            address = interface.get("ip") if isinstance(interface, dict) else None
+            if type(address) is int and address != 0:
+                addresses.add(
+                    str(ipaddress.IPv4Address((address & 0xFFFFFFFF).to_bytes(4, "little")))
+                )
+    result: dict[str, Any] = payload
+    for address in addresses:
+        result = rewrite_address(result, address, host)
+    if isinstance(interfaces, list):
+        packed = int.from_bytes(ipaddress.IPv4Address(host).packed, "little")
+        for interface in result["print"]["net"]["info"]:
+            if (
+                isinstance(interface, dict)
+                and type(interface.get("ip")) is int
+                and interface["ip"] != 0
+            ):
+                interface["ip"] = packed
+                # Present this one virtual endpoint, not the physical LAN's
+                # subnet or router. Zero/unconfigured interfaces stay zero.
+                if "mask" in interface:
+                    interface["mask"] = 0xFFFFFFFF
+                if "gw" in interface:
+                    interface["gw"] = 0
+    return result
 
 
 class NativeGateway:
@@ -101,6 +141,10 @@ class NativeGateway:
         self.context: ssl.SSLContext | None = None
         self.last_error: str | None = None
         self.diagnostics: dict[str, dict[str, Any]] = {}
+        self.sessions: dict[asyncio.StreamWriter, dict[str, Any]] = {}
+        self.current_session: contextvars.ContextVar[dict[str, Any] | None] = (
+            contextvars.ContextVar("native_session", default=None)
+        )
         with store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS native_gateway (
                 id INTEGER PRIMARY KEY CHECK(id=1), printer_id TEXT NOT NULL,
@@ -317,6 +361,14 @@ class NativeGateway:
             if handler == self.camera
             else "ftps"
         )
+        session = {
+            "peer": writer.get_extra_info("peername")[0],
+            "protocol": protocol,
+            "authenticated": False,
+            "frame_at": 0.0,
+        }
+        self.sessions[writer] = session
+        token = self.current_session.set(session)
         self.note(protocol, "tcp_connected" if handler == self.detect else "tls_connected")
         try:
             if handler in (self.mqtt, self.camera, self.detect):
@@ -333,12 +385,20 @@ class NativeGateway:
             # Do not log protocol payloads, codes, file names or camera bytes.
             self.note(protocol, "protocol_error")
         finally:
+            self.sessions.pop(writer, None)
+            self.current_session.reset(token)
             self.writers.discard(writer)
             writer.close()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(writer.wait_closed(), 2)
 
     def note(self, protocol: str, phase: str) -> None:
+        session = self.current_session.get()
+        if session is not None:
+            if phase == "authenticated":
+                session["authenticated"] = True
+            elif phase == "streaming":
+                session["frame_at"] = time.monotonic()
         previous = self.diagnostics.get(protocol, {})
         self.diagnostics[protocol] = {
             "phase": phase,
@@ -346,6 +406,20 @@ class NativeGateway:
             "tls_connections": previous.get("tls_connections", 0) + (phase == "tls_connected"),
             "tcp_connections": previous.get("tcp_connections", 0) + (phase == "tcp_connected"),
             "auth_failures": previous.get("auth_failures", 0) + (phase == "access_code_rejected"),
+        }
+
+    def setup_status(self, peer: str) -> dict[str, bool]:
+        sessions = [item for item in self.sessions.values() if item["peer"] == peer]
+        return {
+            "printer_connected": any(
+                item["protocol"] == "mqtt" and item["authenticated"] for item in sessions
+            ),
+            "camera_streaming": any(
+                item["protocol"] == "camera"
+                and item["authenticated"]
+                and item["frame_at"] > time.monotonic() - 15
+                for item in sessions
+            ),
         }
 
     async def detect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -408,9 +482,9 @@ class NativeGateway:
             while True:
                 self.service()  # fence changed printer certificate / deleted printer
                 jpeg = await asyncio.wait_for(queue.get(), 45)
-                self.note("camera", "streaming")
                 writer.write(struct.pack("<IIII", len(jpeg), 0, 0, 0) + jpeg)
                 await asyncio.wait_for(writer.drain(), 10)
+                self.note("camera", "streaming")
 
     async def mqtt(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head, data = await asyncio.wait_for(read_packet(reader), 10)
@@ -450,7 +524,7 @@ class NativeGateway:
                 await asyncio.wait_for(writer.drain(), 10)
 
         async def report(payload: dict[str, Any]) -> None:
-            value = rewrite_address(payload, service.ip, self.host)
+            value = native_report(payload, service.ip, self.host)
             await send(
                 0x30, field(report_topic) + json.dumps(value, separators=(",", ":")).encode()
             )

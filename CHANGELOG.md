@@ -6,6 +6,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-10
+
+- Add an owner-only HTTPS Windows setup command with instance certificate
+  verification, backed-up Orca profile repair/registration, native code setup,
+  and app-specific certificate trust. Elevate only the certificate-file update.
+- Guide users through preparation, setup, opening Orca and separate live printer
+  and camera checks for the computer displaying the dashboard. Keep manual
+  setup and repeatable code retrieval available.
+- Transpose numeric firmware network addresses as well as report strings/URLs.
+  Initial and incremental reports can no longer steer Orca back to a physical
+  LAN interface after it connects to the bridge.
+- Add Windows helper integration CI alongside native wire and owner-boundary
+  regressions. Preserve native codes, phone pairing and existing identities.
+
 ## [0.3.3] — 2026-09-10
 
 - Keep the native access code available through Show/Copy in the owner dashboard,

@@ -206,6 +206,14 @@ async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
         await writer.drain()
         header = await asyncio.wait_for(reader.readexactly(16), 3)
         assert await reader.readexactly(struct.unpack_from("<I", header)[0]) == JPEG
+        assert gateway.setup_status("127.0.0.1") == {
+            "printer_connected": True,
+            "camera_streaming": True,
+        }
+        assert gateway.setup_status("192.0.2.99") == {
+            "printer_connected": False,
+            "camera_streaming": False,
+        }
         writer.close()
         await writer.wait_closed()
 

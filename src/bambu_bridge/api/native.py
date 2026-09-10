@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from bambu_bridge.api.orca import secure_owner
 from bambu_bridge.native_gateway import NativeGateway
+from bambu_bridge.native_setup import setup_material
 from bambu_bridge.service.registry import PrinterNotFoundError
 
 router = APIRouter(prefix="/native", tags=["native"], dependencies=[Depends(secure_owner)])
@@ -57,6 +58,23 @@ async def enable(body: Enable, request: Request) -> dict[str, Any]:
 @router.get("/access-code")
 def access_code(request: Request) -> dict[str, str | None]:
     return {"access_code": gateway(request).saved_code()}
+
+
+@router.get("/setup")
+async def setup(request: Request) -> dict[str, str]:
+    try:
+        return setup_material(gateway(request))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            503, "Could not read the native certificate. Check bridge storage."
+        ) from exc
+
+
+@router.get("/setup-status")
+async def setup_status(request: Request) -> dict[str, bool]:
+    return gateway(request).setup_status(request.client.host if request.client else "")
 
 
 @router.post("/access-code")

@@ -34,7 +34,7 @@ drift_check() {
     local stale=0
     diff -qr --exclude=__pycache__ --exclude='*.pyc' "${repo_root}/src" "${dest}/src" || stale=1
     diff -qr "${repo_root}/LICENSES" "${dest}/LICENSES" || stale=1
-    for relative in pyproject.toml README.md LICENSE NOTICE THIRD_PARTY.md VALIDATION.md; do
+    for relative in pyproject.toml README.md LICENSE NOTICE THIRD_PARTY.md VALIDATION.md docs/LOCAL-PAIRING.md docs/ORCA.md docs/NATIVE-P1S.md; do
         if ! cmp -s "${repo_root}/${relative}" "${dest}/${relative}"; then
             echo "STALE or missing vendored file: ${relative}" >&2
             stale=1
@@ -76,6 +76,10 @@ cp "${repo_root}/pyproject.toml" "${dest}/pyproject.toml"
 cp "${repo_root}/README.md"      "${dest}/README.md"
 cp "${repo_root}/LICENSE" "${repo_root}/NOTICE" "${repo_root}/THIRD_PARTY.md" "${repo_root}/VALIDATION.md" "${dest}/"
 cp -r "${repo_root}/LICENSES" "${dest}/LICENSES"
+mkdir -p "${dest}/docs"
+for guide in LOCAL-PAIRING.md ORCA.md NATIVE-P1S.md; do
+    cp "${repo_root}/docs/${guide}" "${dest}/docs/${guide}"
+done
 
 # Drift checks compare content; copied-file timestamps are not a correctness signal.
 

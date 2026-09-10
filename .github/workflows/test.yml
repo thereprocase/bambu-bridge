@@ -15,6 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-setup:
+    name: Windows Orca setup helper
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv run pytest tests/test_orca_windows_setup.py -q --junitxml=windows-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-setup-results
+          path: windows-results.xml
+          if-no-files-found: ignore
   test:
     name: pytest + ruff + mypy
     runs-on: ubuntu-24.04
