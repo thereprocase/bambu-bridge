@@ -32,6 +32,14 @@ submit your first print.
 If something doesn't work, **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**
 has a symptom → cause → fix table for every error the bridge can show.
 
+## Android companion
+
+**[Download Android v0.18.3](https://github.com/thereprocase/bambu-bridge-app/releases/tag/v0.18.3)**
+or read the [Android source and installation guide](https://github.com/thereprocase/bambu-bridge-app).
+The ARM64 app connects to this bridge using your base URL and API key. It shows
+live status, camera snapshots, filament information, and the embedded 3D viewer.
+Install the signed APK as an update to retain your existing app settings.
+
 ## The web app — the easiest way to use the bridge
 
 Once the bridge is running, you don't need the command line at all. Open a
