@@ -6,6 +6,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-10
+
+- Answer Orca's IP-based identity lookup on private TCP 3000 so its first
+  connection screen can discover the P1S model, serial and name automatically.
+- Accept only bounded read-only detection frames; retain native authentication
+  for MQTT, file transfers and camera, and preserve existing codes on upgrade.
+- Explain Orca's two setup screens accurately, keep the native-code replacement
+  button visible, and explain where a previously generated code went.
+- Report identification separately from TLS connections in owner diagnostics.
+
 ## [0.2.2] — 2026-09-10
 
 - Connect stock OrcaSlicer 2.4.2 through an HTTPS Octo/Klipper print-host adapter.

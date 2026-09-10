@@ -1,3 +1,17 @@
+# Native IP identification patch — 0.3.2
+
+Orca v2.4.2 calls `bind_detect` before connecting MQTT from its initial IP/code
+screen. The previously missing private TCP 3000 listener now answers that
+read-only identity request. Framed-stream regression tests verify automatic
+model/serial/name resolution, split TCP writes, credential exclusion, malformed
+length/trailer/JSON rejection, refusal of login and print commands, and closure
+of partial requests when native access is disabled. A two-client TLS test
+verifies that the same native code supports simultaneous status subscriptions.
+All 22 focused native and owner API tests pass in Python 3.12.
+
+This is protocol verification. Installed Orca UI acceptance from the offsite
+computer and a completed physical print remain unverified. No print was started.
+
 # Native TLS compatibility patch — 0.3.1
 
 Native TLS now uses a separate persistent RSA identity with the configured

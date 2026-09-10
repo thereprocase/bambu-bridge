@@ -79,6 +79,7 @@ class NativeGateway:
         host: str,
         *,
         ports: tuple[int, int, int] = (8883, 990, 6000),
+        detect_port: int = 3000,
     ):
         address = ipaddress.ip_address(host)
         if address.version != 4 or address.is_unspecified or address.is_multicast:
@@ -86,6 +87,7 @@ class NativeGateway:
         if not (address.is_private or address in ipaddress.ip_network("100.64.0.0/10")):
             raise ValueError("Use a LAN, loopback or Tailscale address for the native gateway")
         self.app, self.store, self.host, self.ports = app, store, host, ports
+        self.detect_port = detect_port
         self.servers: list[asyncio.Server] = []
         self.tasks: set[asyncio.Task[None]] = set()
         self.writers: set[asyncio.StreamWriter] = set()
@@ -121,7 +123,12 @@ class NativeGateway:
             "model": "P1S",
             "error": self.last_error,
             "connections": self.diagnostics,
-            "ports": {"mqtt": self.ports[0], "ftps": self.ports[1], "camera": self.ports[2]},
+            "ports": {
+                "mqtt": self.ports[0],
+                "ftps": self.ports[1],
+                "camera": self.ports[2],
+                "detect": self.detect_port,
+            },
         }
 
     async def start(self) -> None:
@@ -141,7 +148,11 @@ class NativeGateway:
         from bambu_bridge.native_ftps import serve_ftps
 
         try:
-            for port, handler in zip(self.ports, (self.mqtt, serve_ftps, self.camera), strict=True):
+            for port, handler in zip(
+                (*self.ports, self.detect_port),
+                (self.mqtt, serve_ftps, self.camera, self.detect),
+                strict=True,
+            ):
 
                 def connected(
                     reader: asyncio.StreamReader,
@@ -152,8 +163,11 @@ class NativeGateway:
                     self.tasks.add(task)
                     task.add_done_callback(self.tasks.discard)
 
+                options: dict[str, Any] = {}
+                if handler != self.detect:
+                    options = {"ssl": context, "ssl_handshake_timeout": 10}
                 server = await asyncio.start_server(
-                    connected, self.host, port, ssl=context, ssl_handshake_timeout=10, limit=8192
+                    connected, self.host, port, limit=8192, **options
                 )
                 self.servers.append(server)
             self.last_error = None
@@ -262,11 +276,17 @@ class NativeGateway:
             return
         self.writers.add(writer)
         protocol = (
-            "mqtt" if handler == self.mqtt else "camera" if handler == self.camera else "ftps"
+            "detect"
+            if handler == self.detect
+            else "mqtt"
+            if handler == self.mqtt
+            else "camera"
+            if handler == self.camera
+            else "ftps"
         )
-        self.note(protocol, "tls_connected")
+        self.note(protocol, "tcp_connected" if handler == self.detect else "tls_connected")
         try:
-            if handler == self.mqtt or handler == self.camera:
+            if handler in (self.mqtt, self.camera, self.detect):
                 await handler(reader, writer)
             else:
                 await handler(self, reader, writer)
@@ -291,8 +311,55 @@ class NativeGateway:
             "phase": phase,
             "updated": int(time.time()),
             "tls_connections": previous.get("tls_connections", 0) + (phase == "tls_connected"),
+            "tcp_connections": previous.get("tcp_connections", 0) + (phase == "tcp_connected"),
             "auth_failures": previous.get("auth_failures", 0) + (phase == "access_code_rejected"),
         }
+
+    async def detect(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Answer Orca's initial IP lookup; never proxy login or control commands.
+
+        The native identity probe uses plaintext framed JSON on private TCP
+        port 3000, before MQTT authentication. It discloses only the identity
+        already advertised by discovery, without any access code or key.
+        """
+        async with asyncio.timeout(5):
+            header = await reader.readexactly(4)
+            size = struct.unpack_from("<H", header, 2)[0]
+            if header[:2] != b"\xa5\xa5" or not 8 <= size <= 4096:
+                raise ValueError("Invalid identity frame")
+            body = await reader.readexactly(size - 4)
+            if body[-2:] != b"\xa7\xa7":
+                raise ValueError("Invalid identity trailer")
+            request = json.loads(body[:-2])
+            login = request.get("login") if isinstance(request, dict) else None
+            if not isinstance(login, dict) or login.get("command") != "detect":
+                raise ValueError("Only identity detection is supported")
+            sequence = login.get("sequence_id", "0")
+            if type(sequence) not in (str, int) or len(str(sequence)) > 64:
+                raise ValueError("Invalid identity sequence")
+            service = self.service()
+            modules = service.native_snapshot().get("info", {}).get("module", [])
+            version = next((m.get("sw_ver", "") for m in modules if m.get("name") == "ota"), "")
+            response = json.dumps(
+                {
+                    "login": {
+                        "command": "detect",
+                        "sequence_id": sequence,
+                        "id": service.serial,
+                        "model": "C12",
+                        "name": "Bridge P1S",
+                        "version": version,
+                        "bind": "free",
+                        "connect": "lan",
+                    }
+                },
+                separators=(",", ":"),
+            ).encode()
+            writer.write(
+                b"\xa5\xa5" + struct.pack("<H", len(response) + 6) + response + b"\xa7\xa7"
+            )
+            await writer.drain()
+            self.note("detect", "identity_sent")
 
     async def camera(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         auth = await asyncio.wait_for(reader.readexactly(80), 10)
