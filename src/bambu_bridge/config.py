@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # Server
     bridge_host: str = "0.0.0.0"  # noqa: S104 - bind-all is intended (Tailscale-fronted)
     bridge_port: int = 8080
+    bridge_https_port: int = 8443
+    bridge_http_enabled: bool = True  # retain existing installations' compatibility
+    bridge_pairing_dir: str | None = None  # runner defaults beside the jobs DB
+    bridge_pairing_url: str | None = None  # direct local HTTPS; auto-detect if omitted
+    bridge_pairing_remote_url: str | None = None  # optional direct HTTPS over Tailscale
+    bridge_trusted_proxies: str = ""  # opt in exact trusted reverse proxy source IPs
+    bridge_native_host: str | None = None  # explicit private IPv4; no listeners until enabled
     bridge_api_key: str = ""  # empty => fail closed (see api/auth.py)
 
     # Optional read-only viewer token (env BRIDGE_VIZ_TOKEN).

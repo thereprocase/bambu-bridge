@@ -36,6 +36,9 @@ to use vendor cloud services or trademarks beyond identifying compatibility.
 
 ## Source access for users of the service
 
+Local pairing QR generation uses [python-qrcode](https://github.com/lincolnloop/python-qrcode),
+distributed under its BSD license. It is recorded in the dependency lockfile.
+
 The browser app and viewer offer a source link to this release. If you distribute
 or run a modified covered version for network users, provide its corresponding
 source as required by AGPL section 13, retain notices, and update the source link

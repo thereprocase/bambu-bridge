@@ -6,6 +6,36 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-09-10
+
+- Connect stock OrcaSlicer 2.4.2 through an HTTPS Octo/Klipper print-host adapter.
+- Add Settings → OrcaSlicer: per-printer revocable keys, copyable connection
+  fields, upload-only permission or explicit fixed AMS / external-spool printing.
+- Preserve sliced bytes, use unique SD filenames, and reuse validation and the
+  existing print lifecycle. Reject unsupported plate selections and busy printers.
+- Keep slicer keys separate from owner and phone credentials; hash at rest,
+  require HTTPS, redact logs and reject keys outside their printer/adapter scope.
+- Preview supports one sliced plate at position 1; native AMS sync is separate.
+
+## [0.2.1] — 2026-09-10
+
+- Add Settings → Phones & pairing to the owner-authenticated HTTPS dashboard:
+  generate/copy/cancel expiring QR codes, list phones, and revoke their access.
+- Support explicit home Wi-Fi and remote Tailscale pairing addresses, without
+  deriving the paired identity's address from browser or forwarded host headers.
+- Hide used/expired codes and cancel the current code when leaving Settings.
+- Require HTTPS for dashboard device management; CLI recovery remains available.
+
+## [0.2.0] — 2026-09-10
+
+- Add HTTPS on port 8443 with a persistent per-bridge identity and automatic
+  certificate renewal, alongside the optional legacy HTTP listener.
+- Add private, ten-minute, single-use pairing QR codes and separate revocable
+  phone credentials. Paired credentials require HTTPS/WSS.
+- Add owner/CLI device management and self-revocation; close revoked live sockets.
+- Run both listeners with one application lifespan and one printer registry.
+- Remove submitted values from validation diagnostics to protect pairing secrets.
+
 ## [0.1.3] — 2026-09-09
 
 - Fix HTTP access logging with Uvicorn's native formatter. Credential redaction

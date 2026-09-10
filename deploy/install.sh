@@ -234,6 +234,13 @@ fi
 # Ensure data directories exist.
 DATA_DIR="${HOME}/.local/share/bambu-bridge"
 mkdir -p "${DATA_DIR}/backups"
+# Persist these defaults so service and local pairing commands use the same DB.
+if ! grep -q '^BRIDGE_DB_PATH=' "${ENV_FILE}"; then
+    printf '\nBRIDGE_DB_PATH=%s/jobs.db\n' "${DATA_DIR}" >> "${ENV_FILE}"
+fi
+if ! grep -q '^BRIDGE_FILES_DIR=' "${ENV_FILE}"; then
+    printf 'BRIDGE_FILES_DIR=%s/files\n' "${DATA_DIR}" >> "${ENV_FILE}"
+fi
 log "Data directory: ${DATA_DIR}"
 
 # ---------------------------------------------------------------------------
@@ -362,3 +369,10 @@ echo "     -d '{\"host\":\"<printer-ip>\",\"access_code\":\"<8-digit code>\",\"f
 echo ""
 echo " See deploy/DEPLOY.md for the full runbook."
 echo ""
+
+if [[ -t 1 && "${NO_SERVICE}" != true ]]; then
+    PAIR_PAGE="${DATA_DIR}/pair-$(date -u +%Y%m%dT%H%M%SZ).html"
+    echo " Android: open Settings -> Pair with QR code and scan below."
+    "${VENV}/bin/bambu-bridge" --env-file "${ENV_FILE}" pair --output "${PAIR_PAGE}" --terminal ||
+        warn "Could not create the pairing code. See docs/LOCAL-PAIRING.md."
+fi

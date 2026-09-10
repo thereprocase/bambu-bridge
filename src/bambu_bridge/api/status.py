@@ -48,7 +48,9 @@ async def printer_status(websocket: WebSocket, printer_id: str) -> None:
         header = websocket.headers.get("authorization", "")
         if header.lower().startswith("bearer "):
             token = header[7:]
-    if not check_ws_token(token, settings):
+    pairing = getattr(websocket.app.state, "pairing", None)
+    secure = websocket.url.scheme == "wss"
+    if not check_ws_token(token, settings, pairing, secure):
         await websocket.close(code=_WS_POLICY_VIOLATION, reason="unauthorized")
         return
 
@@ -73,9 +75,10 @@ async def printer_status(websocket: WebSocket, printer_id: str) -> None:
 
         sender = asyncio.create_task(_pump(websocket, sub, service, initial))
         receiver = asyncio.create_task(_drain_client(websocket))
+        guard = asyncio.create_task(_watch_auth(websocket, token, settings, pairing, secure))
         try:
             done, pending = await asyncio.wait(
-                {sender, receiver}, return_when=asyncio.FIRST_COMPLETED
+                {sender, receiver, guard}, return_when=asyncio.FIRST_COMPLETED
             )
             for task in pending:
                 task.cancel()
@@ -84,6 +87,13 @@ async def printer_status(websocket: WebSocket, printer_id: str) -> None:
                     await task
         finally:
             log.info("ws.disconnected", printer_id=printer_id)
+
+
+async def _watch_auth(websocket: WebSocket, token: str | None, settings: Any,
+                      pairing: Any, secure: bool) -> None:
+    while check_ws_token(token, settings, pairing, secure):  # noqa: ASYNC110 - CLI revokes across processes
+        await asyncio.sleep(1)
+    await websocket.close(code=1008, reason="credential_revoked")
 
 
 async def _pump(

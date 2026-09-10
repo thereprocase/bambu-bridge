@@ -1,5 +1,14 @@
 # Bambu Bridge
 
+**Print from Orca through your bridge.** One P1S endpoint and one access code
+let you choose a **four-color AMS print or an external-spool print** for each
+job, with live printer status and camera access. No connection changes between
+jobs. Native P1S support is available in the
+[v0.3.1 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.3.1).
+
+[Project site and explainer](https://thereprocase.github.io/bambu-bridge/#orca)
+· [Native setup](docs/NATIVE-P1S.md) · [Validation](VALIDATION.md)
+
 A small self-hosted server that connects to a **Bambu Lab P1S** over your
 local network and re-exposes it as a clean **HTTP + WebSocket API** — plus a
 **3D print-progress viewer** you can open in any browser.
@@ -20,9 +29,19 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.1.3 is an AGPL-3.0-only source release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.3.1 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
+
+**Orca:** Follow [native server setup](docs/NATIVE-P1S.md#server-setup), then
+open your HTTPS dashboard → **Settings → Orca · native P1S** and check
+**Expose to Orca as a P1S**. Copy the bridge address and generated native code.
+Use Orca's P1S preset with **Use 3rd-party print host** turned **off**.
+
+**Android: [scan to pair securely over your LAN](docs/LOCAL-PAIRING.md).**
+Bridge 0.2.2 and Android 0.19.0 add a one-use pairing QR, encrypted local
+connections, and individually revocable phones. Existing HTTP and Tailscale
+connections remain available for compatibility.
 
 New here? Follow **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a
 numbered, zero-to-first-print walkthrough: install the bridge, set an API key,
@@ -31,6 +50,39 @@ submit your first print.
 
 If something doesn't work, **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**
 has a symptom → cause → fix table for every error the bridge can show.
+
+## A P1S endpoint on your tailnet
+
+The **bridge server owns the Tailscale IP**. It presents a P1S endpoint to Orca
+and relays traffic to your physical printer over the printer's ordinary LAN
+connection. Tailscale runs on the bridge host and your client computer.
+
+```mermaid
+flowchart LR
+    O[OrcaSlicer] <-->|Private Tailscale connection| B["Bambu Bridge<br/>Owns the Tailscale IP"]
+    B <-->|Printer LAN protocols| P["Physical P1S<br/>Uses its LAN address"]
+```
+
+The bridge relays file uploads and print commands, forwards live AMS and
+external-spool state, and shares the printer's camera stream. In Orca's
+**Print plate** dialog, choose either:
+
+- **AMS:** map up to four colors to the four slots in your AMS.
+- **External spool:** select the external spool for that job.
+
+Both use the same printer entry, address and native access code. The choice
+belongs to the job; it is not fixed in a key or server setting. Keep native
+access on a trusted private network or Tailscale. The bridge's native code is
+separate from the printer's original code and the dashboard owner key.
+
+**Verified on a P1S:** live AMS/external status, a read-only command response,
+camera JPEG frames and FTPS file listing. Automated TLS tests also cover
+upload/download and native print-command forwarding. A completed physical
+print through the installed Orca UI remains unverified. See
+[native setup and evidence](docs/NATIVE-P1S.md).
+
+The older [HTTPS upload adapter](docs/ORCA.md) remains available for clients
+that need upload-only access or a fixed filament mapping.
 
 ## Android companion
 
@@ -80,18 +132,18 @@ browser and works great over Tailscale.
 [P1S on your LAN]
    │ MQTT 8883 (TLS, self-signed)
    │ FTPS 990 (implicit TLS, passive 50000-50100)
-   │ Camera 6000 (raw TCP, custom protocol)
+   │ Camera 6000 (TLS, framed JPEG stream)
    ▼
 [bridge on a Linux host] ── SQLite (jobs, events, printers)
-   │ HTTP / WebSocket on :8080
+   │ HTTPS / secure WebSocket on :8443; HTTP compatibility on :8080
    ▼
 [your tailnet — e.g. Tailscale]
    ▼
 [phone browser · companion app · Home Assistant]
 ```
 
-The bridge holds the **one** connection your printer allows and fans it out to
-as many clients as you like. Internally it has three load-bearing layers:
+The bridge shares its MQTT and camera sessions across clients and opens FTPS
+connections for file transfers. Internally it has three main layers:
 
 - `protocol/` — the pure printer wire protocol (no web framework), testable
   against a mock printer.
