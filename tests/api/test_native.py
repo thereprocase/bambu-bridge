@@ -69,7 +69,9 @@ async def gateway(tmp_path):
             registry=SimpleNamespace(get=lambda _: service), settings=Settings(), ftps_port=1
         )
     )
-    gateway = NativeGateway(app, PairingStore(tmp_path / "pairing"), "127.0.0.1", ports=(0, 0, 0))
+    gateway = NativeGateway(
+        app, PairingStore(tmp_path / "pairing"), "127.0.0.1", ports=(0, 0, 0), detect_port=0
+    )
     setup = await gateway.enable(SERIAL)
     gateway.test_code = setup["access_code"]
     try:
@@ -80,6 +82,92 @@ async def gateway(tmp_path):
 
 def port(gateway, index):
     return gateway.servers[index].sockets[0].getsockname()[1]
+
+
+async def test_orca_ip_detect_returns_identity_without_credentials(gateway):
+    # Native bind_detect framing, independent of the server encoder. Splitting
+    # the request across TCP writes covers a real stream rather than one recv.
+    body = b'{"login":{"command":"detect","sequence_id":"20000"}}'
+    frame = b"\xa5\xa5" + struct.pack("<H", len(body) + 6) + body + b"\xa7\xa7"
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 3))
+    for part in (frame[:1], frame[1:5], frame[5:]):
+        writer.write(part)
+        await writer.drain()
+        await asyncio.sleep(0)
+    response = await asyncio.wait_for(reader.read(), 3)
+    writer.close()
+    await writer.wait_closed()
+    assert response[:2] == b"\xa5\xa5" and response[-2:] == b"\xa7\xa7"
+    assert struct.unpack_from("<H", response, 2)[0] == len(response)
+    assert json.loads(response[4:-2]) == {
+        "login": {
+            "command": "detect",
+            "sequence_id": "20000",
+            "id": SERIAL,
+            "model": "C12",
+            "name": "Bridge P1S",
+            "version": "01.02",
+            "bind": "free",
+            "connect": "lan",
+        }
+    }
+    assert gateway.test_code.encode() not in response
+    assert ACCESS_CODE.encode() not in response
+    gateway.service().send_raw.assert_not_awaited()
+    assert gateway.status()["connections"]["detect"]["phase"] == "identity_sent"
+    assert gateway.status()["connections"]["detect"]["tls_connections"] == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"login":{"command":"login","sequence_id":"1"}}',
+        b'{"print":{"command":"project_file"}}',
+        b'{"login":{"command":"detect","sequence_id":{}}}',
+        b"[]",
+        b"{",
+    ],
+)
+async def test_identity_port_rejects_non_detection_requests(gateway, body):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 3))
+    writer.write(b"\xa5\xa5" + struct.pack("<H", len(body) + 6) + body + b"\xa7\xa7")
+    await writer.drain()
+    assert await asyncio.wait_for(reader.read(), 3) == b""
+    writer.close()
+    await writer.wait_closed()
+    gateway.service().send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        b"\xa5\xa5\xff\xff",
+        b"\xa5\xa5\x00\x00",
+        b"XX\x08\x00{}\xa7\xa7",
+        b"\xa5\xa5\x08\x00{}XX",
+    ],
+)
+async def test_identity_port_rejects_bad_framing_without_waiting(gateway, frame):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 3))
+    writer.write(frame)
+    await writer.drain()
+    assert await asyncio.wait_for(reader.read(), 3) == b""
+    writer.close()
+    await writer.wait_closed()
+
+
+async def test_disable_closes_identity_listener_and_partial_request(gateway):
+    address = port(gateway, 3)
+    reader, writer = await asyncio.open_connection("127.0.0.1", address)
+    writer.write(b"\xa5")
+    await writer.drain()
+    await asyncio.sleep(0.02)
+    await gateway.disable()
+    assert await asyncio.wait_for(reader.read(), 3) == b""
+    writer.close()
+    await writer.wait_closed()
+    with pytest.raises(OSError):
+        await asyncio.open_connection("127.0.0.1", address)
 
 
 async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
@@ -122,6 +210,28 @@ async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
         await writer.wait_closed()
 
 
+async def test_shared_native_code_supports_simultaneous_computers(gateway):
+    options = {
+        "hostname": "127.0.0.1",
+        "port": port(gateway, 0),
+        "username": "bblp",
+        "password": gateway.test_code,
+        "tls_context": tls(),
+    }
+    async with (
+        aiomqtt.Client(**options, identifier="computer-one") as first,
+        aiomqtt.Client(**options, identifier="computer-two") as second,
+    ):
+        for client in (first, second):
+            await client.subscribe(f"device/{SERIAL}/report")
+            await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
+        update = {"print": {"command": "push_status", "gcode_state": "RUNNING"}}
+        gateway.service().raw_bus.publish(Event("snapshot", update))
+        for client in (first, second):
+            message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
+            assert json.loads(message.payload) == update
+
+
 async def test_wrong_key_and_topic_never_reach_printer(gateway):
     with pytest.raises(aiomqtt.MqttError):
         async with aiomqtt.Client(
@@ -155,7 +265,9 @@ async def test_code_hash_disable_and_restart_state(gateway):
     assert not await gateway.authenticate("bblp", code, "fixture")
     with pytest.raises(OSError):
         await asyncio.open_connection("127.0.0.1", old_port)
-    resumed = NativeGateway(gateway.app, gateway.store, gateway.host, ports=(0, 0, 0))
+    resumed = NativeGateway(
+        gateway.app, gateway.store, gateway.host, ports=(0, 0, 0), detect_port=0
+    )
     assert resumed.config is None
 
 
