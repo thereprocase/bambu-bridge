@@ -1,7 +1,7 @@
 """Native gateway setup remains owner-only and HTTPS-only."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -26,6 +26,7 @@ def test_native_owner_boundary_and_no_store(tmp_path):
             enable=AsyncMock(return_value={"access_code": "FIXTURE1", "enabled": True}),
             disable=AsyncMock(),
             announce=AsyncMock(),
+            setup_status=lambda _: {"printer_connected": False, "camera_streaming": False},
             close=AsyncMock(),
         )
         app.state.native_gateway = gateway
@@ -33,6 +34,8 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         for method, path in [
             ("GET", "/native"),
             ("GET", "/native/access-code"),
+            ("GET", "/native/setup"),
+            ("GET", "/native/setup-status"),
             ("POST", "/native/access-code"),
             ("POST", "/native"),
             ("DELETE", "/native"),
@@ -50,6 +53,14 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert "access_code" not in client.get("/api/v1/native", headers=owner).json()
+        with patch("bambu_bridge.api.native.setup_material", return_value={"script": "fixture"}):
+            setup = client.get("/api/v1/native/setup", headers=owner)
+            assert setup.status_code == 200 and setup.json() == {"script": "fixture"}
+            assert setup.headers["cache-control"] == "no-store"
+            assert setup.headers["referrer-policy"] == "no-referrer"
+        check = client.get("/api/v1/native/setup-status", headers=owner)
+        assert check.json() == {"printer_connected": False, "camera_streaming": False}
+        assert check.headers["cache-control"] == "no-store"
         saved = client.post(
             "/api/v1/native/access-code", headers=owner, json={"access_code": "FIXTURE1"}
         )
@@ -73,6 +84,13 @@ def test_native_owner_boundary_and_no_store(tmp_path):
             ).status_code
             == 401
         )
+        for path in ["/native/setup", "/native/setup-status"]:
+            assert (
+                client.get(
+                    "/api/v1" + path, headers={"Authorization": "Bearer " + phone["token"]}
+                ).status_code
+                == 401
+            )
         assert client.delete("/api/v1/native", headers=owner).status_code == 204
         gateway.disable.assert_awaited_once()
         app.state.registry.get = lambda _: SimpleNamespace(model="A1")

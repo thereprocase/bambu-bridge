@@ -628,6 +628,17 @@ a:hover{text-decoration:underline;}
 #native-p1s .select, #native-p1s .input { min-width:0; width:100%; max-width:100%; box-sizing:border-box; }
 .native-toggle { display:flex; align-items:center; gap:12px; cursor:pointer; padding:16px; background:var(--panel); border:2px solid var(--accent); border-radius:12px; }
 .native-toggle input { width:22px; height:22px; flex:0 0 22px; }
+.native-guide { display:grid; gap:16px; }
+.native-step { padding:clamp(12px,2vw,24px); border:1px solid var(--panel-edge); border-left:5px solid var(--accent); background:var(--surface); border-radius:10px; min-width:0; }
+.native-step__title { display:flex; align-items:center; gap:12px; margin:0 0 14px; font-size:1.1rem; }
+.native-step__number { display:grid; place-items:center; flex:0 0 32px; height:32px; background:var(--accent); color:var(--ink); border-radius:50%; }
+.native-step p { margin:12px 0; }
+.native-step .btn { white-space:normal; max-width:100%; }
+.native-manual { padding:14px; border:1px solid var(--panel-edge); border-radius:8px; margin-top:16px; min-width:0; }
+.native-manual summary { cursor:pointer; font-weight:700; text-decoration:underline; text-underline-offset:4px; }
+.native-command { display:block; height:240px; width:100%; margin-top:12px; font-family:monospace; font-size:12px; resize:vertical; }
+.native-check { padding:12px; border-left:4px solid var(--text-dim); background:var(--panel); }
+.native-check.is-ready { border-color:var(--state-finished); color:var(--state-finished); }
 #native-p1s ol { padding-left:24px; }
 #native-p1s li + li { margin-top:10px; }
 .pairing-qr-panel { margin-top:20px; padding-top:16px; border-top:1px solid var(--panel-edge); }
