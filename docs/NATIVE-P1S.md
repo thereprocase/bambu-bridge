@@ -37,7 +37,9 @@ by the dashboard, and **Printer model:** `P1S`. Then click **Connect**.
 The code is the same for both paths. Codes created before v0.3.3 were stored
 only as hashes. Reconnecting an already configured Orca client saves its
 verified code for future dashboard retrieval without changing it. If that code
-was lost, replace it once; the new code remains available in the dashboard.
+is handy, **Save existing code** in the dashboard restores it immediately
+without a reconnect or rotation. If it was lost, replace it once; the new code
+remains available in the dashboard.
 
 Alternatively, open Orca's printer list and click **Find in Orca on this computer**
 in the dashboard if the printer is not discovered. Open the dashboard on the

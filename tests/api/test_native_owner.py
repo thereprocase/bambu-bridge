@@ -22,6 +22,7 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         gateway = SimpleNamespace(
             status=lambda: {"configured": True, "enabled": False},
             saved_code=lambda: "FIXTURE1",
+            authenticate=AsyncMock(return_value=True),
             enable=AsyncMock(return_value={"access_code": "FIXTURE1", "enabled": True}),
             disable=AsyncMock(),
             announce=AsyncMock(),
@@ -32,6 +33,7 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         for method, path in [
             ("GET", "/native"),
             ("GET", "/native/access-code"),
+            ("POST", "/native/access-code"),
             ("POST", "/native"),
             ("DELETE", "/native"),
             ("POST", "/native/announce"),
@@ -48,6 +50,16 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert "access_code" not in client.get("/api/v1/native", headers=owner).json()
+        saved = client.post(
+            "/api/v1/native/access-code", headers=owner, json={"access_code": "FIXTURE1"}
+        )
+        assert saved.json() == {"access_code": "FIXTURE1"}
+        assert saved.headers["cache-control"] == "no-store"
+        gateway.authenticate.return_value = False
+        rejected = client.post(
+            "/api/v1/native/access-code", headers=owner, json={"access_code": "WRONG123"}
+        )
+        assert rejected.status_code == 422 and "WRONG123" not in rejected.text
         for _ in range(2):
             saved = client.get("/api/v1/native/access-code", headers=owner)
             assert saved.json() == {"access_code": "FIXTURE1"}
