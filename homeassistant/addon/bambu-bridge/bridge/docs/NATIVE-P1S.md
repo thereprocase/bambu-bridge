@@ -34,6 +34,15 @@ The gateway answers access-code queries with the native bridge code. It does
 not expose the physical printer's password through native status replies or
 let that password replace Orca's bridge credential.
 
+## Camera correction in 0.4.2
+
+If printer status connects but native live view stalls, upgrade the bridge to
+0.4.2. This corrects JPEG keyframe metadata required by Orca's camera player.
+For a client already configured with 0.4.1, dismiss the failed connection
+dialog and retry Play on **Bridge P1S**. No new native code or certificate is
+needed. The separate-identity upgrade instructions above still apply to older
+clients configured before 0.4.1.
+
 ## Connect Orca on Windows
 
 1. On the computer where Orca will run, open your bridge dashboard over HTTPS.

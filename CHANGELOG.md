@@ -6,6 +6,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-10
+
+- Mark native P1S JPEG frames as keyframes, matching the physical camera header.
+  Orca's player otherwise receives JPEG bytes but waits indefinitely for an
+  independently decodable frame and reports a live-view connection failure.
+- Check the entire native camera frame header in protocol regression tests.
+  An installed Orca camera-library fixture verifies that changing only this
+  flag makes stream startup and frame delivery succeed.
+- Existing 0.4.1 printer identities, access codes and certificates are retained;
+  this camera correction requires only a server upgrade.
+
 ## [0.4.1] - 2026-09-10
 
 - Give Bridge P1S a persistent virtual serial distinct from the physical P1S.
