@@ -6,6 +6,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-10
+
+- Give Bridge P1S a persistent virtual serial distinct from the physical P1S.
+  Discovery, identification, TLS certificates, MQTT topics and setup agree on
+  that identity. The Windows helper adds a second printer without overwriting
+  the physical printer entry or its credentials.
+- Translate exact printer identity values between native clients and the
+  upstream printer while preserving component serials and file/AMS semantics.
+- Answer native access-code requests locally and transpose upstream access-code
+  reports, so Orca cannot replace its bridge password with the physical code.
+- Existing installations keep their native code and key, but the virtual serial
+  and certificate require a fresh setup command on each Orca computer.
+
 ## [0.4.0] - 2026-09-10
 
 - Add an owner-only HTTPS Windows setup command with instance certificate
