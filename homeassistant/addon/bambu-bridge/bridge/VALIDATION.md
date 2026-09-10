@@ -1,3 +1,27 @@
+# Guided Orca setup and native address isolation - 0.4.0
+
+The existing offsite Orca connection was confirmed by the user after correcting
+its saved address and adding the bridge certificate to Orca's printer bundle.
+A subsequent live-view timeout exposed `print.net.info[].ip`: firmware encodes
+IPv4 as a little-endian integer, which Orca consumes to overwrite its active
+address. The deployed old feed was observed advertising the physical interface.
+A separately authenticated Windows client received a valid native camera JPEG.
+
+The new wire checks cover both bootstrap and incremental address transposition,
+alternate interfaces and URL references, zero addresses, unrelated numbers,
+input immutability, and per-computer connection isolation. Owner API checks
+cover HTTPS, authentication, no-store responses and exclusion of paired phones.
+Windows PowerShell fixture checks cover fresh registration and repair, repeat
+runs, Unicode/nested settings, other printers, shared-code fields, exact backups,
+valid checksums and pinned TLS. They leave the installed Orca profile untouched.
+A dedicated Windows CI job runs the shipped helper against disposable profiles
+and a local TLS endpoint. Browser checks cover guided copy, manual controls and
+separate live status at mobile, desktop and 4K sizes.
+
+These checks do not establish an actual Windows UAC interaction on every
+installation, macOS/Linux automation, Orca camera playback after deployment,
+or a completed physical print. No physical print was started by this release.
+
 # Repeatable native code retrieval — 0.3.3
 
 All 24 focused native/owner API tests pass. Coverage includes repeated HTTPS
