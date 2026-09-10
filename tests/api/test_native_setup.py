@@ -13,7 +13,7 @@ import pytest
 from bambu_bridge.native_gateway import native_report
 from bambu_bridge.native_setup import setup_material
 from bambu_bridge.service.events import Event
-from tests.api.test_native import SERIAL, gateway, port, tls  # noqa: F401
+from tests.api.test_native import gateway, port, tls  # noqa: F401
 
 
 def packed(address):
@@ -65,7 +65,7 @@ async def test_bootstrap_and_incremental_reports_keep_orca_on_gateway(gateway): 
         password=gateway.test_code,
         tls_context=tls(),
     ) as client:
-        await client.subscribe(f"device/{SERIAL}/report")
+        await client.subscribe(f"device/{gateway.serial}/report")
         first = json.loads((await asyncio.wait_for(anext(client.messages.__aiter__()), 3)).payload)
         assert first["print"]["net"]["info"][0]["ip"] == packed(gateway.host)
         assert gateway.setup_status("127.0.0.1")["printer_connected"]
@@ -82,16 +82,13 @@ async def test_bootstrap_and_incremental_reports_keep_orca_on_gateway(gateway): 
 
 
 async def test_setup_uses_instance_identity_and_saved_code_without_rotation(gateway):  # noqa: F811
-    gateway.service().serial = "SETUPFIXTURE001"
-    await gateway.close()
-    await gateway.start()
     before = dict(gateway.config)
     material = setup_material(gateway)
     match = re.search(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", material["script"])
     assert match
     payload = json.loads(base64.b64decode(match[1]))
     assert payload["host"] == gateway.host
-    assert payload["serial"] == "SETUPFIXTURE001"
+    assert payload["serial"] == gateway.serial != gateway.service().serial
     assert payload["code"] == gateway.test_code
     assert payload["fingerprint"] == material["certificate_sha256"]
     assert "PRIVATE KEY" not in material["certificate_pem"]

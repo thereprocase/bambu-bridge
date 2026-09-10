@@ -55,7 +55,7 @@ export function mountNative(parent, app) {
     manual.appendChild(manualBody);
     stopGuide = mountNativeGuide(output, app, current, manual);
     output.appendChild(manual);
-    for (const [label, value] of [['Printer address', data.host], ['Printer serial', data.printer_id]]) {
+    for (const [label, value] of [['Printer address', data.host], ['Printer serial', data.serial]]) {
       const input = el('input', { class: 'input input--mono', readonly: '', 'aria-label': label,
         type: label === 'Native access code' ? 'password' : 'text', autocomplete: 'off' });
       input.value = value;

@@ -21,9 +21,9 @@ def setup_material(gateway: NativeGateway) -> dict[str, str]:
     code = gateway.saved_code()
     if not code:
         raise ValueError("Save your existing native code below before preparing this computer.")
-    serial = gateway.service().serial
-    if len(serial) != 15 or not serial.isascii() or not serial.isalnum():
-        raise ValueError("Orca setup needs the printer's 15-character serial number.")
+    serial = gateway.serial
+    if not serial or len(serial) != 15 or not serial.isascii() or not serial.isalnum():
+        raise ValueError("Orca setup needs the bridge's virtual printer serial number.")
     pem = (gateway.store.directory / "native-rsa" / "identity.crt").read_text()
     certificate = x509.load_pem_x509_certificate(pem.encode())
     der = certificate.public_bytes(serialization.Encoding.DER)

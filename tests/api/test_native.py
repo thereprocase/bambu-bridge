@@ -103,7 +103,7 @@ async def test_orca_ip_detect_returns_identity_without_credentials(gateway):
         "login": {
             "command": "detect",
             "sequence_id": "20000",
-            "id": SERIAL,
+            "id": gateway.serial,
             "model": "C12",
             "name": "Bridge P1S",
             "version": "01.02",
@@ -178,7 +178,7 @@ async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
         password=gateway.test_code,
         tls_context=tls(),
     ) as client:
-        await client.subscribe(f"device/{SERIAL}/report")
+        await client.subscribe(f"device/{gateway.serial}/report")
         message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
         state = json.loads(message.payload)
         assert state["print"]["ams"]["ams"][0]["tray"][0]["id"] == "3"
@@ -193,7 +193,7 @@ async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
                 "url": "file:///sdcard/test.gcode.3mf",
             }
         }
-        await client.publish(f"device/{SERIAL}/request", json.dumps(command), qos=1)
+        await client.publish(f"device/{gateway.serial}/request", json.dumps(command), qos=1)
         gateway.service().send_raw.assert_awaited_once_with(command)
         # Identical acknowledgements must not be lost to normalized-state diffing.
         ack = {"print": {"command": "project_file", "sequence_id": "17", "result": "success"}}
@@ -231,7 +231,7 @@ async def test_shared_native_code_supports_simultaneous_computers(gateway):
         aiomqtt.Client(**options, identifier="computer-two") as second,
     ):
         for client in (first, second):
-            await client.subscribe(f"device/{SERIAL}/report")
+            await client.subscribe(f"device/{gateway.serial}/report")
             await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
         update = {"print": {"command": "push_status", "gcode_state": "RUNNING"}}
         gateway.service().raw_bus.publish(Event("snapshot", update))
@@ -374,7 +374,7 @@ async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
         password=gateway.test_code,
         tls_context=context,
     ) as client:
-        await client.subscribe(f"device/{SERIAL}/report")
+        await client.subscribe(f"device/{gateway.serial}/report")
         message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
         assert "print" in json.loads(message.payload)
         assert gateway.status()["connections"]["mqtt"]["phase"] == "authenticated"
@@ -420,6 +420,9 @@ async def test_discovery_is_private_and_contains_no_access_code(gateway, monkeyp
     assert [address[1] for _, address in messages] == [1990, 2021]
     for data, _ in messages:
         assert b"DevModel.bambu.com: C12" in data
+        assert f"USN: {gateway.serial}\r\n".encode() in data
+        assert b"DevName.bambu.com: Bridge P1S" in data
+        assert gateway.service().serial.encode() not in data
         assert gateway.test_code.encode() not in data
         assert b"Location: 127.0.0.1" in data
     with pytest.raises(ValueError):
