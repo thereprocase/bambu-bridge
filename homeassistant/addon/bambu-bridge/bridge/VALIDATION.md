@@ -1,6 +1,6 @@
 # Separate native printer identity - 0.4.1
 
-BlackTower's v0.4.0 setup completed, but subsequent Orca LAN discovery replaced
+A v0.4.0 setup completed, but subsequent Orca LAN discovery replaced
 the same-serial entry with the physical printer's name and address. Orca's
 DeviceCore/DevManager.cpp indexes those updates by device ID. The fix gives the
 bridge a separate persistent identity throughout native discovery, detection,
