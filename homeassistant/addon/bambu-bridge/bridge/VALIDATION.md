@@ -1,5 +1,11 @@
 # Guided Orca setup and native address isolation - 0.4.0
 
+Local release checks on Ubuntu/WSL with Python 3.12 collected 924 tests:
+914 passed and 10 skipped (the Windows helper test runs separately on Windows).
+All 27 focused native/owner regressions pass. Ruff and strict mypy pass across
+65 source modules. Chromium reports no JavaScript errors or horizontal overflow
+at widths 320, 1440 and 3840 pixels. Release notes record the final CI results.
+
 The existing offsite Orca connection was confirmed by the user after correcting
 its saved address and adding the bridge certificate to Orca's printer bundle.
 A subsequent live-view timeout exposed `print.net.info[].ip`: firmware encodes
