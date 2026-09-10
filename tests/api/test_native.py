@@ -13,10 +13,12 @@ from unittest.mock import AsyncMock
 
 import aiomqtt
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from bambu_bridge.config import Settings
 from bambu_bridge.native_gateway import NativeGateway
-from bambu_bridge.pairing import PairingStore
+from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.protocol.camera import build_auth_packet
 from bambu_bridge.protocol.ftps import _ImplicitFTP_TLS
 from bambu_bridge.service.events import Event, EventBus
@@ -185,6 +187,48 @@ async def test_failed_auth_rate_limited(gateway):
         assert not await gateway.authenticate("bblp", "BAD_CODE", "attacker")
     assert not await gateway.authenticate("bblp", gateway.test_code, "attacker")
     assert await gateway.authenticate("bblp", gateway.test_code, "different-peer")
+
+
+async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
+    directory = gateway.store.directory
+    phone_key, _, phone_pin = identity(directory)
+    before = phone_key.read_bytes()
+    native_cert = directory / "native-rsa/identity.crt"
+    key = serialization.load_pem_private_key(
+        (directory / "native-rsa/identity.key").read_bytes(), password=None
+    )
+    assert isinstance(key, rsa.RSAPrivateKey) and key.key_size >= 2048
+    context = ssl.create_default_context(cafile=str(native_cert))
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
+    context.set_ciphers("ECDHE-RSA-AES128-GCM-SHA256")
+    async with aiomqtt.Client(
+        "127.0.0.1",
+        port=port(gateway, 0),
+        username="bblp",
+        password=gateway.test_code,
+        tls_context=context,
+    ) as client:
+        await client.subscribe(f"device/{SERIAL}/report")
+        message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
+        assert "print" in json.loads(message.payload)
+        assert gateway.status()["connections"]["mqtt"]["phase"] == "authenticated"
+    assert identity(directory)[2] == phone_pin and phone_key.read_bytes() == before
+
+
+async def test_connection_diagnostics_do_not_expose_secrets(gateway):
+    with pytest.raises(aiomqtt.MqttError):
+        async with aiomqtt.Client(
+            "127.0.0.1",
+            port=port(gateway, 0),
+            username="bblp",
+            password="BAD_CODE",
+            tls_context=tls(),
+        ):
+            pytest.fail("Wrong code accepted")
+    diagnostics = gateway.status()["connections"]
+    assert diagnostics["mqtt"]["auth_failures"] == 1
+    value = json.dumps(diagnostics)
+    assert all(secret not in value for secret in ["BAD_CODE", gateway.test_code, "127.0.0.1"])
 
 
 async def test_disable_disconnects_active_clients(gateway):

@@ -75,6 +75,7 @@ async def serve_ftps(
                 continue
             if verb == "PASS" and backend is None:
                 if not await gateway.authenticate(user, argument, peer):
+                    gateway.note("ftps", "access_code_rejected")
                     await reply("530 Login incorrect")
                     return
                 service = gateway.service()
@@ -87,6 +88,7 @@ async def serve_ftps(
                     )._connect
                 )
                 await reply("230 Login successful")
+                gateway.note("ftps", "authenticated")
                 continue
             if backend is None:
                 await reply("530 Login first")

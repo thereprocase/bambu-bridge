@@ -1,5 +1,22 @@
 # Native P1S access in OrcaSlicer
 
+**One endpoint, one native access code, a choice for every print:** a four-color
+AMS job or an external-spool job. Keep the same printer entry in Orca for both;
+choose the source in **Print plate**, without changing the server connection.
+
+With Tailscale, the IP belongs to **the bridge server**. Orca connects to that
+server over the tailnet; the bridge communicates with the physical P1S over its
+LAN address. The printer itself does not run Tailscale. Uploads, commands,
+filament status and camera frames pass through the gateway.
+
+```mermaid
+flowchart LR
+    O[OrcaSlicer] <-->|Tailscale| B[Bridge server]
+    B <-->|Local network| P[P1S printer]
+```
+
+## Connect Orca
+
 Open the bridge dashboard over HTTPS, then **Settings → Orca · native P1S**.
 Select your P1S and check **Expose to Orca as a P1S**. Copy the server address,
 printer serial and separate native access code. The code is shown once;
@@ -16,12 +33,15 @@ Slice and open **Print plate**. The gateway forwards live printer reports and
 the native print command, including plate selection, AMS slot mapping and the
 external-spool choice. There is no fixed mapping attached to this connection.
 The Device view receives the printer's status and shared camera stream.
-The physical P1S and Orca still determine supported material combinations;
-the gateway does not add automatic mixing of AMS and an external spool.
+For a four-color AMS job, map the four slicer filaments to the four AMS slots.
+For an external-spool job, choose the external spool instead. Both use the
+same endpoint and code; a job uses one of these source modes.
 
-This is a preview. Wire-level tests cover MQTT, camera and FTPS with real TLS
-fixtures. A successful physical print through the installed Orca UI remains a
-separate acceptance step. See [VALIDATION.md](../VALIDATION.md) for evidence.
+This is a preview. Live checks on a P1S verified AMS/external status, a read-only
+command response, camera JPEG frames and an FTPS file listing. Wire-level tests
+cover MQTT command forwarding and upload/download with real TLS fixtures.
+A successful physical print through the installed Orca UI remains a separate
+acceptance step. See [VALIDATION.md](../VALIDATION.md) for evidence.
 
 ## Server setup
 
@@ -56,3 +76,20 @@ networking library, printer credential or vendor signing key is distributed.
 
 The older [HTTPS upload adapter](ORCA.md) remains available for clients that
 only need upload or a fixed mapping. Choose one connection style in Orca.
+
+
+## When Orca cannot connect
+
+Use v0.3.1 or newer for RSA-compatible native TLS. The gateway keeps this
+certificate separate from phone pairing and preserves the existing native
+access code when updating from v0.3.0.
+
+On the computer running Orca, verify that the bridge's private address is
+reachable over Tailscale and that TCP 8883, 990 and 6000 are allowed. Opening
+the dashboard through an HTTPS proxy does not by itself prove these native
+ports are reachable. Use the generated native code, not the printer's own code.
+
+In dashboard Settings, click **Check Orca connection** after trying Connect.
+It reports completed secure connections, rejected codes and protocol errors
+without recording credentials or peer addresses. If no secure connection has
+completed, check the address, network access and TLS compatibility first.

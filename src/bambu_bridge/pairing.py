@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -18,12 +19,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
 
@@ -118,10 +119,13 @@ class PairingStore:
 
     def invitation_active(self, invitation_id: str) -> bool:
         with self.connect() as db:
-            return db.execute(
-                "SELECT 1 FROM invitations WHERE hash = ? AND expires > ?",
-                (invitation_id, int(time.time())),
-            ).fetchone() is not None
+            return (
+                db.execute(
+                    "SELECT 1 FROM invitations WHERE hash = ? AND expires > ?",
+                    (invitation_id, int(time.time())),
+                ).fetchone()
+                is not None
+            )
 
     def cancel_invitation(self, invitation_id: str) -> None:
         with self.connect() as db:
@@ -147,8 +151,14 @@ class PairingStore:
             )
 
 
-def identity(directory: Path, *, common_name: str = "Bambu Bridge local") -> tuple[Path, Path, str]:
-    """Persist a P-256 TLS identity. Renew the certificate with the SAME key.
+def identity(
+    directory: Path,
+    *,
+    common_name: str = "Bambu Bridge local",
+    key_kind: Literal["ec", "rsa"] = "ec",
+    host: str | None = None,
+) -> tuple[Path, Path, str]:
+    """Persist a TLS identity. Renew the certificate with the SAME key.
 
     The app trusts the scanned SPKI, not a DNS/CA claim. Its native transport
     additionally restricts this trust to the explicitly paired HTTPS origin.
@@ -161,7 +171,11 @@ def identity(directory: Path, *, common_name: str = "Bambu Bridge local") -> tup
     if not key_path.exists():
         if cert_path.exists():
             raise ValueError("Identity key missing; restore backup before starting")
-        key = ec.generate_private_key(ec.SECP256R1())
+        key: ec.EllipticCurvePrivateKey | rsa.RSAPrivateKey = (
+            rsa.generate_private_key(public_exponent=65537, key_size=3072)
+            if key_kind == "rsa"
+            else ec.generate_private_key(ec.SECP256R1())
+        )
         data = key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
@@ -179,7 +193,9 @@ def identity(directory: Path, *, common_name: str = "Bambu Bridge local") -> tup
         finally:
             temporary.unlink()
     loaded_key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
-    if not isinstance(loaded_key, ec.EllipticCurvePrivateKey):
+    if not isinstance(loaded_key, ec.EllipticCurvePrivateKey | rsa.RSAPrivateKey):
+        raise ValueError("Unexpected identity key type")
+    if (key_kind == "rsa") != isinstance(loaded_key, rsa.RSAPrivateKey):
         raise ValueError("Unexpected identity key type")
     key = loaded_key
     public = key.public_key().public_bytes(
@@ -198,9 +214,15 @@ def identity(directory: Path, *, common_name: str = "Bambu Bridge local") -> tup
             raise ValueError("Certificate and identity key do not match")
         renew = cert.not_valid_after_utc < datetime.now(UTC) + timedelta(days=30)
         renew |= cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value != common_name
+        if host:
+            try:
+                names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                renew |= ipaddress.ip_address(host) not in names.get_values_for_type(x509.IPAddress)
+            except x509.ExtensionNotFound:
+                renew = True
     if renew:
         subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
-        cert = (
+        builder = (
             x509.CertificateBuilder()
             .subject_name(subject)
             .issuer_name(subject)
@@ -209,8 +231,18 @@ def identity(directory: Path, *, common_name: str = "Bambu Bridge local") -> tup
             .not_valid_before(datetime.now(UTC) - timedelta(minutes=5))
             .not_valid_after(datetime.now(UTC) + timedelta(days=365))
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            .sign(key, hashes.SHA256())
         )
+        if host:
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName(
+                    [
+                        x509.DNSName(common_name),
+                        x509.IPAddress(ipaddress.ip_address(host)),
+                    ]
+                ),
+                critical=False,
+            )
+        cert = builder.sign(key, hashes.SHA256())
         temporary = cert_path.with_name("certificate-" + secrets.token_hex(8) + ".tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "wb") as stream:

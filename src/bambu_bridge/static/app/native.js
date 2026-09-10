@@ -23,6 +23,24 @@ export function mountNative(parent, app) {
     el('label', { class: 'native-toggle mt-3', for: 'native-enabled' }, [toggle,
       el('strong', { text: 'Expose to Orca as a P1S' })]), status, output, rotate);
   card.appendChild(el('p', { class: 'field__hint mt-3', text: 'This is full native printer access over your private LAN/Tailscale connection. The separate 8-character code controls only this gateway. Disabling it disconnects native clients; a print already running continues.' }));
+  const diagnostics = el('p', { class: 'field__hint', role: 'status' });
+  const check = el('button', { class: 'btn btn--ghost mt-3', text: 'Check Orca connection' });
+  card.append(check, diagnostics);
+  check.addEventListener('click', async () => {
+    check.disabled = true;
+    const res = await app.api.api('/native', { cache: 'no-store' });
+    if (!current()) return;
+    check.disabled = false;
+    if (!res.ok) { diagnostics.textContent = res.message || 'Could not check connection.'; return; }
+    const phases = { tls_connected: 'secure connection opened', authenticated: 'code accepted',
+      access_code_rejected: 'native access code rejected', disconnected: 'connection ended',
+      timeout: 'connection timed out', protocol_error: 'protocol error',
+      unsupported_mqtt_version: 'unsupported MQTT version', streaming: 'camera frames flowing' };
+    const entries = Object.entries(res.data.connections || {});
+    diagnostics.textContent = entries.length ? entries.map(([name, info]) =>
+      `${name.toUpperCase()}: ${phases[info.phase] || 'waiting'} (${info.tls_connections} secure connections, ${info.auth_failures} rejected codes).`).join(' ')
+      : 'No completed secure connection since the server started. Check the address and private network connection, then try Connect in Orca again.';
+  });
   function message(text, error = false) { status.textContent = text; status.className = 'statusline ' + (error ? 'is-err' : 'is-info'); }
   function showSetup(data) {
     clear(output);

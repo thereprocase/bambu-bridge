@@ -95,6 +95,7 @@ class NativeGateway:
         self.config: dict[str, str] | None = None
         self.context: ssl.SSLContext | None = None
         self.last_error: str | None = None
+        self.diagnostics: dict[str, dict[str, Any]] = {}
         with store.connect() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS native_gateway (
                 id INTEGER PRIMARY KEY CHECK(id=1), printer_id TEXT NOT NULL,
@@ -119,6 +120,7 @@ class NativeGateway:
             "printer_id": self.config["printer_id"] if self.config else None,
             "model": "P1S",
             "error": self.last_error,
+            "connections": self.diagnostics,
             "ports": {"mqtt": self.ports[0], "ftps": self.ports[1], "camera": self.ports[2]},
         }
 
@@ -126,8 +128,12 @@ class NativeGateway:
         if not self.config:
             return
         service = self.service()
-        directory = self.store.directory / "native"
-        key, cert, _ = identity(directory, common_name=service.serial)
+        # Native TLS clients may offer RSA-authenticated cipher suites only.
+        # Keep this identity separate from pinned phones and the old EC leaf.
+        directory = self.store.directory / "native-rsa"
+        key, cert, _ = identity(
+            directory, common_name=service.serial, key_kind="rsa", host=self.host
+        )
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(cert), str(key))
@@ -255,19 +261,38 @@ class NativeGateway:
             writer.close()
             return
         self.writers.add(writer)
+        protocol = (
+            "mqtt" if handler == self.mqtt else "camera" if handler == self.camera else "ftps"
+        )
+        self.note(protocol, "tls_connected")
         try:
             if handler == self.mqtt or handler == self.camera:
                 await handler(reader, writer)
             else:
                 await handler(self, reader, writer)
-        except (Exception, asyncio.CancelledError):
-            # Do not log protocol payloads, codes, file names or camera bytes.
+        except asyncio.CancelledError:
             pass
+        except (asyncio.IncompleteReadError, ConnectionError):
+            self.note(protocol, "disconnected")
+        except TimeoutError:
+            self.note(protocol, "timeout")
+        except Exception:
+            # Do not log protocol payloads, codes, file names or camera bytes.
+            self.note(protocol, "protocol_error")
         finally:
             self.writers.discard(writer)
             writer.close()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(writer.wait_closed(), 2)
+
+    def note(self, protocol: str, phase: str) -> None:
+        previous = self.diagnostics.get(protocol, {})
+        self.diagnostics[protocol] = {
+            "phase": phase,
+            "updated": int(time.time()),
+            "tls_connections": previous.get("tls_connections", 0) + (phase == "tls_connected"),
+            "auth_failures": previous.get("auth_failures", 0) + (phase == "access_code_rejected"),
+        }
 
     async def camera(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         auth = await asyncio.wait_for(reader.readexactly(80), 10)
@@ -276,11 +301,14 @@ class NativeGateway:
         user = auth[16:48].split(b"\0", 1)[0].decode("ascii")
         code = auth[48:80].split(b"\0", 1)[0].decode("ascii")
         if not await self.authenticate(user, code, writer.get_extra_info("peername")[0]):
+            self.note("camera", "access_code_rejected")
             return
+        self.note("camera", "authenticated")
         async with self.service().camera.subscribe() as queue:
             while True:
                 self.service()  # fence changed printer certificate / deleted printer
                 jpeg = await asyncio.wait_for(queue.get(), 45)
+                self.note("camera", "streaming")
                 writer.write(struct.pack("<IIII", len(jpeg), 0, 0, 0) + jpeg)
                 await asyncio.wait_for(writer.drain(), 10)
 
@@ -288,6 +316,7 @@ class NativeGateway:
         head, data = await asyncio.wait_for(read_packet(reader), 10)
         protocol, pos = take(data, 0)
         if head != 0x10 or protocol != b"MQTT" or data[pos] != 4:
+            self.note("mqtt", "unsupported_mqtt_version")
             writer.write(packet(0x20, b"\x00\x01"))
             await writer.drain()
             return
@@ -303,10 +332,12 @@ class NativeGateway:
         if not await self.authenticate(
             user.decode(), code.decode(), writer.get_extra_info("peername")[0]
         ):
+            self.note("mqtt", "access_code_rejected")
             writer.write(packet(0x20, b"\x00\x05"))
             await writer.drain()
             return
         service = self.service()
+        self.note("mqtt", "authenticated")
         serial = service.serial
         report_topic = f"device/{serial}/report".encode()
         request_topic = f"device/{serial}/request".encode()

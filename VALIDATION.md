@@ -1,4 +1,26 @@
+# Native TLS compatibility patch — 0.3.1
+
+Native TLS now uses a separate persistent RSA identity with the configured
+private address in its certificate. Regression tests exercise a TLS 1.2 client
+offering only an RSA-authenticated cipher suite, with certificate and hostname
+verification enabled. Existing phone identities remain unchanged. Owner-only
+connection diagnostics report protocol stages and rejected-code counts without
+peer addresses, passwords or packet contents. These changes address a confirmed
+RSA-only TLS compatibility gap; the reported offsite Orca failure is still under
+investigation and is not claimed resolved by the fixture tests.
+
 # Native P1S gateway preview — 0.3.0
+
+Live protocol acceptance on 2026-09-10 verified real P1S AMS/external-spool
+status, a read-only version request and response, camera JPEG framing and
+dimensions, and an FTPS file listing. The HTTPS dashboard enabled and disabled
+native access at 320/1440/3840 pixels with normal certificate validation and
+zero JavaScript errors. Temporary native access was disabled after testing.
+Existing phone pairing and server identity were preserved. No print was started.
+
+Full CI for release commit `3fdaaa252dddf848bd3fad474efd36ad19eb4436` ran 904 tests
+on each of Python 3.12 and 3.13: 895 passed, 9 skipped, zero failures or errors.
+[CI evidence](https://github.com/thereprocase/bambu-bridge/actions/runs/34510538602).
 
 Native wire tests use real TLS MQTT, FTPS and binary camera clients with
 isolated printer fixtures. They verify live AMS/external reports, unchanged
