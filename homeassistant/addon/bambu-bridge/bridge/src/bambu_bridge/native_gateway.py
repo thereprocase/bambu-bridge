@@ -15,6 +15,7 @@ import ipaddress
 import json
 import secrets
 import socket
+import sqlite3
 import ssl
 import string
 import struct
@@ -22,6 +23,7 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
+from bambu_bridge.native_code import NativeCodeStore
 from bambu_bridge.pairing import PairingStore, identity
 
 
@@ -87,6 +89,7 @@ class NativeGateway:
         if not (address.is_private or address in ipaddress.ip_network("100.64.0.0/10")):
             raise ValueError("Use a LAN, loopback or Tailscale address for the native gateway")
         self.app, self.store, self.host, self.ports = app, store, host, ports
+        self.codes = NativeCodeStore(store.directory)
         self.detect_port = detect_port
         self.servers: list[asyncio.Server] = []
         self.tasks: set[asyncio.Task[None]] = set()
@@ -102,6 +105,9 @@ class NativeGateway:
             db.execute("""CREATE TABLE IF NOT EXISTS native_gateway (
                 id INTEGER PRIMARY KEY CHECK(id=1), printer_id TEXT NOT NULL,
                 salt TEXT NOT NULL, hash TEXT NOT NULL, enabled INTEGER NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS native_code (
+                id INTEGER PRIMARY KEY CHECK(id=1), gateway_hash TEXT NOT NULL,
+                encrypted TEXT NOT NULL)""")
             row = db.execute("SELECT * FROM native_gateway WHERE id=1 AND enabled=1").fetchone()
         if row:
             self.config = dict(row)
@@ -222,12 +228,13 @@ class NativeGateway:
 
     async def enable(self, printer_id: str) -> dict[str, Any]:
         async with self.change_lock:
-            await self.close()
             code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
             salt = secrets.token_hex(16)
             hashed = hashlib.scrypt(
                 code.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1
             ).hex()
+            encrypted = self.codes.encrypt(code)
+            await self.close()
             self.config = {"printer_id": printer_id, "salt": salt, "hash": hashed}
             try:
                 await self.start()
@@ -238,10 +245,24 @@ class NativeGateway:
                 raise
             with self.store.connect() as db:
                 db.execute(
-                    "INSERT OR REPLACE INTO native_gateway VALUES (1, ?, ?, ?, 1)",
+                    "INSERT OR REPLACE INTO native_gateway "
+                    "(id, printer_id, salt, hash, enabled) VALUES (1, ?, ?, ?, 1)",
                     (printer_id, salt, hashed),
                 )
+                db.execute(
+                    "INSERT OR REPLACE INTO native_code VALUES (1, ?, ?)", (hashed, encrypted)
+                )
             return {**self.status(), "access_code": code}
+
+    def saved_code(self) -> str | None:
+        if not self.config or not self.servers:
+            return None
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT encrypted FROM native_code WHERE id=1 AND gateway_hash=?",
+                (self.config["hash"],),
+            ).fetchone()
+        return self.codes.decrypt(row[0]) if row else None
 
     async def disable(self) -> None:
         async with self.change_lock:
@@ -249,6 +270,7 @@ class NativeGateway:
             self.config = None
             with self.store.connect() as db:
                 db.execute("UPDATE native_gateway SET enabled=0 WHERE id=1")
+                db.execute("DELETE FROM native_code")
 
     async def authenticate(self, username: str, code: str, peer: str) -> bool:
         attempts = self.failed[peer]
@@ -266,6 +288,17 @@ class NativeGateway:
         ok = self.config is config and hmac.compare_digest(hashed.hex(), config["hash"])
         if ok:
             attempts.clear()
+            # A verified reconnect migrates old hash-only codes without a reset.
+            if not self.saved_code():
+                with contextlib.suppress(OSError, ValueError, sqlite3.Error):
+                    encrypted = self.codes.encrypt(code)
+                    with self.store.connect() as db:
+                        db.execute(
+                            "INSERT OR REPLACE INTO native_code "
+                            "SELECT 1, hash, ? FROM native_gateway "
+                            "WHERE id=1 AND hash=? AND enabled=1",
+                            (encrypted, config["hash"]),
+                        )
         return ok
 
     async def client(

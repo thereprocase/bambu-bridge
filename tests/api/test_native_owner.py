@@ -21,6 +21,7 @@ def test_native_owner_boundary_and_no_store(tmp_path):
     with TestClient(app, base_url="https://bridge.invalid") as client:
         gateway = SimpleNamespace(
             status=lambda: {"configured": True, "enabled": False},
+            saved_code=lambda: "FIXTURE1",
             enable=AsyncMock(return_value={"access_code": "FIXTURE1", "enabled": True}),
             disable=AsyncMock(),
             announce=AsyncMock(),
@@ -30,6 +31,7 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         app.state.registry.get = lambda _: SimpleNamespace(model="P1S")
         for method, path in [
             ("GET", "/native"),
+            ("GET", "/native/access-code"),
             ("POST", "/native"),
             ("DELETE", "/native"),
             ("POST", "/native/announce"),
@@ -46,6 +48,19 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert "access_code" not in client.get("/api/v1/native", headers=owner).json()
+        for _ in range(2):
+            saved = client.get("/api/v1/native/access-code", headers=owner)
+            assert saved.json() == {"access_code": "FIXTURE1"}
+            assert saved.headers["cache-control"] == "no-store"
+        invitation, _ = app.state.pairing.invite()
+        phone = app.state.pairing.claim(invitation, "Fixture phone")
+        assert phone is not None
+        assert (
+            client.get(
+                "/api/v1/native/access-code", headers={"Authorization": "Bearer " + phone["token"]}
+            ).status_code
+            == 401
+        )
         assert client.delete("/api/v1/native", headers=owner).status_code == 204
         gateway.disable.assert_awaited_once()
         app.state.registry.get = lambda _: SimpleNamespace(model="A1")
