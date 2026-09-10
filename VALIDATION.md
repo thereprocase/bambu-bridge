@@ -1,3 +1,23 @@
+# Native P1S gateway preview — 0.3.0
+
+Native wire tests use real TLS MQTT, FTPS and binary camera clients with
+isolated printer fixtures. They verify live AMS/external reports, unchanged
+multi-plate print commands and AMS mappings, repeated acknowledgements,
+camera framing, upload completion before success, download/delete, incorrect
+code rejection, topic restrictions, code hashing, disable/restart state,
+disconnecting active clients, private discovery and owner-only HTTPS setup.
+No test starts a physical print. Ruff and mypy pass.
+
+Chromium tests against the real HTTPS backend cover enabling the checkbox,
+copying the one-time code, rotation, discovery and disabling. Layouts pass at
+320, 1440 and 3840 pixels with no horizontal overflow or JavaScript errors.
+This is protocol/fixture acceptance. Installed Orca UI compatibility and a
+completed physical print require live acceptance; they are not inferred from
+passing mocks. Native commands use printer validation, while the older HTTPS
+adapter retains the REST job validator. See [native setup](docs/NATIVE-P1S.md).
+
+## Previous release evidence
+
 # OrcaSlicer print-host preview — 0.2.2
 
 The OctoPrint upload contract used by stock OrcaSlicer 2.4.2 is exercised by

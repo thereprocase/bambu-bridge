@@ -147,7 +147,7 @@ class PairingStore:
             )
 
 
-def identity(directory: Path) -> tuple[Path, Path, str]:
+def identity(directory: Path, *, common_name: str = "Bambu Bridge local") -> tuple[Path, Path, str]:
     """Persist a P-256 TLS identity. Renew the certificate with the SAME key.
 
     The app trusts the scanned SPKI, not a DNS/CA claim. Its native transport
@@ -197,8 +197,9 @@ def identity(directory: Path) -> tuple[Path, Path, str]:
         ):
             raise ValueError("Certificate and identity key do not match")
         renew = cert.not_valid_after_utc < datetime.now(UTC) + timedelta(days=30)
+        renew |= cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value != common_name
     if renew:
-        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Bambu Bridge local")])
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)

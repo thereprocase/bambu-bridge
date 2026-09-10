@@ -625,6 +625,11 @@ a:hover{text-decoration:underline;}
 #orca-setup .select, #orca-setup .input { min-width:0; width:100%; max-width:100%; box-sizing:border-box; }
 #orca-setup ol { padding-left:24px; }
 #orca-setup li + li { margin-top:10px; }
+#native-p1s .select, #native-p1s .input { min-width:0; width:100%; max-width:100%; box-sizing:border-box; }
+.native-toggle { display:flex; align-items:center; gap:12px; cursor:pointer; padding:16px; background:var(--panel); border:2px solid var(--accent); border-radius:12px; }
+.native-toggle input { width:22px; height:22px; flex:0 0 22px; }
+#native-p1s ol { padding-left:24px; }
+#native-p1s li + li { margin-top:10px; }
 .pairing-qr-panel { margin-top:20px; padding-top:16px; border-top:1px solid var(--panel-edge); }
 .pairing-qr { display:block; width:min(360px,100%); height:auto; margin:20px auto 12px; background:#fff; border:12px solid #fff; box-sizing:border-box; }
 .pairing-countdown { text-align:center; font-variant-numeric:tabular-nums; }

@@ -27,6 +27,7 @@ import {
 } from './ui.js';
 import { mountPhonePairing } from './pairing.js';
 import { mountOrca } from './orca.js';
+import { mountNative } from './native.js';
 
 // The SPA's own build constant (§6.3). Bumped by hand alongside releases; the
 // bridge version comes from GET /version separately.
@@ -59,6 +60,7 @@ export function mount(root, app) {
 
   main.appendChild(buildBridgeSection(app));
   const unmountPairing = mountPhonePairing(main, app);
+  const unmountNative = mountNative(main, app);
   const unmountOrca = mountOrca(main, app);
 
   const printersSection = el('div', { class: 'section' });
@@ -69,7 +71,7 @@ export function mount(root, app) {
   main.appendChild(buildAppSection(app));
   main.appendChild(buildAboutSection(app));
 
-  return function unmount() { unmountPairing(); unmountOrca(); };
+  return function unmount() { unmountPairing(); unmountNative(); unmountOrca(); };
 }
 
 // ── §6.1 BRIDGE (address + masked key + Test) ─────────────────────────────────

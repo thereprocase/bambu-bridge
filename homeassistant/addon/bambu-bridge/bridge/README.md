@@ -1,8 +1,10 @@
 # Bambu Bridge
 
-**OrcaSlicer preview:** Send a sliced plate through the bridge with stock Orca
-2.4.2. Open dashboard **Settings → OrcaSlicer** for a revocable printer key and
-connection instructions. [Setup and current limits](docs/ORCA.md).
+**Native Orca P1S preview:** Open dashboard **Settings → Orca · native P1S**
+and check **Expose to Orca as a P1S**. Orca receives live status and camera,
+with AMS slots or the external spool chosen per print in its normal dialog.
+[Native setup and limits](docs/NATIVE-P1S.md). The earlier
+[HTTPS upload adapter](docs/ORCA.md) remains available.
 
 A small self-hosted server that connects to a **Bambu Lab P1S** over your
 local network and re-exposes it as a clean **HTTP + WebSocket API** — plus a
@@ -24,7 +26,7 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.2.2 is an AGPL-3.0-only pairing preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.3.0 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
 

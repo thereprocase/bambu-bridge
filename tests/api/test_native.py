@@ -1,0 +1,216 @@
+"""Native wire acceptance against isolated MQTT, camera and TLS/FTP fixtures."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import json
+import ssl
+import struct
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import aiomqtt
+import pytest
+
+from bambu_bridge.config import Settings
+from bambu_bridge.native_gateway import NativeGateway
+from bambu_bridge.pairing import PairingStore
+from bambu_bridge.protocol.camera import build_auth_packet
+from bambu_bridge.protocol.ftps import _ImplicitFTP_TLS
+from bambu_bridge.service.events import Event, EventBus
+from tests.conftest import ACCESS_CODE
+
+SERIAL = "NATIVE_TEST_P1S"
+JPEG = b"\xff\xd8fixture-frame\xff\xd9"
+
+
+def tls():
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE  # isolated loopback fixture only
+    return context
+
+
+@pytest.fixture
+async def gateway(tmp_path):
+    @asynccontextmanager
+    async def frames():
+        queue = asyncio.Queue()
+        queue.put_nowait(JPEG)
+        yield queue
+
+    snapshot = {
+        "print": {
+            "command": "push_status",
+            "gcode_state": "IDLE",
+            "ams": {"ams": [{"id": "0", "tray": [{"id": "3", "tray_type": "PETG"}]}]},
+            "vt_tray": {"id": "254", "tray_type": "PLA"},
+        },
+        "info": {"command": "get_version", "module": [{"name": "ota", "sw_ver": "01.02"}]},
+    }
+    service = SimpleNamespace(
+        serial=SERIAL,
+        ip="127.0.0.1",
+        model="P1S",
+        connected=True,
+        cert_status="trusted",
+        access_code=ACCESS_CODE,
+        raw_bus=EventBus(),
+        send_raw=AsyncMock(),
+        native_snapshot=lambda: snapshot,
+        camera=SimpleNamespace(subscribe=frames),
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            registry=SimpleNamespace(get=lambda _: service), settings=Settings(), ftps_port=1
+        )
+    )
+    gateway = NativeGateway(app, PairingStore(tmp_path / "pairing"), "127.0.0.1", ports=(0, 0, 0))
+    setup = await gateway.enable(SERIAL)
+    gateway.test_code = setup["access_code"]
+    try:
+        yield gateway
+    finally:
+        await gateway.close()
+
+
+def port(gateway, index):
+    return gateway.servers[index].sockets[0].getsockname()[1]
+
+
+async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
+    async with aiomqtt.Client(
+        "127.0.0.1",
+        port=port(gateway, 0),
+        username="bblp",
+        password=gateway.test_code,
+        tls_context=tls(),
+    ) as client:
+        await client.subscribe(f"device/{SERIAL}/report")
+        message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
+        state = json.loads(message.payload)
+        assert state["print"]["ams"]["ams"][0]["tray"][0]["id"] == "3"
+        assert state["print"]["vt_tray"]["id"] == "254"
+        command = {
+            "print": {
+                "command": "project_file",
+                "sequence_id": "17",
+                "use_ams": True,
+                "ams_mapping": [3, 0],
+                "param": "Metadata/plate_3.gcode",
+                "url": "file:///sdcard/test.gcode.3mf",
+            }
+        }
+        await client.publish(f"device/{SERIAL}/request", json.dumps(command), qos=1)
+        gateway.service().send_raw.assert_awaited_once_with(command)
+        # Identical acknowledgements must not be lost to normalized-state diffing.
+        ack = {"print": {"command": "project_file", "sequence_id": "17", "result": "success"}}
+        for _ in range(2):
+            gateway.service().raw_bus.publish(Event("snapshot", ack))
+            message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
+            assert json.loads(message.payload) == ack
+        reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 2), ssl=tls())
+        writer.write(build_auth_packet("bblp", gateway.test_code))
+        await writer.drain()
+        header = await asyncio.wait_for(reader.readexactly(16), 3)
+        assert await reader.readexactly(struct.unpack_from("<I", header)[0]) == JPEG
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_wrong_key_and_topic_never_reach_printer(gateway):
+    with pytest.raises(aiomqtt.MqttError):
+        async with aiomqtt.Client(
+            "127.0.0.1",
+            port=port(gateway, 0),
+            username="bblp",
+            password="BAD_CODE",
+            tls_context=tls(),
+        ):
+            pytest.fail("Wrong code accepted")
+    async with aiomqtt.Client(
+        "127.0.0.1",
+        port=port(gateway, 0),
+        username="bblp",
+        password=gateway.test_code,
+        tls_context=tls(),
+    ) as client:
+        grants = await client.subscribe("device/OTHER/report")
+        assert grants[0].is_failure
+    gateway.service().send_raw.assert_not_awaited()
+
+
+async def test_code_hash_disable_and_restart_state(gateway):
+    code = gateway.test_code
+    assert code.encode() not in gateway.store.path.read_bytes()
+    assert code not in json.dumps(gateway.status())
+    assert await gateway.authenticate("bblp", code, "fixture")
+    old_port = port(gateway, 0)
+    await gateway.disable()
+    assert not gateway.status()["enabled"]
+    assert not await gateway.authenticate("bblp", code, "fixture")
+    with pytest.raises(OSError):
+        await asyncio.open_connection("127.0.0.1", old_port)
+    resumed = NativeGateway(gateway.app, gateway.store, gateway.host, ports=(0, 0, 0))
+    assert resumed.config is None
+
+
+async def test_native_ftps_roundtrip_reaches_printer_before_success(gateway, ftps_server):
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        ftp.connect("127.0.0.1", port(gateway, 1))
+        ftp.login("bblp", gateway.test_code)
+        ftp.prot_p()
+        data = b"test sliced payload for transfer only"
+        result = ftp.storbinary("STOR /native-test.gcode.3mf", io.BytesIO(data))
+        assert result.startswith("226")
+        assert (storage / "native-test.gcode.3mf").read_bytes() == data
+        received = []
+        ftp.retrbinary("RETR /native-test.gcode.3mf", received.append)
+        assert b"".join(received) == data
+        ftp.delete("/native-test.gcode.3mf")
+        ftp.quit()
+
+    await asyncio.to_thread(exchange)
+    gateway.service().send_raw.assert_not_awaited()
+
+
+async def test_failed_auth_rate_limited(gateway):
+    for _ in range(5):
+        assert not await gateway.authenticate("bblp", "BAD_CODE", "attacker")
+    assert not await gateway.authenticate("bblp", gateway.test_code, "attacker")
+    assert await gateway.authenticate("bblp", gateway.test_code, "different-peer")
+
+
+async def test_disable_disconnects_active_clients(gateway):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 2), ssl=tls())
+    writer.write(build_auth_packet("bblp", gateway.test_code))
+    await writer.drain()
+    await reader.readexactly(16 + len(JPEG))
+    await asyncio.wait_for(gateway.disable(), 5)
+    assert await asyncio.wait_for(reader.read(), 2) == b""
+    writer.close()
+    await writer.wait_closed()
+
+
+async def test_discovery_is_private_and_contains_no_access_code(gateway, monkeypatch):
+    messages = []
+
+    async def capture(send, data, address):
+        messages.append((data, address))
+        return len(data)
+
+    monkeypatch.setattr(asyncio, "to_thread", capture)
+    await gateway.announce("127.0.0.1")
+    assert [address[1] for _, address in messages] == [1990, 2021]
+    for data, _ in messages:
+        assert b"DevModel.bambu.com: C12" in data
+        assert gateway.test_code.encode() not in data
+        assert b"Location: 127.0.0.1" in data
+    with pytest.raises(ValueError):
+        await gateway.announce("8.8.8.8")

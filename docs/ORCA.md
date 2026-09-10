@@ -1,3 +1,6 @@
+> For native P1S status, per-print AMS/external selection and camera, use
+> [native P1S mode](NATIVE-P1S.md). This page describes the older upload adapter.
+
 # OrcaSlicer → Bambu Bridge → printer
 
 The bridge includes an **Octo/Klipper print-host adapter for stock OrcaSlicer
