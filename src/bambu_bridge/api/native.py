@@ -1,4 +1,4 @@
-"""Owner-controlled native P1S gateway. Setup codes are returned only once."""
+"""Owner-controlled native P1S gateway and repeatable HTTPS code retrieval."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ class Enable(BaseModel):
     printer_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
+class ExistingCode(BaseModel):
+    access_code: str = Field(min_length=8, max_length=8, pattern=r"^[A-Za-z0-9]+$")
+
+
 @router.get("")
 def status(request: Request) -> dict[str, Any]:
     instance = request.app.state.native_gateway
@@ -48,6 +52,23 @@ async def enable(body: Enable, request: Request) -> dict[str, Any]:
         raise HTTPException(
             503, "Native listener failed; check the server's bind address and ports"
         ) from exc
+
+
+@router.get("/access-code")
+def access_code(request: Request) -> dict[str, str | None]:
+    return {"access_code": gateway(request).saved_code()}
+
+
+@router.post("/access-code")
+async def save_access_code(body: ExistingCode, request: Request) -> dict[str, str]:
+    instance = gateway(request)
+    peer = "owner:" + (request.client.host if request.client else "dashboard")
+    if not await instance.authenticate("bblp", body.access_code, peer):
+        raise HTTPException(422, "That code does not match the active native code")
+    saved = instance.saved_code()
+    if saved is None:
+        raise HTTPException(503, "Could not save the code; check pairing storage")
+    return {"access_code": saved}
 
 
 @router.delete("", status_code=204)

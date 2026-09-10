@@ -4,7 +4,7 @@
 let you choose a **four-color AMS print or an external-spool print** for each
 job, with live printer status and camera access. No connection changes between
 jobs. Native P1S support is available in the
-[v0.3.2 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.3.2).
+[v0.3.3 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.3.3).
 
 [Project site and explainer](https://thereprocase.github.io/bambu-bridge/#orca)
 · [Native setup](docs/NATIVE-P1S.md) · [Validation](VALIDATION.md)
@@ -29,7 +29,7 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.3.2 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.3.3 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
 
@@ -38,9 +38,9 @@ open your HTTPS dashboard → **Settings → Orca · native P1S** and check
 **Expose to Orca as a P1S**. Copy the bridge address and generated native code.
 Use Orca's P1S preset with **Use 3rd-party print host** turned **off**.
 Enter the bridge address and native code in Orca's IP/access-code dialog;
-v0.3.2 supplies its model and serial automatically. Save the native code when
-it is created. The same code works repeatedly on multiple computers, even
-though the dashboard displays it only when generated.
+v0.3.2 and newer supply its model and serial automatically. Return to Settings
+to show or copy the native code whenever you need it. The same code works
+repeatedly on multiple computers.
 
 **Android: [scan to pair securely over your LAN](docs/LOCAL-PAIRING.md).**
 Bridge 0.2.2 and Android 0.19.0 add a one-use pairing QR, encrypted local

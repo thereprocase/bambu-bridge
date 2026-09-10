@@ -6,6 +6,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-09-10
+
+- Keep the native access code available through Show/Copy in the owner dashboard,
+  including after navigating away, refreshing the page or restarting the server.
+- Store a recoverable encrypted copy separately from authentication hashes;
+  serve it only over authenticated owner HTTPS with caching disabled.
+- Preserve older codes: a successful native reconnect saves the verified code
+  for future retrieval without disconnecting other clients or changing the code.
+
 ## [0.3.2] — 2026-09-10
 
 - Answer Orca's IP-based identity lookup on private TCP 3000 so its first

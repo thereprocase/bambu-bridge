@@ -1,3 +1,15 @@
+# Repeatable native code retrieval — 0.3.3
+
+All 24 focused native/owner API tests pass. Coverage includes repeated HTTPS
+retrieval, refusal of unauthenticated/HTTP/paired-phone requests, no-store
+responses, encrypted storage, restart/rotation/disable behavior, and migration
+of an older code on verified reconnect without changing its authentication hash.
+Wrong codes are never saved. Ordinary status responses contain no access code.
+The existing shared-code/multiple-client and native protocol tests still pass.
+Chromium with an isolated HTTPS backend verifies Show/Hide/Copy, copying the
+same code after navigation and refresh, rotation and disabling, with no
+JavaScript errors or horizontal overflow at widths 320, 1440 and 3840 pixels.
+
 # Native IP identification patch — 0.3.2
 
 Orca v2.4.2 calls `bind_detect` before connecting MQTT from its initial IP/code
