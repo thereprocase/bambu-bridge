@@ -523,7 +523,10 @@ class NativeGateway:
             while True:
                 self.service()  # fence changed printer certificate / deleted printer
                 jpeg = await asyncio.wait_for(queue.get(), 45)
-                writer.write(struct.pack("<IIII", len(jpeg), 0, 0, 0) + jpeg)
+                # P1S JPEG frames are independently decodable. Orca's camera
+                # player waits for the keyframe flag in the third header word;
+                # a zero here delivers bytes but never starts live view.
+                writer.write(struct.pack("<IIII", len(jpeg), 0, 1, 0) + jpeg)
                 await asyncio.wait_for(writer.drain(), 10)
                 self.note("camera", "streaming")
 

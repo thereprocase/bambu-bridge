@@ -1,3 +1,23 @@
+# Native camera keyframe correction - 0.4.2
+
+The 0.4.1 byte-level camera checks received valid JPEGs but did not invoke
+Orca's native stream parser. The installed camera DLL reproduced the failure:
+frames arrived, were treated as non-keyframes, and stream startup stalled.
+Physical P1S headers use four little-endian words: payload length, zero, one,
+zero. The gateway had emitted zero for the third word.
+
+A loopback-only fixture used a generated 640 x 480 JPEG and dummy credentials
+with the installed Windows BambuSource.dll, through the C interface described
+in OrcaSlicer's BambuTunnel.h. With the old flag, startup still returned
+would-block after 25 seconds. Changing only the third word to one returned
+successful stream startup, one stream and a 5,429-byte JPEG in 0.2 seconds.
+No vendor binaries, printer credentials or chamber images are redistributed.
+
+The native regression now checks all four header words, including the
+keyframe flag. Full CI and subsequent live checks are recorded in the release
+notes. A camera-library check does not establish UI playback or a completed
+physical print.
+
 # Separate native printer identity - 0.4.1
 
 A v0.4.0 setup completed, but subsequent Orca LAN discovery replaced
