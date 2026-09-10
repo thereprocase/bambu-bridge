@@ -1,3 +1,102 @@
+# Native TLS compatibility patch — 0.3.1
+
+Native TLS now uses a separate persistent RSA identity with the configured
+private address in its certificate. Regression tests exercise a TLS 1.2 client
+offering only an RSA-authenticated cipher suite, with certificate and hostname
+verification enabled. Existing phone identities remain unchanged. Owner-only
+connection diagnostics report protocol stages and rejected-code counts without
+peer addresses, passwords or packet contents. These changes address a confirmed
+RSA-only TLS compatibility gap; the reported offsite Orca failure is still under
+investigation and is not claimed resolved by the fixture tests.
+
+# Native P1S gateway preview — 0.3.0
+
+Live protocol acceptance on 2026-09-10 verified real P1S AMS/external-spool
+status, a read-only version request and response, camera JPEG framing and
+dimensions, and an FTPS file listing. The HTTPS dashboard enabled and disabled
+native access at 320/1440/3840 pixels with normal certificate validation and
+zero JavaScript errors. Temporary native access was disabled after testing.
+Existing phone pairing and server identity were preserved. No print was started.
+
+Full CI for release commit `3fdaaa252dddf848bd3fad474efd36ad19eb4436` ran 904 tests
+on each of Python 3.12 and 3.13: 895 passed, 9 skipped, zero failures or errors.
+[CI evidence](https://github.com/thereprocase/bambu-bridge/actions/runs/34510538602).
+
+Native wire tests use real TLS MQTT, FTPS and binary camera clients with
+isolated printer fixtures. They verify live AMS/external reports, unchanged
+multi-plate print commands and AMS mappings, repeated acknowledgements,
+camera framing, upload completion before success, download/delete, incorrect
+code rejection, topic restrictions, code hashing, disable/restart state,
+disconnecting active clients, private discovery and owner-only HTTPS setup.
+No test starts a physical print. Ruff and mypy pass.
+
+Chromium tests against the real HTTPS backend cover enabling the checkbox,
+copying the one-time code, rotation, discovery and disabling. Layouts pass at
+320, 1440 and 3840 pixels with no horizontal overflow or JavaScript errors.
+This is protocol/fixture acceptance. Installed Orca UI compatibility and a
+completed physical print require live acceptance; they are not inferred from
+passing mocks. Native commands use printer validation, while the older HTTPS
+adapter retains the REST job validator. See [native setup](docs/NATIVE-P1S.md).
+
+## Previous release evidence
+
+# OrcaSlicer print-host preview — 0.2.2
+
+The OctoPrint upload contract used by stock OrcaSlicer 2.4.2 is exercised by
+API tests: connection test, HTTPS and per-printer key enforcement, owner-only
+key management, hash-at-rest and revocation, unchanged upload bytes, real FTPS
+transfer to a disposable TLS server, and mocked submission into the existing
+job lifecycle with an explicit AMS mapping. Unsupported selections, malformed
+containers, thermal violations, busy/offline printers and changed certificate
+identity are rejected without starting a print. Ruff and mypy pass.
+
+Isolated Chromium exercises the real HTTPS backend's setup view: create/copy,
+connection test, revoke, fixed mapping and one-time key display. Layouts pass
+at 320, 1440 and 3840 pixels with no horizontal overflow or JavaScript errors.
+No production credentials enter test fixtures. A physical print initiated by
+the installed Orca UI has not been performed; no production print is started
+by release checks. First preview: one sliced plate at position 1; no native
+Orca AMS/device integration. See [setup and limits](docs/ORCA.md).
+
+## Previous release evidence
+
+# Dashboard pairing preview — 0.2.1
+
+Focused pairing, dashboard shell, owner authentication and viewer-token tests
+pass, as do Ruff and mypy. Isolated Chromium exercised the actual HTTPS bridge
+and dashboard at widths 320, 1440 and 3840: QR rendering/copy, real invitation
+claim, automatic device refresh, revoke, cancel and leaving Settings all passed
+without JavaScript errors. HTTP dashboards made no pairing API requests.
+
+The full Python 3.12/3.13 CI matrix gates publication. Tests additionally reject
+anonymous/viewer/paired-device invitation creation, HTTP management, unconfigured
+remote targets and Host/Forwarded-Host substitution. Codes and device lists are
+served without caching; no production credentials enter browser test fixtures.
+
+The user confirmed Android 0.19.0 could scan and claim a terminal-generated QR.
+Physical-phone acceptance of the embedded paired 3D viewer remains separate.
+
+## Previous pairing release evidence
+
+# Local pairing preview — 0.2.0
+
+The local Python 3.12 regression run passed **867 tests**, with **9 skipped**.
+Additional pairing checks run against the frozen dependency environment cover
+single-use claims under concurrency, expiration, identity persistence, HTTP
+rejection, forwarded-header spoofing, owner/device authorization, revocation of
+an open WebSocket, and secret-free validation errors. Ruff and mypy pass.
+
+A separate real-listener fixture verifies HTTP compatibility, TLS, enrollment,
+restart persistence, revocation, secret-free logs, and exactly one application
+lifespan shared by the two listeners. It contains no real printer configuration.
+The interactive installer shell passes `bash -n`.
+
+Android 0.19.0 has native TLS tests and a signed ARM64 build. Physical-phone QR
+scanning and paired WebView acceptance remain pending for this preview. Earlier
+0.18.3 device evidence does not establish those new paths.
+
+## Prior release evidence
+
 # Validation — 0.1.3, 9 September 2026
 
 The targeted release/HMS suite passes all 25 tests, including two regressions
