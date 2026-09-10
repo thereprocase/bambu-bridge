@@ -1,4 +1,4 @@
-"""Owner-controlled native P1S gateway. Setup codes are returned only once."""
+"""Owner-controlled native P1S gateway and repeatable HTTPS code retrieval."""
 
 from __future__ import annotations
 
@@ -48,6 +48,11 @@ async def enable(body: Enable, request: Request) -> dict[str, Any]:
         raise HTTPException(
             503, "Native listener failed; check the server's bind address and ports"
         ) from exc
+
+
+@router.get("/access-code")
+def access_code(request: Request) -> dict[str, str | None]:
+    return {"access_code": gateway(request).saved_code()}
 
 
 @router.delete("", status_code=204)
