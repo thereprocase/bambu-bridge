@@ -20,9 +20,14 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.1.3 is an AGPL-3.0-only source release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.2.0 is an AGPL-3.0-only pairing preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
+
+**Android: [scan to pair securely over your LAN](docs/LOCAL-PAIRING.md).**
+Bridge 0.2.0 and Android 0.19.0 add a one-use pairing QR, encrypted local
+connections, and individually revocable phones. Existing HTTP and Tailscale
+connections remain available for compatibility.
 
 New here? Follow **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)** — a
 numbered, zero-to-first-print walkthrough: install the bridge, set an API key,
@@ -31,6 +36,14 @@ submit your first print.
 
 If something doesn't work, **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)**
 has a symptom → cause → fix table for every error the bridge can show.
+
+## Android companion
+
+**[Download Android v0.18.3](https://github.com/thereprocase/bambu-bridge-app/releases/tag/v0.18.3)**
+or read the [Android source and installation guide](https://github.com/thereprocase/bambu-bridge-app).
+The ARM64 app connects to this bridge using your base URL and API key. It shows
+live status, camera snapshots, filament information, and the embedded 3D viewer.
+Install the signed APK as an update to retain your existing app settings.
 
 ## The web app — the easiest way to use the bridge
 

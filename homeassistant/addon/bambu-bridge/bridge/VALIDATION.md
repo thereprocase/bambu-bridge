@@ -1,3 +1,22 @@
+# Local pairing preview — 0.2.0
+
+The local Python 3.12 regression run passed **867 tests**, with **9 skipped**.
+Additional pairing checks run against the frozen dependency environment cover
+single-use claims under concurrency, expiration, identity persistence, HTTP
+rejection, forwarded-header spoofing, owner/device authorization, revocation of
+an open WebSocket, and secret-free validation errors. Ruff and mypy pass.
+
+A separate real-listener fixture verifies HTTP compatibility, TLS, enrollment,
+restart persistence, revocation, secret-free logs, and exactly one application
+lifespan shared by the two listeners. It contains no real printer configuration.
+The interactive installer shell passes `bash -n`.
+
+Android 0.19.0 has native TLS tests and a signed ARM64 build. Physical-phone QR
+scanning and paired WebView acceptance remain pending for this preview. Earlier
+0.18.3 device evidence does not establish those new paths.
+
+## Prior release evidence
+
 # Validation — 0.1.3, 9 September 2026
 
 The targeted release/HMS suite passes all 25 tests, including two regressions

@@ -14,7 +14,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
-import uvicorn
 from fastapi import APIRouter, FastAPI
 
 from bambu_bridge import __version__
@@ -26,6 +25,7 @@ from bambu_bridge.api import (
     filament,
     files,
     jobs,
+    pairing,
     printers,
     queue,
     spools,
@@ -43,6 +43,7 @@ from bambu_bridge.db.jobs import (
     PrinterRepo,
     SlicedDateRepo,
 )
+from bambu_bridge.pairing import PairingStore
 from bambu_bridge.protocol.ftps import SlicedDateMemo
 from bambu_bridge.push.ntfy import NotificationService, NtfyDispatcher
 from bambu_bridge.service.event_persister import EventPersister
@@ -141,6 +142,8 @@ def create_app(
                     )
 
         app.state.settings = settings
+        app.state.pairing = (PairingStore(settings.bridge_pairing_dir)
+                             if settings.bridge_pairing_dir else None)
         app.state.db = db
         app.state.registry = registry
         app.state.jobs = job_manager
@@ -184,6 +187,7 @@ def create_app(
     v1.include_router(events.router)
     v1.include_router(viz.router)
     v1.include_router(filament.router)
+    v1.include_router(pairing.router)
 
     @v1.get("/health", tags=["system"])  # no auth (spec 6)
     def health() -> dict[str, str]:
@@ -205,12 +209,9 @@ app = create_app()
 
 def run() -> None:
     """Console-script entrypoint (`bambu-bridge`)."""
-    settings = Settings()
-    uvicorn.run(
-        "bambu_bridge.main:app",
-        host=settings.bridge_host,
-        port=settings.bridge_port,
-    )
+    from bambu_bridge.local_server import cli
+
+    cli()
 
 
 if __name__ == "__main__":

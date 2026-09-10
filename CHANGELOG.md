@@ -6,6 +6,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-10
+
+- Add HTTPS on port 8443 with a persistent per-bridge identity and automatic
+  certificate renewal, alongside the optional legacy HTTP listener.
+- Add private, ten-minute, single-use pairing QR codes and separate revocable
+  phone credentials. Paired credentials require HTTPS/WSS.
+- Add owner/CLI device management and self-revocation; close revoked live sockets.
+- Run both listeners with one application lifespan and one printer registry.
+- Remove submitted values from validation diagnostics to protect pairing secrets.
+
 ## [0.1.3] — 2026-09-09
 
 - Fix HTTP access logging with Uvicorn's native formatter. Credential redaction
