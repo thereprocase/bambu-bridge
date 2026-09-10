@@ -31,7 +31,7 @@ import { mountNative } from './native.js';
 
 // The SPA's own build constant (§6.3). Bumped by hand alongside releases; the
 // bridge version comes from GET /version separately.
-const SPA_BUILD = '0.4.1';
+const SPA_BUILD = '0.4.2';
 
 // Test-flow status-line copy — identical wording to onboarding Step 1 (§6.1).
 const TEST_COPY = {
@@ -520,7 +520,7 @@ function buildAboutSection(app) {
 
   return el('div', { class: 'section' }, [
     el('div', { class: 't-section', text: 'About & updates' }),
-    el('a', { class: 'btn btn--ghost btn--block mt-2', href: 'https://github.com/thereprocase/bambu-bridge/tree/v0.4.1', target: '_blank', rel: 'noopener noreferrer', text: 'Source code & AGPL license' }),
+    el('a', { class: 'btn btn--ghost btn--block mt-2', href: 'https://github.com/thereprocase/bambu-bridge/tree/v0.4.2', target: '_blank', rel: 'noopener noreferrer', text: 'Source code & AGPL license' }),
     el('div', { class: 'card mt-2' }, [
       el('div', { class: 'row row--between' }, [
         el('span', { class: 'dim', text: 'Bridge version' }), bridgeVerEl,

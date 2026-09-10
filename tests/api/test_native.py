@@ -205,6 +205,9 @@ async def test_native_mqtt_live_ams_external_camera_and_command(gateway):
         writer.write(build_auth_packet("bblp", gateway.test_code))
         await writer.drain()
         header = await asyncio.wait_for(reader.readexactly(16), 3)
+        # Real P1S JPEG headers mark an independent/keyframe at byte offset 8.
+        # Checking payload length alone misses Orca's stream-start requirement.
+        assert struct.unpack("<IIII", header) == (len(JPEG), 0, 1, 0)
         assert await reader.readexactly(struct.unpack_from("<I", header)[0]) == JPEG
         assert gateway.setup_status("127.0.0.1") == {
             "printer_connected": True,
