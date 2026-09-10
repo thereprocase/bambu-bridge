@@ -1,0 +1,42 @@
+# Bambu Bridge — print-done / print-failed push notification
+#
+# Triggers on the bambu_bridge_event HA bus event whenever the bridge emits
+# a print_completed or print_failed event (via either the WS push path or the
+# REST event poller).
+#
+# Notify target: notify.mobile_app_pixel_9_pro
+# Fallback: if no mobile_app service exists, swap the action below for
+#   service: notify.persistent_notification
+#
+# Usage:
+#   Copy this file into your /config/automations.yaml list, or paste its
+#   content into the HA automation YAML editor.
+#
+- id: bambu_print_done_push
+  alias: "Bambu Bridge — print done / failed push"
+  description: >
+    Sends a push notification to the registered mobile device whenever a
+    Bambu printer finishes or fails a print job.
+  mode: queued
+  max: 10
+  triggers:
+    - trigger: event
+      event_type: bambu_bridge_event
+      event_data:
+        kind: print_completed
+    - trigger: event
+      event_type: bambu_bridge_event
+      event_data:
+        kind: print_failed
+  conditions: []
+  actions:
+    - action: notify.mobile_app_pixel_9_pro
+      data:
+        title: "P1S: {{ trigger.event.data.kind | replace('_', ' ') | title }}"
+        message: >-
+          {% set body = trigger.event.data.body | default('') %}
+          {% set title = trigger.event.data.title | default(trigger.event.data.kind) %}
+          {% if body %}{{ title }} — {{ body }}{% else %}{{ title }}{% endif %}
+        data:
+          tag: "bambu_print_{{ trigger.event.data.printer_id }}"
+          group: "bambu_bridge"

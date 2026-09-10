@@ -1,0 +1,34 @@
+node_modules/
+android/build/
+android/app/build/
+android/app/release/
+android/.gradle/
+android/.cxx/
+*.apk
+*.keystore
+.expo/
+.expo-shared/
+ios/build/
+ios/Pods/
+*.log
+
+# Agent / dev tooling â€” kept on disk, never shipped in a release or clone
+.claude/
+AGENTS.md
+CLAUDE.md
+docs/AGENT-BRIEF.md
+dev-notes/
+
+# Local Kotlin build cache
+android/.kotlin/
+
+# Local configuration, credentials and private device evidence
+.env
+.env.*
+*.jks
+*.p12
+*.pem
+android/local.properties
+docs/captures/
+*.aab
+*.zip

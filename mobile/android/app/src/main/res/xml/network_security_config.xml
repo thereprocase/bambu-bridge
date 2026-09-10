@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The user configures their own bridge URL, including LAN / Tailscale IP
+  addresses and private DNS names. Android domain entries cannot describe
+  arbitrary user-configured subnets. A reverse-DNS suffix is not an IP rule.
+  Permit the bridge's HTTP transport explicitly; HTTPS still verifies against
+  system CAs. This is not an enforcement policy for private address ranges.
+  Use HTTPS or a trusted VPN when the bridge is reached over an untrusted link.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true">
+    <trust-anchors>
+      <certificates src="system"/>
+    </trust-anchors>
+  </base-config>
+</network-security-config>
