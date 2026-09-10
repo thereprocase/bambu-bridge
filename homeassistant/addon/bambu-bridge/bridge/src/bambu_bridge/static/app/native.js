@@ -21,7 +21,7 @@ export function mountNative(parent, app) {
   const rotate = el('button', { class: 'btn btn--ghost mt-3', text: 'Replace native access code', disabled: true });
   card.append(el('label', { class: 'field__label', for: 'native-printer', text: 'Printer' }), printer,
     el('label', { class: 'native-toggle mt-3', for: 'native-enabled' }, [toggle,
-      el('strong', { text: 'Expose to Orca as a P1S' })]), status, rotate, output);
+      el('strong', { text: 'Expose to Orca as a P1S' })]), status, output, rotate);
   card.appendChild(el('p', { class: 'field__hint mt-3', text: 'This is full native printer access over your private LAN/Tailscale connection. The separate 8-character code controls only this gateway. Disabling it disconnects native clients; a print already running continues.' }));
   const diagnostics = el('p', { class: 'field__hint', role: 'status' });
   const check = el('button', { class: 'btn btn--ghost mt-3', text: 'Check Orca connection' });
@@ -46,8 +46,7 @@ export function mountNative(parent, app) {
   function message(text, error = false) { status.textContent = text; status.className = 'statusline ' + (error ? 'is-err' : 'is-info'); }
   function showSetup(data) {
     clear(output);
-    for (const [label, value] of [['Printer address', data.host], ['Printer serial', data.printer_id],
-      ...(data.access_code ? [['Native access code', data.access_code]] : [])]) {
+    for (const [label, value] of [['Printer address', data.host], ['Printer serial', data.printer_id]]) {
       const input = el('input', { class: 'input input--mono', readonly: '', 'aria-label': label,
         type: label === 'Native access code' ? 'password' : 'text', autocomplete: 'off' });
       input.value = value;
@@ -58,7 +57,60 @@ export function mountNative(parent, app) {
       });
       output.appendChild(el('div', { class: 'field' }, [el('label', { class: 'field__label', text: label }), input, copy]));
     }
-    if (!data.access_code) output.appendChild(el('p', { class: 'field__hint', text: 'Your saved native code works on all your computers at the same time. The code was displayed only when it was created; it is not single-use. If you lost it, Replace native access code generates a new shared code that you must enter on every computer.' }));
+    const code = el('input', { class: 'input input--mono', readonly: '', type: 'password',
+      autocomplete: 'off', 'aria-label': 'Native access code', placeholder: 'Loading…' });
+    const show = el('button', { class: 'btn btn--ghost btn--sm', text: 'Show',
+      'aria-label': 'Show native access code', 'aria-pressed': 'false', disabled: true });
+    const copyCode = el('button', { class: 'btn btn--primary btn--sm', text: 'Copy native access code', disabled: true });
+    const hint = el('p', { class: 'field__hint', role: 'status' });
+    const refresh = el('button', { class: 'btn btn--ghost btn--sm', text: 'Refresh code', hidden: true });
+    const existing = el('input', { class: 'input input--mono', type: 'password', autocomplete: 'off',
+      maxlength: '8', 'aria-label': 'Existing native access code', placeholder: 'Current 8-character code' });
+    const saveExisting = el('button', { class: 'btn btn--ghost btn--sm', text: 'Save existing code' });
+    const recovery = el('div', { class: 'stack gap-2', hidden: true }, [existing, saveExisting]);
+    output.appendChild(el('div', { class: 'field' }, [
+      el('label', { class: 'field__label', text: 'Native access code' }), code,
+      el('div', { class: 'row gap-2', style: 'flex-wrap:wrap' }, [show, copyCode, refresh]), hint, recovery,
+    ]));
+    const applyCode = (value) => {
+      if (!current() || !output.contains(code)) return;
+      code.value = value || ''; code.placeholder = value ? '' : 'Not saved yet';
+      show.disabled = copyCode.disabled = !value; refresh.hidden = recovery.hidden = !!value;
+      hint.textContent = value ? 'Come back here to show or copy this code whenever you need it. The same code works on all your computers. Replacing it means updating every computer.'
+        : 'This older setup did not keep a copy. Paste the current code below to save it without changing it, or reconnect an already configured Orca client and refresh here. If it was lost, replace it once; the new code will stay available.';
+    };
+    const loadCode = async () => {
+      refresh.disabled = true;
+      const res = await app.api.api('/native/access-code', { cache: 'no-store' });
+      if (!current() || !output.contains(code)) return;
+      refresh.disabled = false;
+      if (!res.ok) {
+        code.placeholder = 'Unavailable'; hint.textContent = res.message || 'Could not load the code. Try again.';
+        refresh.hidden = false; return;
+      }
+      applyCode(res.data.access_code);
+    };
+    show.addEventListener('click', () => {
+      const visible = code.type === 'password'; code.type = visible ? 'text' : 'password';
+      show.textContent = visible ? 'Hide' : 'Show'; show.setAttribute('aria-pressed', String(visible));
+      show.setAttribute('aria-label', visible ? 'Hide native access code' : 'Show native access code');
+    });
+    copyCode.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(code.value); toast('Native access code copied.'); }
+      catch { code.type = 'text'; code.focus(); code.select(); show.textContent = 'Hide';
+        show.setAttribute('aria-pressed', 'true'); show.setAttribute('aria-label', 'Hide native access code'); }
+    });
+    refresh.addEventListener('click', loadCode);
+    saveExisting.addEventListener('click', async () => {
+      saveExisting.disabled = true;
+      const res = await app.api.postJson('/native/access-code', { access_code: existing.value }, { cache: 'no-store' });
+      existing.value = '';
+      if (!current() || !output.contains(code)) return;
+      saveExisting.disabled = false;
+      if (!res.ok) { hint.textContent = res.message || 'Could not save that code.'; return; }
+      applyCode(res.data.access_code); toast('Existing native code saved.');
+    });
+    if (data.access_code) applyCode(data.access_code); else loadCode();
     output.appendChild(el('ol', {}, [
       el('li', { text: 'In Orca, use a Bambu Lab P1S preset with “Use 3rd-party print host” turned OFF.' }),
       el('li', { text: 'In Orca’s “Connect the printer using IP and access code” dialog, enter Printer address above into IP, and your native code into Access Code. Click Connect; the bridge supplies the printer identity automatically.' }),
@@ -74,7 +126,6 @@ export function mountNative(parent, app) {
       message(res.ok ? 'Discovery sent. Open Orca’s printer list and select Bridge P1S. Use your saved native access code.' : (res.message || 'Discovery failed. Use the server address to connect manually.'), !res.ok);
     });
     output.appendChild(find);
-    if (data.access_code) output.appendChild(el('p', { class: 'field__hint', text: 'Save this code now. It works repeatedly on multiple computers, including at the same time, but is displayed only when created. Use this bridge code in Orca. Replacing it requires updating every connected computer.' }));
     output.appendChild(el('p', { class: 'field__hint', text: 'The physical P1S still determines which material combinations it supports. Automatic mixing of AMS and an external spool is not added by this gateway.' }));
   }
   async function enable() {

@@ -19,10 +19,10 @@ flowchart LR
 
 Open the bridge dashboard over HTTPS, then **Settings → Orca · native P1S**.
 Select your P1S and check **Expose to Orca as a P1S**. Copy the server address,
-printer serial and separate native access code. Save the code when it is
-created: it is displayed once, but is reusable on multiple computers at the
-same time and survives bridge restarts. Adding another computer uses the same
-saved code. **Replace native access code** invalidates the old code for every
+printer serial and separate native access code. Return to this dashboard to
+**Show** or **Copy native access code** whenever you add another computer.
+The same code works on multiple computers simultaneously and survives bridge
+restarts. **Replace native access code** invalidates the old code for every
 computer and disconnects existing clients; they all need the new shared code.
 
 In OrcaSlicer, use the Bambu Lab P1S preset and turn **Use 3rd-party print host**
@@ -34,8 +34,12 @@ the first screen does not ask for the serial or model.
 If lookup fails and Orca offers **Manual Setup**, that second screen retains
 the IP and code. Enter **Printer name:** `Bridge P1S`, **SN:** the serial shown
 by the dashboard, and **Printer model:** `P1S`. Then click **Connect**.
-The code is the same for both paths. If it is no longer visible in the
-dashboard, use your saved code or **Replace native access code**.
+The code is the same for both paths. Codes created before v0.3.3 were stored
+only as hashes. Reconnecting an already configured Orca client saves its
+verified code for future dashboard retrieval without changing it. If that code
+is handy, **Save existing code** in the dashboard restores it immediately
+without a reconnect or rotation. If it was lost, replace it once; the new code
+remains available in the dashboard.
 
 Alternatively, open Orca's printer list and click **Find in Orca on this computer**
 in the dashboard if the printer is not discovered. Open the dashboard on the
@@ -80,7 +84,10 @@ Assistant add-on does not expose this optional configuration in its settings yet
 Native mode gives full printer control to anyone holding its eight-character
 code. Keep these listeners on a trusted private network or Tailscale; do not
 forward them to the public internet. The printer's original access code remains
-on the server. The separate native code is hashed at rest and is not an owner
+on the server. Native authentication uses a hash. A recoverable copy is stored
+encrypted for the owner-only HTTPS Show/Copy endpoint, with caching disabled.
+Back up the protected pairing directory including `native-code.key`.
+The separate native code is not an owner
 API key or a phone pairing token. Setup requires owner authentication over HTTPS.
 The mode and its code survive restarts. Disabling the checkbox closes native
 connections; an already running print continues on the printer.

@@ -271,6 +271,52 @@ async def test_code_hash_disable_and_restart_state(gateway):
     assert resumed.config is None
 
 
+async def test_native_code_can_be_retrieved_after_restart_and_rotation(gateway):
+    original = gateway.test_code
+    assert gateway.saved_code() == original
+    assert original not in json.dumps(gateway.status())
+    assert original.encode() not in gateway.store.path.read_bytes()
+    await gateway.close()
+    resumed = NativeGateway(
+        gateway.app, gateway.store, gateway.host, ports=(0, 0, 0), detect_port=0
+    )
+    try:
+        await resumed.start()
+        assert resumed.saved_code() == original
+        assert resumed.saved_code() == original
+        replaced = (await resumed.enable(SERIAL))["access_code"]
+        assert replaced != original and resumed.saved_code() == replaced
+        assert not await resumed.authenticate("bblp", original, "fixture")
+        assert await resumed.authenticate("bblp", replaced, "fixture")
+        await resumed.disable()
+        assert resumed.saved_code() is None
+    finally:
+        await resumed.close()
+
+
+async def test_verified_reconnect_recovers_legacy_code_without_rotation(gateway):
+    original = gateway.test_code
+    with gateway.store.connect() as db:
+        db.execute("DELETE FROM native_code")
+    await gateway.close()
+    resumed = NativeGateway(
+        gateway.app, gateway.store, gateway.host, ports=(0, 0, 0), detect_port=0
+    )
+    try:
+        await resumed.start()
+        before = dict(resumed.config)
+        assert resumed.saved_code() is None
+        assert not await resumed.authenticate("bblp", "BAD_CODE", "fixture")
+        assert resumed.saved_code() is None
+        assert await resumed.authenticate("bblp", original, "fixture")
+        assert resumed.saved_code() == original
+        for key in ["hash", "salt", "printer_id"]:
+            assert resumed.config[key] == before[key]
+        assert original.encode() not in gateway.store.path.read_bytes()
+    finally:
+        await resumed.close()
+
+
 async def test_native_ftps_roundtrip_reaches_printer_before_success(gateway, ftps_server):
     upstream_port, storage = ftps_server
     gateway.app.state.ftps_port = upstream_port
