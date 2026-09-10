@@ -19,6 +19,17 @@ from bambu_bridge.pairing import identity
 
 
 def run_setup_script(script, env):
+    # Windows PowerShell can reconstruct architecture-specific environment
+    # paths at startup. Set disposable paths inside that process as well.
+    paths = base64.b64encode(
+        json.dumps({"profile": env["APPDATA"], "programs": env["PROGRAMFILES"]}).encode()
+    ).decode()
+    prelude = (
+        "$fixture = [Text.Encoding]::UTF8.GetString("
+        f"[Convert]::FromBase64String('{paths}')) | ConvertFrom-Json; "
+        "$env:APPDATA = $fixture.profile; $env:ProgramFiles = $fixture.programs; "
+        "function Get-Process { }\n"
+    )
     try:
         return subprocess.run(
             [
@@ -26,7 +37,7 @@ def run_setup_script(script, env):
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "function Get-Process { }\n" + script,
+                prelude + script,
             ],
             env=env,
             stdin=subprocess.DEVNULL,
