@@ -20,12 +20,12 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.2.0 is an AGPL-3.0-only pairing preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.2.1 is an AGPL-3.0-only pairing preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
 
 **Android: [scan to pair securely over your LAN](docs/LOCAL-PAIRING.md).**
-Bridge 0.2.0 and Android 0.19.0 add a one-use pairing QR, encrypted local
+Bridge 0.2.1 and Android 0.19.0 add a one-use pairing QR, encrypted local
 connections, and individually revocable phones. Existing HTTP and Tailscale
 connections remain available for compatibility.
 

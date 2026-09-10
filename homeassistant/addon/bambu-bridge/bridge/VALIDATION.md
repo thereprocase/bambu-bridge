@@ -1,3 +1,21 @@
+# Dashboard pairing preview — 0.2.1
+
+Focused pairing, dashboard shell, owner authentication and viewer-token tests
+pass, as do Ruff and mypy. Isolated Chromium exercised the actual HTTPS bridge
+and dashboard at widths 320, 1440 and 3840: QR rendering/copy, real invitation
+claim, automatic device refresh, revoke, cancel and leaving Settings all passed
+without JavaScript errors. HTTP dashboards made no pairing API requests.
+
+The full Python 3.12/3.13 CI matrix gates publication. Tests additionally reject
+anonymous/viewer/paired-device invitation creation, HTTP management, unconfigured
+remote targets and Host/Forwarded-Host substitution. Codes and device lists are
+served without caching; no production credentials enter browser test fixtures.
+
+The user confirmed Android 0.19.0 could scan and claim a terminal-generated QR.
+Physical-phone acceptance of the embedded paired 3D viewer remains separate.
+
+## Previous pairing release evidence
+
 # Local pairing preview — 0.2.0
 
 The local Python 3.12 regression run passed **867 tests**, with **9 skipped**.

@@ -116,6 +116,17 @@ class PairingStore:
             ).fetchone()
         return str(row[0]) if row else None
 
+    def invitation_active(self, invitation_id: str) -> bool:
+        with self.connect() as db:
+            return db.execute(
+                "SELECT 1 FROM invitations WHERE hash = ? AND expires > ?",
+                (invitation_id, int(time.time())),
+            ).fetchone() is not None
+
+    def cancel_invitation(self, invitation_id: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM invitations WHERE hash = ?", (invitation_id,))
+
     def devices(self) -> list[dict[str, Any]]:
         with self.connect() as db:
             return [

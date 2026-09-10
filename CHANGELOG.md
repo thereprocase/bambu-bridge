@@ -6,6 +6,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-10
+
+- Add Settings → Phones & pairing to the owner-authenticated HTTPS dashboard:
+  generate/copy/cancel expiring QR codes, list phones, and revoke their access.
+- Support explicit home Wi-Fi and remote Tailscale pairing addresses, without
+  deriving the paired identity's address from browser or forwarded host headers.
+- Hide used/expired codes and cancel the current code when leaving Settings.
+- Require HTTPS for dashboard device management; CLI recovery remains available.
+
 ## [0.2.0] — 2026-09-10
 
 - Add HTTPS on port 8443 with a persistent per-bridge identity and automatic

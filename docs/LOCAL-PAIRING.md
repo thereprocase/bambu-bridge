@@ -1,10 +1,38 @@
 # Secure local Android pairing
 
-Bridge 0.2.0 and Android 0.19.0 add encrypted local connections without a domain,
+Bridge 0.2.1 and Android 0.19.0 add encrypted local connections without a domain,
 VPN, or installing a certificate on the phone. The phone scans the bridge's
 identity once; status, controls, camera, and the embedded 3D viewer all verify it.
 
-## Connect a phone
+## Pair from the dashboard
+
+Open the bridge dashboard over HTTPS and sign in with its owner API key.
+Choose **Settings → Phones & pairing → Pair a phone**. Select **Home Wi-Fi**
+at home, or **Tailscale / away from home** when configured and connected to
+Tailscale. In Android, open **Settings → Pair with QR code**, scan, name the
+phone and tap **Pair securely**. On the same phone, expand **Using this page
+on the same phone?** and copy/paste the pairing code instead.
+
+Codes expire after ten minutes and work once. The dashboard shows a countdown,
+hides inactive codes, and lists paired phones below. Use **Cancel this code**
+to invalidate an unused code or **Revoke access** beside a phone to disconnect
+it. Leaving Settings cancels the displayed code when the bridge is reachable.
+Codes stay in page memory and are served with `Cache-Control: no-store`.
+
+Dashboard setup uses the bridge's direct HTTPS listener. Administrators can set
+`BRIDGE_PAIRING_URL` to its LAN HTTPS API address and optionally
+`BRIDGE_PAIRING_REMOTE_URL` to its direct Tailscale HTTPS API address, both ending
+in `/api/v1`. The LAN address otherwise defaults to the host's route address.
+Do not use a TLS-terminating proxy URL for these settings: its certificate key
+differs from the bridge identity scanned by the phone. The dashboard itself may
+use that publicly trusted HTTPS proxy. The optional remote URL configured later
+in Android may also use it, with ordinary public certificate validation.
+
+Anonymous visitors, read-only viewer tokens and paired phone credentials cannot
+create pairing invitations or manage devices. The owner API key and HTTPS are
+required; HTTP dashboards explain how to switch to HTTPS for these actions.
+
+## Installer and SSH pairing
 
 1. Install/start the bridge with `bambu-bridge` (the bundled systemd installer
    and Home Assistant add-on use this entrypoint). It serves HTTPS on port 8443
@@ -65,7 +93,8 @@ dual listener; use the `bambu-bridge` entrypoint.
 
 ## Remove a phone and recover
 
-Use **Disconnect and revoke this phone** in its app, or run on the bridge host:
+Use **Revoke access** in the dashboard, **Disconnect and revoke this phone**
+in its app, or run on the bridge host:
 
 ```sh
 bambu-bridge --env-file ~/.config/bambu-bridge/bridge.env devices
