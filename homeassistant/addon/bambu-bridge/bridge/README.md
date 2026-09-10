@@ -4,7 +4,7 @@
 let you choose a **four-color AMS print or an external-spool print** for each
 job, with live printer status and camera access. No connection changes between
 jobs. Native P1S support is available in the
-[v0.3.3 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.3.3).
+[v0.4.0 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.4.0).
 
 [Project site and explainer](https://thereprocase.github.io/bambu-bridge/#orca)
 · [Native setup](docs/NATIVE-P1S.md) · [Validation](VALIDATION.md)
@@ -29,18 +29,17 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.3.3 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.4.0 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
 
 **Orca:** Follow [native server setup](docs/NATIVE-P1S.md#server-setup), then
-open your HTTPS dashboard → **Settings → Orca · native P1S** and check
-**Expose to Orca as a P1S**. Copy the bridge address and generated native code.
-Use Orca's P1S preset with **Use 3rd-party print host** turned **off**.
-Enter the bridge address and native code in Orca's IP/access-code dialog;
-v0.3.2 and newer supply its model and serial automatically. Return to Settings
-to show or copy the native code whenever you need it. The same code works
-repeatedly on multiple computers.
+open your HTTPS dashboard > **Settings > Connect Orca to your printer**.
+Enable Orca access and follow the numbered guide. On Windows, copy one setup
+command to register the printer, fix stale saved addresses and trust the bridge
+certificate. Reopen Orca, select **Bridge P1S**, and use **Check this computer**
+to verify printer status and camera separately. The same native code works on
+all your computers. [Step-by-step setup and repair](docs/NATIVE-P1S.md).
 
 **Android: [scan to pair securely over your LAN](docs/LOCAL-PAIRING.md).**
 Bridge 0.2.2 and Android 0.19.0 add a one-use pairing QR, encrypted local

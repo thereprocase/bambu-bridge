@@ -1,13 +1,15 @@
 import { el, clear, toast, confirmSheet } from './ui.js';
+import { mountNativeGuide } from './native-guide.js';
 
 export function mountNative(parent, app) {
   const section = el('section', { class: 'section', id: 'native-p1s' }, [
-    el('h2', { class: 't-section', text: 'Orca · native P1S' }),
+    el('h2', { class: 't-section', text: 'Connect Orca to your printer' }),
   ]);
   const card = el('div', { class: 'card mt-2 pairing-card' });
   section.appendChild(card); parent.appendChild(section);
   const base = app.api.apiBase(), owner = app.getKey();
   let alive = true, enabled = false;
+  let stopGuide = () => {};
   const current = () => alive && owner === app.getKey() && base === app.api.apiBase();
   card.appendChild(el('p', { text: 'Use Orca’s P1S Device page, live camera and normal print dialog. Choose AMS slots or the external spool for each print; there is no fixed filament mapping in this connection.' }));
   if (location.protocol !== 'https:' || new URL(base).protocol !== 'https:') {
@@ -21,7 +23,7 @@ export function mountNative(parent, app) {
   const rotate = el('button', { class: 'btn btn--ghost mt-3', text: 'Replace native access code', disabled: true });
   card.append(el('label', { class: 'field__label', for: 'native-printer', text: 'Printer' }), printer,
     el('label', { class: 'native-toggle mt-3', for: 'native-enabled' }, [toggle,
-      el('strong', { text: 'Expose to Orca as a P1S' })]), status, output, rotate);
+      el('strong', { text: '1. Enable Orca access' })]), status, output, rotate);
   card.appendChild(el('p', { class: 'field__hint mt-3', text: 'This is full native printer access over your private LAN/Tailscale connection. The separate 8-character code controls only this gateway. Disabling it disconnects native clients; a print already running continues.' }));
   const diagnostics = el('p', { class: 'field__hint', role: 'status' });
   const check = el('button', { class: 'btn btn--ghost mt-3', text: 'Check Orca connection' });
@@ -44,8 +46,15 @@ export function mountNative(parent, app) {
       : 'No completed secure connection since the server started. Check the address and private network connection, then try Connect in Orca again.';
   });
   function message(text, error = false) { status.textContent = text; status.className = 'statusline ' + (error ? 'is-err' : 'is-info'); }
-  function showSetup(data) {
+  function showSetup(data, openManual = false) {
+    stopGuide();
     clear(output);
+    const manual = el('details', { class: 'native-manual' }, [el('summary', { text: 'Manual setup, access code and troubleshooting' })]);
+    manual.open = openManual;
+    const manualBody = el('div', { class: 'stack mt-3' });
+    manual.appendChild(manualBody);
+    stopGuide = mountNativeGuide(output, app, current, manual);
+    output.appendChild(manual);
     for (const [label, value] of [['Printer address', data.host], ['Printer serial', data.printer_id]]) {
       const input = el('input', { class: 'input input--mono', readonly: '', 'aria-label': label,
         type: label === 'Native access code' ? 'password' : 'text', autocomplete: 'off' });
@@ -55,7 +64,7 @@ export function mountNative(parent, app) {
         try { await navigator.clipboard.writeText(input.value); toast(`${label} copied.`); }
         catch { input.type = 'text'; input.focus(); input.select(); }
       });
-      output.appendChild(el('div', { class: 'field' }, [el('label', { class: 'field__label', text: label }), input, copy]));
+      manualBody.appendChild(el('div', { class: 'field' }, [el('label', { class: 'field__label', text: label }), input, copy]));
     }
     const code = el('input', { class: 'input input--mono', readonly: '', type: 'password',
       autocomplete: 'off', 'aria-label': 'Native access code', placeholder: 'Loading…' });
@@ -68,7 +77,7 @@ export function mountNative(parent, app) {
       maxlength: '8', 'aria-label': 'Existing native access code', placeholder: 'Current 8-character code' });
     const saveExisting = el('button', { class: 'btn btn--ghost btn--sm', text: 'Save existing code' });
     const recovery = el('div', { class: 'stack gap-2', hidden: true }, [existing, saveExisting]);
-    output.appendChild(el('div', { class: 'field' }, [
+    manualBody.appendChild(el('div', { class: 'field' }, [
       el('label', { class: 'field__label', text: 'Native access code' }), code,
       el('div', { class: 'row gap-2', style: 'flex-wrap:wrap' }, [show, copyCode, refresh]), hint, recovery,
     ]));
@@ -111,7 +120,17 @@ export function mountNative(parent, app) {
       applyCode(res.data.access_code); toast('Existing native code saved.');
     });
     if (data.access_code) applyCode(data.access_code); else loadCode();
-    output.appendChild(el('ol', {}, [
+    const certificate = el('button', { class: 'btn btn--ghost', text: 'Download bridge certificate' });
+    certificate.addEventListener('click', async () => {
+      const res = await app.api.api('/native/setup', { cache: 'no-store' });
+      if (!current()) return;
+      if (!res.ok) { message(res.message || 'Could not prepare certificate.', true); return; }
+      const url = URL.createObjectURL(new Blob([res.data.certificate_pem], { type: 'application/x-pem-file' }));
+      const link = el('a', { href: url, download: 'bambu-bridge-native.cer' }); link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    manualBody.append(certificate, el('p', { class: 'field__hint', text: 'Manual certificate setup: append this certificate to Orca’s resources/cert/printer.cer and keep all existing certificates. On macOS this is inside OrcaSlicer.app/Contents/Resources. On Linux use Orca’s extracted application resources. Close Orca first and back up the file. Updates may replace it.' }));
+    manualBody.appendChild(el('ol', {}, [
       el('li', { text: 'In Orca, use a Bambu Lab P1S preset with “Use 3rd-party print host” turned OFF.' }),
       el('li', { text: 'In Orca’s “Connect the printer using IP and access code” dialog, enter Printer address above into IP, and your native code into Access Code. Click Connect; the bridge supplies the printer identity automatically.' }),
       el('li', { text: 'If Orca offers Manual Setup after a failed lookup, it retains your IP and code. Enter Printer name: Bridge P1S, SN: Printer serial above, and Printer model: P1S, then Connect.' }),
@@ -125,18 +144,19 @@ export function mountNative(parent, app) {
       find.disabled = false;
       message(res.ok ? 'Discovery sent. Open Orca’s printer list and select Bridge P1S. Use your saved native access code.' : (res.message || 'Discovery failed. Use the server address to connect manually.'), !res.ok);
     });
-    output.appendChild(find);
-    output.appendChild(el('p', { class: 'field__hint', text: 'The physical P1S still determines which material combinations it supports. Automatic mixing of AMS and an external spool is not added by this gateway.' }));
+    manualBody.appendChild(find);
+    manualBody.append(check, diagnostics);
+    manualBody.appendChild(el('p', { class: 'field__hint', text: 'If Orca remembers the physical LAN address or reports Connect failed (-1), use the Windows setup command above to repair the address and certificate together. The setup helper keeps your native code unchanged.' }));
   }
-  async function enable() {
-    toggle.disabled = true; rotate.disabled = true; clear(output);
+  async function enable(openManual = false) {
+    toggle.disabled = true; rotate.disabled = true; stopGuide(); clear(output);
     message('Starting native P1S access…');
     const res = await app.api.postJson('/native', { printer_id: printer.value }, { cache: 'no-store' });
     if (!current()) return;
     enabled = !!res.ok; toggle.checked = enabled; toggle.disabled = false; rotate.disabled = !enabled;
     printer.disabled = enabled;
     if (!res.ok) { message(res.message || 'Could not start native access.', true); return; }
-    showSetup(res.data); message('Native P1S access is on. Connect Orca using the fields below.');
+    showSetup(res.data, openManual); message('Native P1S access is on. Follow the steps below to connect Orca.');
     output.scrollIntoView({ block: 'center' });
   }
   toggle.addEventListener('change', async () => {
@@ -144,12 +164,12 @@ export function mountNative(parent, app) {
     toggle.disabled = true;
     const res = await app.api.del('/native', { cache: 'no-store' });
     if (!current()) return;
-    if (res.ok) { enabled = false; clear(output); message('Native P1S access is off.'); }
+    if (res.ok) { enabled = false; stopGuide(); clear(output); message('Native P1S access is off.'); }
     else message(res.message || 'Could not disable native access.', true);
     toggle.checked = enabled; toggle.disabled = false; rotate.disabled = !enabled; printer.disabled = enabled;
   });
   rotate.addEventListener('click', async () => {
-    if (await confirmSheet({ title: 'Replace native access code?', body: 'Connected native clients will disconnect and need the new code.', confirmLabel: 'Replace code' }) && current()) await enable();
+    if (await confirmSheet({ title: 'Replace native access code?', body: 'Connected native clients will disconnect and need the new code.', confirmLabel: 'Replace code' }) && current()) await enable(true);
   });
   Promise.all([app.api.api('/native', { cache: 'no-store' }), app.api.api('/printers')]).then(([state, ps]) => {
     if (!current()) return;
@@ -162,5 +182,5 @@ export function mountNative(parent, app) {
     if (enabled) { showSetup(state.data); message('Native P1S access is on. Your existing native code still works.'); }
     else message(state.data.error || 'Turn on native P1S access to connect Orca.');
   });
-  return () => { alive = false; clear(output); };
+  return () => { alive = false; stopGuide(); clear(output); };
 }
