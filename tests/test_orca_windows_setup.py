@@ -89,7 +89,7 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
             env = {
                 **os.environ,
                 "APPDATA": str(case / "appdata"),
-                "ProgramFiles": str(case / "programs"),
+                "PROGRAMFILES": str(case / "programs"),
             }
             wrong_der = ssl.PEM_cert_to_DER_cert(other.read_text())
             wrong = {
@@ -101,7 +101,13 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
                 "__BRIDGE_SETUP_DATA__", base64.b64encode(json.dumps(wrong).encode()).decode()
             )
             rejected = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", "function Get-Process { }\n" + untrusted],
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "function Get-Process { }\n" + untrusted,
+                ],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -115,8 +121,9 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
                     [
                         "powershell",
                         "-NoProfile",
+                        "-NonInteractive",
                         "-Command",
-                        "function Get-Process { return $null }\n" + script,
+                        "function Get-Process { }\n" + script,
                     ],
                     env=env,
                     capture_output=True,
