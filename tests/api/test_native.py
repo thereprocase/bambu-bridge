@@ -420,6 +420,9 @@ async def test_discovery_is_private_and_contains_no_access_code(gateway, monkeyp
     assert [address[1] for _, address in messages] == [1990, 2021]
     for data, _ in messages:
         assert b"DevModel.bambu.com: C12" in data
+        assert f"USN: {gateway.serial}\r\n".encode() in data
+        assert b"DevName.bambu.com: Bridge P1S" in data
+        assert gateway.service().serial.encode() not in data
         assert gateway.test_code.encode() not in data
         assert b"Location: 127.0.0.1" in data
     with pytest.raises(ValueError):
