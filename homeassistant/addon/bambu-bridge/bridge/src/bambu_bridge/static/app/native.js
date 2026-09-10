@@ -21,7 +21,7 @@ export function mountNative(parent, app) {
   const rotate = el('button', { class: 'btn btn--ghost mt-3', text: 'Replace native access code', disabled: true });
   card.append(el('label', { class: 'field__label', for: 'native-printer', text: 'Printer' }), printer,
     el('label', { class: 'native-toggle mt-3', for: 'native-enabled' }, [toggle,
-      el('strong', { text: 'Expose to Orca as a P1S' })]), status, output, rotate);
+      el('strong', { text: 'Expose to Orca as a P1S' })]), status, rotate, output);
   card.appendChild(el('p', { class: 'field__hint mt-3', text: 'This is full native printer access over your private LAN/Tailscale connection. The separate 8-character code controls only this gateway. Disabling it disconnects native clients; a print already running continues.' }));
   const diagnostics = el('p', { class: 'field__hint', role: 'status' });
   const check = el('button', { class: 'btn btn--ghost mt-3', text: 'Check Orca connection' });
@@ -32,12 +32,14 @@ export function mountNative(parent, app) {
     if (!current()) return;
     check.disabled = false;
     if (!res.ok) { diagnostics.textContent = res.message || 'Could not check connection.'; return; }
-    const phases = { tls_connected: 'secure connection opened', authenticated: 'code accepted',
+    const phases = { tcp_connected: 'identity lookup opened', identity_sent: 'printer identified',
+      tls_connected: 'secure connection opened', authenticated: 'code accepted',
       access_code_rejected: 'native access code rejected', disconnected: 'connection ended',
       timeout: 'connection timed out', protocol_error: 'protocol error',
       unsupported_mqtt_version: 'unsupported MQTT version', streaming: 'camera frames flowing' };
     const entries = Object.entries(res.data.connections || {});
     diagnostics.textContent = entries.length ? entries.map(([name, info]) =>
+      name === 'detect' ? `IDENTIFICATION: ${phases[info.phase] || 'waiting'} (${info.tcp_connections || 0} lookups).` :
       `${name.toUpperCase()}: ${phases[info.phase] || 'waiting'} (${info.tls_connections} secure connections, ${info.auth_failures} rejected codes).`).join(' ')
       : 'No completed secure connection since the server started. Check the address and private network connection, then try Connect in Orca again.';
   });
@@ -56,9 +58,11 @@ export function mountNative(parent, app) {
       });
       output.appendChild(el('div', { class: 'field' }, [el('label', { class: 'field__label', text: label }), input, copy]));
     }
+    if (!data.access_code) output.appendChild(el('p', { class: 'field__hint', text: 'Your saved native code works on all your computers at the same time. The code was displayed only when it was created; it is not single-use. If you lost it, Replace native access code generates a new shared code that you must enter on every computer.' }));
     output.appendChild(el('ol', {}, [
       el('li', { text: 'In Orca, use a Bambu Lab P1S preset with “Use 3rd-party print host” turned OFF.' }),
-      el('li', { text: 'Add/connect a LAN printer in the Device page using this server address, the P1S model, printer serial and native access code.' }),
+      el('li', { text: 'In Orca’s “Connect the printer using IP and access code” dialog, enter Printer address above into IP, and your native code into Access Code. Click Connect; the bridge supplies the printer identity automatically.' }),
+      el('li', { text: 'If Orca offers Manual Setup after a failed lookup, it retains your IP and code. Enter Printer name: Bridge P1S, SN: Printer serial above, and Printer model: P1S, then Connect.' }),
       el('li', { text: 'Slice and open Print plate. Select the live AMS slots or choose the external spool. View the camera in Device.' }),
     ]));
     const find = el('button', { class: 'btn btn--primary', text: 'Find in Orca on this computer' });
@@ -67,10 +71,10 @@ export function mountNative(parent, app) {
       const res = await app.api.postJson('/native/announce', {}, { cache: 'no-store' });
       if (!current()) return;
       find.disabled = false;
-      message(res.ok ? 'Discovery sent. Open Orca’s printer list and select Bridge P1S. Use the native access code above.' : (res.message || 'Discovery failed. Use the server address to connect manually.'), !res.ok);
+      message(res.ok ? 'Discovery sent. Open Orca’s printer list and select Bridge P1S. Use your saved native access code.' : (res.message || 'Discovery failed. Use the server address to connect manually.'), !res.ok);
     });
     output.appendChild(find);
-    if (data.access_code) output.appendChild(el('p', { class: 'field__hint', text: 'Copy the code now; it is shown once. This is the bridge code, not the printer’s original access code.' }));
+    if (data.access_code) output.appendChild(el('p', { class: 'field__hint', text: 'Save this code now. It works repeatedly on multiple computers, including at the same time, but is displayed only when created. Use this bridge code in Orca. Replacing it requires updating every connected computer.' }));
     output.appendChild(el('p', { class: 'field__hint', text: 'The physical P1S still determines which material combinations it supports. Automatic mixing of AMS and an external spool is not added by this gateway.' }));
   }
   async function enable() {
