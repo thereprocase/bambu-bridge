@@ -15,6 +15,25 @@ flowchart LR
     B <-->|Local network| P[P1S printer]
 ```
 
+## A second printer, with a separate identity
+
+Orca shows **P1S** for the physical printer and **Bridge P1S** for the server.
+The bridge has its own persistent 15-character virtual serial. Local discovery
+of the physical printer cannot overwrite the bridge entry because their IDs
+are different. Discovery, identification, the native certificate, MQTT topics
+and the setup command all use this virtual identity. Use the dashboard's
+**Printer serial** for manual setup, never the physical printer's serial.
+
+**Upgrading from 0.4.0 or earlier:** run a fresh Windows setup command on each
+computer, then choose Bridge P1S. The native access code stays the same, but
+the new identity has a new certificate. Older entries using the physical serial
+are not the new bridge printer. Back up the protected pairing directory to
+preserve the virtual identity across server moves and restores.
+
+The gateway answers access-code queries with the native bridge code. It does
+not expose the physical printer's password through native status replies or
+let that password replace Orca's bridge credential.
+
 ## Connect Orca on Windows
 
 1. On the computer where Orca will run, open your bridge dashboard over HTTPS.
@@ -62,7 +81,7 @@ may replace that file. Do not replace the entire bundle with the bridge leaf.
 
 In Orca's **Connect the printer using IP and access code** dialog, enter the
 bridge's address and native code. If it offers **Manual Setup**, use name
-**Bridge P1S**, the dashboard's serial, and model **Bambu Lab P1S**. The code is
+**Bridge P1S**, the dashboard's virtual serial, and model **Bambu Lab P1S**. The code is
 eight alphanumeric characters; the serial has fifteen characters. The bridge
 answers native identification on TCP 3000 where the installed plugin supports
 that lookup. The Windows helper avoids this two-screen flow by registering
@@ -149,7 +168,7 @@ only need upload or a fixed mapping. Choose one connection style in Orca.
 
 ## Troubleshooting
 
-Use v0.4.0 or newer for guided setup and packed-address isolation. Native TLS uses RSA compatibility. The gateway keeps this
+Use v0.4.1 or newer for guided setup and packed-address isolation. Native TLS uses RSA compatibility. The gateway keeps this
 certificate separate from phone pairing and preserves the existing native
 access code when updating from v0.3.0.
 

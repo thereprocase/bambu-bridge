@@ -113,6 +113,15 @@ def native_report(payload: dict[str, Any], old: str, host: str) -> dict[str, Any
     return result
 
 
+def transpose_identity(value: Any, old: str, new: str) -> Any:
+    """Translate exact identity values, without changing filenames or subassemblies."""
+    if isinstance(value, dict):
+        return {key: transpose_identity(item, old, new) for key, item in value.items()}
+    if isinstance(value, list):
+        return [transpose_identity(item, old, new) for item in value]
+    return new if isinstance(value, str) and value == old else value
+
+
 class NativeGateway:
     def __init__(
         self,
@@ -138,6 +147,7 @@ class NativeGateway:
         self.transfer_lock = asyncio.Semaphore(2)
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None
+        self.serial: str | None = None
         self.context: ssl.SSLContext | None = None
         self.last_error: str | None = None
         self.diagnostics: dict[str, dict[str, Any]] = {}
@@ -152,6 +162,8 @@ class NativeGateway:
             db.execute("""CREATE TABLE IF NOT EXISTS native_code (
                 id INTEGER PRIMARY KEY CHECK(id=1), gateway_hash TEXT NOT NULL,
                 encrypted TEXT NOT NULL)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS native_identity (
+                printer_id TEXT PRIMARY KEY, serial TEXT NOT NULL UNIQUE)""")
             row = db.execute("SELECT * FROM native_gateway WHERE id=1 AND enabled=1").fetchone()
         if row:
             self.config = dict(row)
@@ -170,6 +182,7 @@ class NativeGateway:
             "enabled": bool(self.servers),
             "host": self.host,
             "printer_id": self.config["printer_id"] if self.config else None,
+            "serial": self.serial if self.config else None,
             "model": "P1S",
             "error": self.last_error,
             "connections": self.diagnostics,
@@ -181,16 +194,44 @@ class NativeGateway:
             },
         }
 
+    def identity_serial(self) -> str:
+        service = self.service()
+        assert self.config is not None
+        with self.store.connect() as db:
+            row = db.execute(
+                "SELECT serial FROM native_identity WHERE printer_id=?",
+                (self.config["printer_id"],),
+            ).fetchone()
+            if row:
+                serial = str(row["serial"])
+                if not re.fullmatch(r"01P[A-Z0-9]{12}", serial) or serial == service.serial:
+                    raise ValueError("Invalid virtual printer identity; restore pairing storage")
+                return serial
+            while True:
+                serial = "01P" + "".join(
+                    secrets.choice(string.ascii_uppercase + string.digits) for _ in range(12)
+                )
+                if serial == service.serial:
+                    continue
+                db.execute(
+                    "INSERT OR IGNORE INTO native_identity VALUES (?, ?)",
+                    (self.config["printer_id"], serial),
+                )
+                row = db.execute(
+                    "SELECT serial FROM native_identity WHERE printer_id=?",
+                    (self.config["printer_id"],),
+                ).fetchone()
+                if row:
+                    return str(row["serial"])
+
     async def start(self) -> None:
         if not self.config:
             return
-        service = self.service()
+        self.serial = self.identity_serial()
         # Native TLS clients may offer RSA-authenticated cipher suites only.
         # Keep this identity separate from pinned phones and the old EC leaf.
         directory = self.store.directory / "native-rsa"
-        key, cert, _ = identity(
-            directory, common_name=service.serial, key_kind="rsa", host=self.host
-        )
+        key, cert, _ = identity(directory, common_name=self.serial, key_kind="rsa", host=self.host)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(cert), str(key))
@@ -253,7 +294,7 @@ class NativeGateway:
             raise ValueError("Discovery requires a private IPv4 client address")
         if not self.servers:
             raise ValueError("Enable native access first")
-        serial = self.service().serial
+        serial = self.serial
         message = (
             "NOTIFY * HTTP/1.1\r\n"
             "HOST: 239.255.255.250:1900\r\nServer: UPnP/1.0\r\n"
@@ -452,7 +493,7 @@ class NativeGateway:
                     "login": {
                         "command": "detect",
                         "sequence_id": sequence,
-                        "id": service.serial,
+                        "id": self.serial,
                         "model": "C12",
                         "name": "Bridge P1S",
                         "version": version,
@@ -512,7 +553,8 @@ class NativeGateway:
             return
         service = self.service()
         self.note("mqtt", "authenticated")
-        serial = service.serial
+        serial = self.serial
+        assert serial is not None
         report_topic = f"device/{serial}/report".encode()
         request_topic = f"device/{serial}/request".encode()
         subscribed = False
@@ -525,6 +567,11 @@ class NativeGateway:
 
         async def report(payload: dict[str, Any]) -> None:
             value = native_report(payload, service.ip, self.host)
+            value = transpose_identity(value, service.serial, serial)
+            system = value.get("system")
+            if isinstance(system, dict) and "access_code" in system:
+                # Orca saves this reply as its next MQTT/camera password.
+                system["access_code"] = code.decode()
             await send(
                 0x30, field(report_topic) + json.dumps(value, separators=(",", ":")).encode()
             )
@@ -565,7 +612,24 @@ class NativeGateway:
                         payload = json.loads(data[pos:])
                         if not isinstance(payload, dict):
                             return
-                        await service.send_raw(payload)
+                        system = payload.get("system")
+                        if isinstance(system, dict) and system.get("command") == "get_access_code":
+                            sequence = system.get("sequence_id", "0")
+                            if type(sequence) not in (str, int) or len(str(sequence)) > 64:
+                                return
+                            await report(
+                                {
+                                    "system": {
+                                        "command": "get_access_code",
+                                        "sequence_id": sequence,
+                                        "access_code": code.decode(),
+                                    }
+                                }
+                            )
+                        else:
+                            await service.send_raw(
+                                transpose_identity(payload, serial, service.serial)
+                            )
                         if qos:
                             await send(0x40, mid)
                     elif kind == 10:

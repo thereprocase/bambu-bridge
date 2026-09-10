@@ -4,7 +4,7 @@
 let you choose a **four-color AMS print or an external-spool print** for each
 job, with live printer status and camera access. No connection changes between
 jobs. Native P1S support is available in the
-[v0.4.0 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.4.0).
+[v0.4.1 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.4.1).
 
 [Project site and explainer](https://thereprocase.github.io/bambu-bridge/#orca)
 · [Native setup](docs/NATIVE-P1S.md) · [Validation](VALIDATION.md)
@@ -29,9 +29,11 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.4.0 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.4.1 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
+
+**Two separate printer entries:** `P1S` is the physical printer; `Bridge P1S` has its own persistent serial and routes through the server. Upgrading from 0.4.0 or earlier requires running a fresh setup command on each computer.
 
 **Orca:** Follow [native server setup](docs/NATIVE-P1S.md#server-setup), then
 open your HTTPS dashboard > **Settings > Connect Orca to your printer**.
