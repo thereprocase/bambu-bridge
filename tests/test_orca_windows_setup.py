@@ -18,6 +18,26 @@ import pytest
 from bambu_bridge.pairing import identity
 
 
+def run_setup_script(script, env):
+    try:
+        return subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "function Get-Process { }\n" + script,
+            ],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f"Setup timed out. Output: {exc.stdout!r}; errors: {exc.stderr!r}")
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell setup integration")
 def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
     serial = "SETUPFIXTURE001"
@@ -100,36 +120,12 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
             untrusted = template.replace(
                 "__BRIDGE_SETUP_DATA__", base64.b64encode(json.dumps(wrong).encode()).decode()
             )
-            rejected = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "function Get-Process { }\n" + untrusted,
-                ],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=45,
-            )
+            rejected = run_setup_script(untrusted, env)
             assert "1/3 Checking" in rejected.stdout and "Setup stopped:" in rejected.stdout
             assert "2/3" not in rejected.stdout
             assert config.read_bytes() == before and bundle.read_bytes() == original_certificates
             for _ in range(2):
-                result = subprocess.run(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        "function Get-Process { }\n" + script,
-                    ],
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    timeout=45,
-                )
+                result = run_setup_script(script, env)
                 assert result.returncode == 0 and "Ready! Open Orca" in result.stdout, (
                     result.stdout + result.stderr
                 )
