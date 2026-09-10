@@ -10,6 +10,7 @@ Routers are thin; all domain state hangs off ``app.state``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,7 @@ from bambu_bridge.api import (
     filament,
     files,
     jobs,
+    orca,
     pairing,
     printers,
     queue,
@@ -43,6 +45,7 @@ from bambu_bridge.db.jobs import (
     PrinterRepo,
     SlicedDateRepo,
 )
+from bambu_bridge.orca import OrcaStore
 from bambu_bridge.pairing import PairingStore
 from bambu_bridge.protocol.ftps import SlicedDateMemo
 from bambu_bridge.push.ntfy import NotificationService, NtfyDispatcher
@@ -144,6 +147,8 @@ def create_app(
         app.state.settings = settings
         app.state.pairing = (PairingStore(settings.bridge_pairing_dir)
                              if settings.bridge_pairing_dir else None)
+        app.state.orca = OrcaStore(app.state.pairing) if app.state.pairing else None
+        app.state.orca_submit_lock = asyncio.Lock()
         app.state.db = db
         app.state.registry = registry
         app.state.jobs = job_manager
@@ -188,6 +193,7 @@ def create_app(
     v1.include_router(viz.router)
     v1.include_router(filament.router)
     v1.include_router(pairing.router)
+    v1.include_router(orca.management)
 
     @v1.get("/health", tags=["system"])  # no auth (spec 6)
     def health() -> dict[str, str]:
@@ -198,6 +204,7 @@ def create_app(
         return {"version": __version__}
 
     app.include_router(v1)
+    app.include_router(orca.host)
     # Root-level SPA shell (/, /app, /app/{path}); unauthenticated static files.
     # Included AFTER v1 so /api/v1/* always wins on any path overlap.
     app.include_router(viz.app_shell_router)

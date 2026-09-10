@@ -622,6 +622,9 @@ a:hover{text-decoration:underline;}
 
 /* Phone enrollment: readable QR and wrapping controls on narrow screens. */
 .pairing-card { overflow-wrap:anywhere; }
+#orca-setup .select, #orca-setup .input { min-width:0; width:100%; max-width:100%; box-sizing:border-box; }
+#orca-setup ol { padding-left:24px; }
+#orca-setup li + li { margin-top:10px; }
 .pairing-qr-panel { margin-top:20px; padding-top:16px; border-top:1px solid var(--panel-edge); }
 .pairing-qr { display:block; width:min(360px,100%); height:auto; margin:20px auto 12px; background:#fff; border:12px solid #fff; box-sizing:border-box; }
 .pairing-countdown { text-align:center; font-variant-numeric:tabular-nums; }

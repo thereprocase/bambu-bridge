@@ -6,6 +6,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-09-10
+
+- Connect stock OrcaSlicer 2.4.2 through an HTTPS Octo/Klipper print-host adapter.
+- Add Settings → OrcaSlicer: per-printer revocable keys, copyable connection
+  fields, upload-only permission or explicit fixed AMS / external-spool printing.
+- Preserve sliced bytes, use unique SD filenames, and reuse validation and the
+  existing print lifecycle. Reject unsupported plate selections and busy printers.
+- Keep slicer keys separate from owner and phone credentials; hash at rest,
+  require HTTPS, redact logs and reject keys outside their printer/adapter scope.
+- Preview supports one sliced plate at position 1; native AMS sync is separate.
+
 ## [0.2.1] — 2026-09-10
 
 - Add Settings → Phones & pairing to the owner-authenticated HTTPS dashboard:

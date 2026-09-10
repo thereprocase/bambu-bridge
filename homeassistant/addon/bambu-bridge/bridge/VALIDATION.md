@@ -1,3 +1,23 @@
+# OrcaSlicer print-host preview — 0.2.2
+
+The OctoPrint upload contract used by stock OrcaSlicer 2.4.2 is exercised by
+API tests: connection test, HTTPS and per-printer key enforcement, owner-only
+key management, hash-at-rest and revocation, unchanged upload bytes, real FTPS
+transfer to a disposable TLS server, and mocked submission into the existing
+job lifecycle with an explicit AMS mapping. Unsupported selections, malformed
+containers, thermal violations, busy/offline printers and changed certificate
+identity are rejected without starting a print. Ruff and mypy pass.
+
+Isolated Chromium exercises the real HTTPS backend's setup view: create/copy,
+connection test, revoke, fixed mapping and one-time key display. Layouts pass
+at 320, 1440 and 3840 pixels with no horizontal overflow or JavaScript errors.
+No production credentials enter test fixtures. A physical print initiated by
+the installed Orca UI has not been performed; no production print is started
+by release checks. First preview: one sliced plate at position 1; no native
+Orca AMS/device integration. See [setup and limits](docs/ORCA.md).
+
+## Previous release evidence
+
 # Dashboard pairing preview — 0.2.1
 
 Focused pairing, dashboard shell, owner authentication and viewer-token tests

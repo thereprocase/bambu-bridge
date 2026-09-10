@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bambu-bridge"
-version = "0.2.1"
+version = "0.2.2"
 description = "Self-hosted intermediary server for the Bambu P1S LAN protocol"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -75,6 +75,7 @@ include = [
     "THIRD_PARTY.md",
     "VALIDATION.md",
     "docs/LOCAL-PAIRING.md",
+    "docs/ORCA.md",
     "pyproject.toml",
 ]
 exclude = [
