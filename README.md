@@ -4,7 +4,7 @@
 let you choose a **four-color AMS print or an external-spool print** for each
 job, with live printer status and camera access. No connection changes between
 jobs. Native P1S support is available in the
-[v0.4.2 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.4.2).
+[v0.5.0 preview](https://github.com/thereprocase/bambu-bridge/releases/tag/v0.5.0).
 
 [Project site and explainer](https://thereprocase.github.io/bambu-bridge/#orca)
 · [Native setup](docs/NATIVE-P1S.md) · [Validation](VALIDATION.md)
@@ -29,11 +29,11 @@ not promised. See [LAN compatibility and access](docs/LAN-COMPATIBILITY.md).
 
 ## Source release
 
-Version 0.4.2 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
+Version 0.5.0 is an AGPL-3.0-only native P1S preview; 0.1.3 remains the stable release. Read [THIRD_PARTY.md](THIRD_PARTY.md) for attribution and network-source obligations, and [VALIDATION.md](VALIDATION.md) for tested scope. The restored HMS/stage decoder retains raw codes and context; its guidance is not a substitute for the printer display.
 
 ## Quick start
 
-**Camera fix in 0.4.2:** fixes native Orca live view stalling after connection. Existing 0.4.1 clients can retry Play after upgrading the server; the native identity, code and certificate stay the same.
+**Live view in 0.5.0:** the dashboard streams every camera frame as it arrives, shows the received FPS, and reconnects automatically. The 3D viewer loads print toolpaths directly and prepares running prints in the background after restart. Existing native identities, codes and certificates remain valid.
 
 **Two separate printer entries:** `P1S` is the physical printer; `Bridge P1S` has its own persistent serial and routes through the server. Upgrading from 0.4.0 or earlier requires running a fresh setup command on each computer.
 

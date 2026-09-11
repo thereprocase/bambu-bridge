@@ -224,28 +224,41 @@ class JobManager:
         jobs; this path handles the external-origin rows only).
         """
         log_ = log.bind(printer_id=service.serial)
+        warmed_job: str | None = None
         async with service.bus.subscribe() as sub:
             async for ev in sub:
-                if ev.type != "event" or ev.name is None:
-                    continue
                 try:
+                    # On restart the job name may arrive after the RUNNING edge.
+                    # Warm as soon as both are present, even without print_started.
+                    if self._viz_cache is not None:
+                        summary = service.summary()
+                        job_name = summary.get("subtask_name") or ""
+                        if summary.get("gcode_state") in ("RUNNING", "PREPARE", "PAUSE"):
+                            if job_name and job_name != warmed_job:
+                                self._viz_cache.schedule_prewarm(
+                                    service.serial, service.ip, service.access_code, job_name
+                                )
+                                warmed_job = job_name
+                        else:
+                            warmed_job = None
+                    if ev.type != "event" or ev.name is None:
+                        continue
                     if ev.name == "print_started":
                         # Trigger viz pre-warm (best-effort; any failure is
                         # swallowed inside VizCache.schedule_prewarm).
                         if self._viz_cache is not None:
                             job_name = ev.data.get("subtask_name") or ""
-                            if job_name:
+                            if job_name and job_name != warmed_job:
                                 self._viz_cache.schedule_prewarm(
                                     service.serial,
                                     service.ip,
                                     service.access_code,
                                     job_name,
                                 )
+                                warmed_job = job_name
                         await self._maybe_create_external_job(service.serial, ev, log_)
                     elif ev.name in ("print_completed", "print_failed"):
-                        await self._maybe_close_external_job(
-                            service.serial, ev.name, log_
-                        )
+                        await self._maybe_close_external_job(service.serial, ev.name, log_)
                 except Exception:  # noqa: BLE001 — never let the watch task die
                     log_.exception("jobs.watch.error", ev_name=ev.name)
 

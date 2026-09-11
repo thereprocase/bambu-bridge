@@ -6,6 +6,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-10
+
+- Stream the dashboard camera continuously with Bearer-authenticated MJPEG,
+  display received FPS, and remove snapshot polling and its artificial startup delay.
+  Legacy FPS preferences no longer limit live view.
+- Detect stale camera frames, reconnect silent or partial-frame sockets, keep
+  retry delays bounded through long outages, and honor the viewer linger window.
+- Load binary print toolpaths directly; fall back to meshes for unsliced models.
+  Reuse known file paths while still checking remote file revisions, and prepare
+  both mesh and toolpath from one archive download during background warming.
+- Warm an already-running print when telemetry arrives after a server restart.
+  Serialize and compress large model responses off the main async event loop.
+- Add camera framing/recovery and viewer-startup regressions, plus a Node streaming
+  parser gate in CI. Existing native printer setup remains valid.
+
 ## [0.4.2] - 2026-09-10
 
 - Mark native P1S JPEG frames as keyframes, matching the physical camera header.
