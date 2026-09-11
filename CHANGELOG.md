@@ -10,11 +10,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Add approximate browser-hosted 3D toolhead tracking that follows sliced
   extrusion paths with distance weighting and inferred straight travel.
-- Calibrate remaining time from observed layer durations, resynchronize on
+- Calibrate animation pacing from observed layer durations, resynchronize on
   reported layer changes, and freeze the estimate while paused or offline.
+- Render layer-control icons consistently without depending on emoji fonts.
+- Reject changed jobs and mismatched toolpath responses; discard incomplete
+  timing samples after pauses or telemetry gaps.
 - Keep the estimate clearly separate from printer telemetry: XY position,
   speeds, and travel are inferred. Reopen the 3D viewer to use it; no APK is
-  required. Position, speed and travel are inferred; this is not measured XY.
+  required.
 
 ## [0.5.0] - 2026-09-10
 

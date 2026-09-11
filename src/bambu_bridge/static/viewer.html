@@ -81,6 +81,7 @@
     display:inline-flex;align-items:center;justify-content:center;
     cursor:pointer;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
     touch-action:none;}
+  .btn svg{width:18px;height:18px;fill:currentColor;flex-shrink:0;}
   .btn:active{background:rgba(255,255,255,.14);}
   #live{gap:7px;font-size:13px;letter-spacing:.04em;font-weight:700;
     padding:0 14px;}
@@ -130,10 +131,10 @@
     <input id="slider" type="range" min="0" max="1" value="0" step="1"
            aria-label="layer">
     <div id="row">
-      <button class="btn" id="rew"  title="hold to rewind">⏪</button>
-      <button class="btn" id="prev" title="step back">⏮</button>
-      <button class="btn" id="next" title="step forward">⏭</button>
-      <button class="btn" id="fwd"  title="hold to advance">⏩</button>
+      <button class="btn" id="rew" title="hold to rewind" aria-label="hold to rewind"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4 1 12l10 8V4Zm12 0-10 8 10 8V4Z"/></svg></button>
+      <button class="btn" id="prev" title="step back" aria-label="step back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h3v16H4zM20 4 8 12l12 8V4Z"/></svg></button>
+      <button class="btn" id="next" title="step forward" aria-label="step forward"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 4h3v16h-3zM4 4v16l12-8L4 4Z"/></svg></button>
+      <button class="btn" id="fwd" title="hold to advance" aria-label="hold to advance"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1 4v16l10-8L1 4Zm12 0v16l10-8-10-8Z"/></svg></button>
       <button class="btn" id="live" title="live tracking">
         <span class="dot"></span><span id="liveTxt">LIVE</span></button>
       <button class="btn" id="color" title="toggle color mode">
@@ -1128,7 +1129,7 @@ async function loadToolpath(){
 }
 
 function applyMesh(mesh){
-  if(STATE.jobChanged) return;
+  if(!acceptGeometryJob(mesh.job)) return;
   STATE.mesh=mesh;
   STATE.mode="mesh";
   STATE.totalLayers = mesh.totalLayers && mesh.totalLayers>0
@@ -1155,7 +1156,7 @@ function applyMesh(mesh){
 }
 
 function applyToolpath(tp){
-  if(STATE.jobChanged) return;
+  if(!acceptGeometryJob(tp.job)) return;
   STATE.mesh=tp;                       // unified geometry slot (kind distinguishes)
   STATE.mode="toolpath";
   STATE.totalLayers = tp.totalLayers && tp.totalLayers>0
@@ -1218,7 +1219,7 @@ function trackingFresh(now=performance.now()){
 // Estimate a layer duration only at a boundary. Coarse minute ETA updates must
 // never send an already moving head backwards. A complete observed layer is a
 // better clock than the remaining-job average; unobserved intervals invalidate it.
-function updatePacing(prevLayer, newLayer){
+function updatePacing(prevLayer, newLayer, continuous=trackingFresh()){
   if(prevLayer!=null && newLayer===prevLayer+1 && STATE.measurementValid
       && STATE.layerElapsed>0.5 && STATE.layerElapsed<3600){
     STATE.measuredLayerSec=STATE.measuredLayerSec==null ? STATE.layerElapsed
@@ -1228,7 +1229,8 @@ function updatePacing(prevLayer, newLayer){
   const left=Math.max(1, STATE.totalLayers-newLayer+1);
   const bootstrap=STATE.remainingMin>0 ? STATE.remainingMin*60/left : 30;
   STATE.estLayerSec=Math.max(5,Math.min(3600,STATE.measuredLayerSec||bootstrap));
-  STATE.layerSynced=prevLayer!=null && newLayer===prevLayer+1 && trackingFresh();
+  STATE.layerSynced=prevLayer!=null && newLayer===prevLayer+1
+    && continuous && trackingFresh() && STATE.phase==="printing";
   STATE.measurementValid=STATE.layerSynced;
 }
 function loseTracking(){
@@ -1239,19 +1241,32 @@ function loseTracking(){
   STATE.needsDraw=true;
   updateLivePill();
 }
+function markJobChanged(){
+  STATE.jobChanged=true;
+  loseTracking();
+  showError("nojob","The print changed.","Reload its toolpath to track the new print.");
+  document.getElementById("retry").textContent="Reload toolpath";
+}
+// Geometry and status are fetched independently. Bind the returned filename
+// even if the initial status request failed, and reject a late mismatched model.
+function acceptGeometryJob(name){
+  if(STATE.jobChanged) return false;
+  const old=STATE.jobKey;
+  if(name && old && old.name && name!==old.name){ markJobChanged(); return false; }
+  if(name) STATE.jobKey={name,start:old&&old.start};
+  return true;
+}
 // This viewer is tied to the file it loaded. Do not animate a new job over an
 // old model, including a repeated file whose synthesized start time changed.
 function acceptSnapshot(s, now=performance.now(), wallNow=Date.now()){
   advanceReveal(now); // close the old interval before changing phase/freshness
+  const continuous=trackingFresh(now) && STATE.phase==="printing";
   const job=s.job||{}, session=s.session||{};
   const key={name:job.subtask_name||null,start:job.started_at||null};
   const oldKey=STATE.jobKey;
   if(oldKey && ((key.name && oldKey.name && key.name!==oldKey.name)
       || (key.start && oldKey.start && key.start!==oldKey.start))){
-    STATE.jobChanged=true;
-    loseTracking();
-    showError("nojob","The print changed.","Reload its toolpath to track the new print.");
-    document.getElementById("retry").textContent="Reload toolpath";
+    markJobChanged();
     return;
   }
   STATE.jobKey={name:key.name||(oldKey&&oldKey.name),start:key.start||(oldKey&&oldKey.start)};
@@ -1260,7 +1275,9 @@ function acceptSnapshot(s, now=performance.now(), wallNow=Date.now()){
   const age=Number.isFinite(stamp) ? Math.max(0,wallNow-stamp) : Infinity;
   STATE.freshUntil=session.connected===true && age<TELEMETRY_TTL_MS
     ? now+Math.min(STATUS_TTL_MS, TELEMETRY_TTL_MS-age) : 0;
-  if(!trackingFresh(now)){ STATE.measurementValid=false; STATE.layerSynced=false; }
+  if(!trackingFresh(now) || STATE.phase!=="printing"){
+    STATE.measurementValid=false; STATE.layerSynced=false;
+  }
   const ln=Math.max(0,intOr(job.layer_num,0));
   const tot=intOr(job.total_layer_num,0);
   const rem=job.remaining_min==null ? null : Number(job.remaining_min);
@@ -1271,7 +1288,7 @@ function acceptSnapshot(s, now=performance.now(), wallNow=Date.now()){
     STATE.totalLayers=tot; slider.max=tot;
   }
   if(prevLayer!==ln){
-    updatePacing(prevLayer,ln);
+    updatePacing(prevLayer,ln,continuous);
     snapRevealToLayer(ln,true); // keep the live estimate current even while scrubbing
   }
   STATE.lastLayerNum=ln;

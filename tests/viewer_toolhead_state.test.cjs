@@ -42,12 +42,14 @@ vm.runInContext(`${chunk("const STATE =", "/* ── 6. Networking")}
   ${declaration("trackingFresh")}
   ${declaration("updatePacing")}
   ${declaration("loseTracking")}
+  ${declaration("markJobChanged")}
+  ${declaration("acceptGeometryJob")}
   ${declaration("sampleHead")}
   ${declaration("advanceReveal")}
   ${declaration("acceptSnapshot")}
   ${declaration("intOr")}
   this.STATE=STATE; this.trackingFresh=trackingFresh; this.updatePacing=updatePacing;
-  this.advanceReveal=advanceReveal; this.acceptSnapshot=acceptSnapshot; this.sampleHead=sampleHead;`, context);
+  this.advanceReveal=advanceReveal; this.acceptSnapshot=acceptSnapshot; this.acceptGeometryJob=acceptGeometryJob; this.sampleHead=sampleHead;`, context);
 
 function freshSnapshot({ layer = 1, total = 10, remaining = 90, phase = "printing", name = "job", start = "s1", telemetryAt } = {}) {
   return { phase, session: { connected: true, last_telemetry_at: telemetryAt || new Date(Date.now()).toISOString() },
@@ -74,6 +76,8 @@ reset(); context.acceptSnapshot(freshSnapshot({ remaining: 20 }));
 context.STATE.measurementValid = true; context.STATE.layerSynced = true;
 now += 1000; context.advanceReveal(now); const beforePause = context.STATE.layerElapsed;
 context.acceptSnapshot(freshSnapshot({ phase: "paused", remaining: 20 }));
+assert.equal(context.STATE.measurementValid, false);
+assert.equal(context.STATE.layerSynced, false);
 now += 120000; context.advanceReveal(now); assert.equal(context.STATE.layerElapsed, beforePause);
 context.acceptSnapshot(freshSnapshot({ phase: "printing", remaining: 20 }));
 now += 1000; context.advanceReveal(now); assert.equal(context.STATE.layerElapsed, beforePause + 1);
@@ -118,5 +122,26 @@ assert.equal(context.STATE.freshUntil, 0);
 reset(); context.acceptSnapshot(freshSnapshot({ name: null, start: null }));
 context.acceptSnapshot(freshSnapshot({ name: "later", start: "s2" }));
 assert.equal(context.STATE.jobChanged, false);
+
+// A layer crossed during lost telemetry cannot establish an observed boundary.
+reset(); context.acceptSnapshot(freshSnapshot({ layer: 1 }));
+context.STATE.freshUntil = now - 1;
+context.acceptSnapshot(freshSnapshot({ layer: 2 }));
+assert.equal(context.STATE.layerSynced, false);
+context.acceptSnapshot(freshSnapshot({ layer: 3 }));
+assert.equal(context.STATE.layerSynced, true);
+
+// An independently loaded file binds identity before the first status succeeds.
+reset(); assert.equal(context.acceptGeometryJob("loaded-file"), true);
+context.acceptSnapshot(freshSnapshot({ name: "different-file" }));
+assert.equal(context.STATE.jobChanged, true);
+
+// A late old-model response cannot replace the current job's geometry.
+reset(); context.acceptSnapshot(freshSnapshot({ name: "current-file" }));
+assert.equal(context.acceptGeometryJob("old-file"), false);
+assert.equal(context.STATE.jobChanged, true);
+reset(); context.acceptSnapshot(freshSnapshot({ name: "current-file" }));
+assert.equal(context.acceptGeometryJob("current-file"), true);
+assert.equal(context.STATE.jobKey.start, "s1");
 
 console.log("viewer_toolhead_state: ok");
