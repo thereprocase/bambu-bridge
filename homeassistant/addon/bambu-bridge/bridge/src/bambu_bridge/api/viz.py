@@ -77,6 +77,7 @@ Both ``/viz/mesh`` and ``/viz/toolpath`` carry:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import gzip as _gzip
 import json as _json
@@ -120,9 +121,7 @@ _GZIP_LEVEL = 6
 _BIN_GZIP_MIN_SAVINGS = 0.15
 
 
-def _viz_etag(
-    filename: str, size: int, repr_fmt: str = "json", revision: str = ""
-) -> str:
+def _viz_etag(filename: str, size: int, repr_fmt: str = "json", revision: str = "") -> str:
     """Return a strong ETag for ONE representation of a viz resource.
 
     A strong ETag must identify a single representation (RFC 7232 §2.3): a
@@ -214,9 +213,7 @@ def _ftps_for(request: Request, registry: Registry, printer_id: str) -> FtpsTran
     )
 
 
-async def _find_3mf(
-    ftps: FtpsTransfer, job_name: str
-) -> tuple[str, str] | None:
+async def _find_3mf(ftps: FtpsTransfer, job_name: str) -> tuple[str, str] | None:
     """Locate the .3mf (or .gcode.3mf) file matching ``job_name``.
 
     Thin wrapper around the canonical ``find_3mf`` in service/viz_cache.py so
@@ -289,7 +286,9 @@ async def get_viz_mesh(
 
     # ---- Locate the 3MF on the printer ---------------------------------- #
     try:
-        location = await _find_3mf(ftps, job_name)
+        location = _get_viz_cache(request).cached_location(printer_id, job_name)
+        if location is None:
+            location = await _find_3mf(ftps, job_name)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -335,7 +334,8 @@ async def get_viz_mesh(
             printer_id=printer_id,
             filename=filename,
         )
-        return _mesh_response(
+        return await asyncio.to_thread(
+            _mesh_response,
             mesh=cached_mesh,
             job_name=job_name,
             total_layers=total_layers,
@@ -358,8 +358,8 @@ async def get_viz_mesh(
     except VizFillError as exc:
         _HTTP_STATUS = {
             "not_found": status.HTTP_404_NOT_FOUND,
-            "download":  status.HTTP_502_BAD_GATEWAY,
-            "parse":     status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "download": status.HTTP_502_BAD_GATEWAY,
+            "parse": status.HTTP_422_UNPROCESSABLE_ENTITY,
         }
         raise HTTPException(
             status_code=_HTTP_STATUS.get(exc.kind, status.HTTP_502_BAD_GATEWAY),
@@ -382,7 +382,8 @@ async def get_viz_mesh(
             kind="mesh",
         )
     etag = _viz_etag(filename, file_size, revision=viz_cache.content_id(printer_id, filename))
-    return _mesh_response(
+    return await asyncio.to_thread(
+        _mesh_response,
         mesh=mesh,
         job_name=job_name,
         total_layers=total_layers,
@@ -434,8 +435,7 @@ def _mesh_response(
                 "max": mesh.bbox_max,
             },
             "filaments": [
-                {"slot": f.slot, "type": f.type, "color": f.color}
-                for f in mesh.filaments
+                {"slot": f.slot, "type": f.type, "color": f.color} for f in mesh.filaments
             ],
             "source_file": source_file,
             "cached": cached,
@@ -653,7 +653,9 @@ async def get_viz_toolpath(
 
     # ---- Locate the .gcode.3mf on the printer --------------------------- #
     try:
-        location = await _find_3mf(ftps, job_name)
+        location = _get_viz_cache(request).cached_location(printer_id, job_name)
+        if location is None:
+            location = await _find_3mf(ftps, job_name)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -697,7 +699,8 @@ async def get_viz_toolpath(
             printer_id=printer_id,
             filename=filename,
         )
-        return _toolpath_response(
+        return await asyncio.to_thread(
+            _toolpath_response,
             tp=cached_tp,
             job_name=job_name,
             total_layers=total_layers,
@@ -719,8 +722,8 @@ async def get_viz_toolpath(
     # the memo.
     _HTTP_STATUS = {
         "not_found": status.HTTP_404_NOT_FOUND,
-        "download":  status.HTTP_502_BAD_GATEWAY,
-        "parse":     status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "download": status.HTTP_502_BAD_GATEWAY,
+        "parse": status.HTTP_422_UNPROCESSABLE_ENTITY,
     }
     try:
         filename, tp = await viz_cache.fill_toolpath_for_request(
@@ -748,7 +751,8 @@ async def get_viz_toolpath(
             kind="toolpath",
         )
     etag = _viz_etag(filename, file_size, fmt, viz_cache.content_id(printer_id, filename))
-    return _toolpath_response(
+    return await asyncio.to_thread(
+        _toolpath_response,
         tp=tp,
         job_name=job_name,
         total_layers=total_layers,
@@ -986,16 +990,12 @@ async def get_app_asset(path: str) -> Response:
     try:
         candidate.relative_to(app_root)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="not found"
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found") from exc
 
     if not candidate.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
-    media_type = _APP_MEDIA_TYPES.get(
-        candidate.suffix.lower(), "application/octet-stream"
-    )
+    media_type = _APP_MEDIA_TYPES.get(candidate.suffix.lower(), "application/octet-stream")
     return FileResponse(
         candidate,
         media_type=media_type,

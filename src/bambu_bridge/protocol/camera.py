@@ -41,6 +41,9 @@ _JPEG_SOI = b"\xff\xd8"
 
 _BACKOFF_START = 1.0
 _BACKOFF_CAP = 30.0
+_CONNECT_TIMEOUT_S = 10.0
+_FRAME_TIMEOUT_S = 10.0
+_FRAME_FRESH_S = 5.0
 
 FrameHandler = Callable[[bytes], None]
 
@@ -73,45 +76,52 @@ class CameraClient:
         self._access_code = access_code
         self._on_frame = on_frame
         self._stop = asyncio.Event()
+        self._session_had_frame = False
         self._log = log.bind(ip=ip, component="camera")
 
     async def run(self) -> None:
-        attempt = 0
+        delay = _BACKOFF_START
         while not self._stop.is_set():
+            self._session_had_frame = False
             try:
                 await self._session()
-                attempt = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — keep retrying
                 self._log.warning("camera.session_error", error=str(exc))
             if self._stop.is_set():
                 break
-            attempt += 1
-            delay = min(_BACKOFF_CAP, _BACKOFF_START * (2 ** (attempt - 1)))
+            if self._session_had_frame:
+                delay = _BACKOFF_START
             await asyncio.sleep(delay)
+            delay = min(_BACKOFF_CAP, delay * 2)
 
     def stop(self) -> None:
         self._stop.set()
 
     async def _session(self) -> None:
         self._log.info("camera.connecting", port=self.port)
-        reader, writer = await asyncio.open_connection(
-            self.ip, self.port, ssl=insecure_tls_context()
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(self.ip, self.port, ssl=insecure_tls_context()),
+            timeout=_CONNECT_TIMEOUT_S,
         )
         try:
             writer.write(build_auth_packet(_USERNAME, self._access_code))
-            await writer.drain()
+            await asyncio.wait_for(writer.drain(), _CONNECT_TIMEOUT_S)
             self._log.info("camera.connected")
             while not self._stop.is_set():
-                header = await reader.readexactly(_HEADER_LEN)
-                payload_len = struct.unpack_from("<I", header, 0)[0]
-                if not 0 < payload_len <= _MAX_JPEG:
-                    raise ValueError(f"implausible frame length {payload_len}")
-                jpeg = await reader.readexactly(payload_len)
+                # A half-open socket must not leave every viewer frozen forever.
+                # One deadline covers the header AND body, including slow drips.
+                async with asyncio.timeout(_FRAME_TIMEOUT_S):
+                    header = await reader.readexactly(_HEADER_LEN)
+                    payload_len = struct.unpack_from("<I", header, 0)[0]
+                    if not 0 < payload_len <= _MAX_JPEG:
+                        raise ValueError(f"implausible frame length {payload_len}")
+                    jpeg = await reader.readexactly(payload_len)
                 if jpeg[:2] != _JPEG_SOI:
                     self._log.warning("camera.bad_frame", head=jpeg[:2].hex())
                     continue
+                self._session_had_frame = True
                 self._on_frame(jpeg)
         finally:
             writer.close()
@@ -173,6 +183,7 @@ class CameraStream:
         # consumption (buffer hit or subscribe path) so the linger deadline
         # is extended by any snapshot poll, not just subscribed viewers.
         self._last_consumed_at: float = 0.0
+        self._last_frame_at: float = 0.0
         self._lock = asyncio.Lock()
 
     @property
@@ -184,6 +195,8 @@ class CameraStream:
         return self._task is not None and not self._task.done()
 
     def latest(self) -> bytes | None:
+        if time.monotonic() - self._last_frame_at > _FRAME_FRESH_S:
+            return None
         return self._ring[-1] if self._ring else None
 
     @asynccontextmanager
@@ -194,6 +207,8 @@ class CameraStream:
             # Cancel any pending linger teardown — a new viewer arrived
             # before the window expired; the upstream stays up.
             self._cancel_linger()
+            if self._client is not None and not self.upstream_active:
+                await self._stop_upstream()
             if self._client is None:
                 self._start_upstream()
         try:
@@ -202,6 +217,7 @@ class CameraStream:
             async with self._lock:
                 self._subscribers.discard(queue)
                 if not self._subscribers:
+                    self._last_consumed_at = time.monotonic()
                     # Last subscriber gone — schedule deferred teardown
                     # instead of stopping immediately (linger window).
                     self._schedule_linger()
@@ -247,7 +263,9 @@ class CameraStream:
             # subscribe() lock (and thus every other viewer). The task is
             # already cancelled; if it won't unwind in time, let it go.
             with contextlib.suppress(asyncio.CancelledError, TimeoutError):
-                await asyncio.wait_for(self._task, timeout=3.0)
+                await asyncio.wait_for(
+                    asyncio.gather(self._task, return_exceptions=True), timeout=3.0
+                )
         self._client = None
         self._task = None
         self._ring.clear()
@@ -300,6 +318,7 @@ class CameraStream:
                 await self._stop_upstream()
 
     def _on_frame(self, jpeg: bytes) -> None:
+        self._last_frame_at = time.monotonic()
         self._ring.append(jpeg)
         for queue in self._subscribers:
             if queue.full():
