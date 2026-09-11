@@ -170,6 +170,9 @@ def test_print_uses_existing_jobs_with_explicit_mapping(client: TestClient) -> N
         ({}, SLICE, "cube.3mf", 422),
         ({}, _container(_SINGLE_PETG, b"M104 S999\n"), "cube.gcode.3mf", 422),
     ],
+    # ZIP bytes carry timestamps; do not use them as test IDs across workers.
+    ids=["plate-two", "plate-zero", "parent-path", "invalid-print", "invalid-slice",
+         "parent-filename", "unsafe-filename", "unsliced-name", "unsafe-temperature"],
 )
 def test_bad_uploads_never_touch_printer(client, fields, data, name, status):
     _, auth = key(client, [0])

@@ -19,7 +19,7 @@
 
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ActivityIndicator, AppState, BackHandler, Text, View } from "react-native";
 import WebView from "react-native-webview";
 import { PairedViewer } from "../src/pairing/PairedViewer";
@@ -32,6 +32,7 @@ import { qaLog } from "../src/lib/qalog";
 import { useTheme } from "../src/theme/ThemeProvider";
 import { useViewingScreen } from "../src/viewing/screen";
 import { useViewingStore } from "../src/viewing/state";
+import { viewerFailureReducer } from "../src/viewing/viewerFailure";
 
 // Matches the viewer canvas so there's no white flash before WebGL paints.
 const VIEWER_BG = "#111113";
@@ -69,7 +70,9 @@ export default function ViewerScreen() {
   const [resolving, setResolving] = useState(true);
   // WebView load failure (network or HTTP). Holds a friendly line; the raw URL
   // is never put here.
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [failure, dispatchFailure] = useReducer(viewerFailureReducer, null);
+  const loadError = failure?.message ?? null;
+  const fatalFailure = useRef(false);
   // Reload nonce — bumping it remounts the WebView for a clean retry even if
   // the ref reload path is unavailable mid-error.
   const [reloadKey, setReloadKey] = useState(0);
@@ -87,12 +90,28 @@ export default function ViewerScreen() {
     return () => { if (autoRetry.current) clearTimeout(autoRetry.current); autoRetry.current = null; };
   }, [printerId, networkRevision, bearer, active]);
 
+  function resetLoadError() {
+    fatalFailure.current = false;
+    dispatchFailure({ type: "reload" });
+  }
+
+  function failViewer(message: string, fatal = false) {
+    if (fatal) {
+      fatalFailure.current = true;
+      if (autoRetry.current) clearTimeout(autoRetry.current);
+      autoRetry.current = null;
+    }
+    dispatchFailure({ type: "failed", message, fatal });
+  }
+
   function recoverNetwork() {
+    if (fatalFailure.current) return;
     networkFailed.current = true;
     if (autoRetry.current || autoAttempts.current >= 3) return;
     const delay = 1000 * 2 ** autoAttempts.current++;
     autoRetry.current = setTimeout(() => {
       autoRetry.current = null;
+      if (fatalFailure.current) return;
       if (uri) notifyRequestFailed(uri);
       setReloadKey(k => k + 1);
     }, delay);
@@ -129,7 +148,7 @@ export default function ViewerScreen() {
     }
     setResolving(true);
     setUri(null);
-    setLoadError(null);
+    resetLoadError();
     setVizState(null);
     networkFailed.current = false;
     qaLog("viewer.state", { state: "loading" });
@@ -159,7 +178,7 @@ export default function ViewerScreen() {
     autoAttempts.current = 0;
     if (autoRetry.current) clearTimeout(autoRetry.current);
     autoRetry.current = null;
-    setLoadError(null);
+    resetLoadError();
     setVizState(null);
     if (networkFailed.current && uri) notifyRequestFailed(uri);
     setResolving(true);
@@ -191,12 +210,19 @@ export default function ViewerScreen() {
     } else if (msgType === "viz.state") {
       const state = msg.state;
       if (state === "loading" || state === "ready" || state === "error") {
-        if (state === "ready") autoAttempts.current = 0;
+        if (state === "ready") {
+          if (!fatalFailure.current) {
+            autoAttempts.current = 0;
+            if (autoRetry.current) clearTimeout(autoRetry.current);
+            autoRetry.current = null;
+          }
+          dispatchFailure({ type: "ready" });
+        }
         setVizState(state);
         qaLog("viz.state.web", { state });
         // If the page signals error, surface it like an onError.
         if (state === "error") {
-          setLoadError("The 3D viewer reported an error. Retry to reload.");
+          failViewer("The 3D viewer reported an error. Retry to reload.");
         }
       }
       // Unknown state values are ignored.
@@ -261,7 +287,8 @@ export default function ViewerScreen() {
         onMessage={handleWebViewMessage}
         onError={(event) => {
           if (event.nativeEvent.reason === "network") recoverNetwork();
-          setLoadError("Couldn't securely load the viewer. Check the connection or pair the bridge again.");
+          failViewer("Couldn't securely load the viewer. Check the connection or pair the bridge again.",
+            event.nativeEvent.reason === "identity" || event.nativeEvent.reason === "auth");
           qaLog("viewer.state", { state: "error" });
         }}
         onLoad={() => { if (!vizState) setVizState("ready"); }}
@@ -286,16 +313,16 @@ export default function ViewerScreen() {
         overScrollMode="never"
         onError={() => {
           recoverNetwork();
-          setLoadError("Couldn't load the 3D viewer. Check the printer connection and retry.");
+          failViewer("Couldn't load the 3D viewer. Check the printer connection and retry.");
           qaLog("viewer.state", { state: "error" });
         }}
-        onHttpError={() => {
-          setLoadError("The bridge couldn't serve the 3D viewer. Check the API key in Settings, then retry.");
+        onHttpError={(event) => {
+          failViewer("The bridge couldn't serve the 3D viewer. Check the API key in Settings, then retry.",
+            event.nativeEvent.statusCode === 401 || event.nativeEvent.statusCode === 403);
           qaLog("viewer.state", { state: "error" });
         }}
-        // Clear a stale error once a fresh load starts so Retry feels live.
+        // Only a successful page or an explicit retry may clear a previous error.
         onLoadStart={() => {
-          if (loadError) setLoadError(null);
           setVizState(null);
         }}
         // When viz.state messages are absent, fall back to the native onLoad

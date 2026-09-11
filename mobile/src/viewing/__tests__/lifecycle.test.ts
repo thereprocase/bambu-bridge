@@ -1,4 +1,5 @@
 import { useConnectionLifecycle } from "../lifecycle";
+import { cancelSnapshotCache, flushSnapshotCache } from "../../store/live";
 
 const mockConn = { stop: jest.fn(), start: jest.fn() };
 const mockReset = jest.fn();
@@ -14,7 +15,7 @@ jest.mock("react", () => ({ useEffect: (fn: () => () => void) => { mockCleanup =
 jest.mock("react-native", () => ({ get AppState() { return mockAppState; } }));
 jest.mock("expo-network", () => ({ addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })) }));
 jest.mock("../../api/endpoint", () => ({ resetEndpointCache: () => mockReset() }));
-jest.mock("../../store/live", () => ({ useLiveStore: { getState: () => ({ conns: { fixture: mockConn } }) } }));
+jest.mock("../../store/live", () => ({ useLiveStore: { getState: () => ({ conns: { fixture: mockConn } }) }, flushSnapshotCache: jest.fn(), cancelSnapshotCache: jest.fn() }));
 jest.mock("../../store/bridge", () => ({ useBridgeStore: { subscribe: (fn: typeof mockConfigListener) => {
   mockConfigListener = fn; return jest.fn();
 } } }));
@@ -32,6 +33,7 @@ test("background stops screen telemetry and foreground refreshes reads", () => {
   expect(mockConn.start).toHaveBeenCalledTimes(1);
   expect(mockReset).toHaveBeenCalledTimes(1);
   expect(mockRevision).toHaveBeenCalledTimes(1);
+  expect(flushSnapshotCache).toHaveBeenCalledTimes(1);
 });
 
 test("initial credential bootstrap preserves an existing native monitor", () => {
@@ -39,4 +41,6 @@ test("initial credential bootstrap preserves an existing native monitor", () => 
   expect(mockStopMonitor).not.toHaveBeenCalled();
   mockConfigListener({ bearer: null }, { bootstrapped: true, bearer: "fixture" });
   expect(mockStopMonitor).toHaveBeenCalledTimes(1);
+  expect(mockConn.stop).toHaveBeenCalledTimes(1);
+  expect(cancelSnapshotCache).toHaveBeenCalledTimes(1);
 });

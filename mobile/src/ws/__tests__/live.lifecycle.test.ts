@@ -61,6 +61,67 @@ it("answers server pings and stops its keepalive when closed", async () => {
   expect(socket.send).not.toHaveBeenCalled();
 });
 
+it("reconnects when an established socket stops sending incoming messages", async () => {
+  const { onStatus } = connection(); await flush();
+  const socket = MockSocket.instances[0]; socket.onopen?.();
+  socket.emit({ type: "snapshot", data: {} });
+  onStatus.mockClear();
+  await jest.advanceTimersByTimeAsync(65_000);
+  expect(onStatus).toHaveBeenCalledWith("closed");
+  expect(socket.close).toHaveBeenCalledWith(1000, "incoming_timeout");
+  await jest.advanceTimersByTimeAsync(999);
+  expect(MockSocket.instances).toHaveLength(1);
+  await jest.advanceTimersByTimeAsync(1);
+  expect(MockSocket.instances).toHaveLength(2);
+});
+
+it("reconnects after the initial snapshot deadline without an onclose callback", async () => {
+  const { onStatus } = connection(); await flush();
+  const socket = MockSocket.instances[0]; socket.onopen?.();
+  await jest.advanceTimersByTimeAsync(15_000);
+  expect(socket.close).toHaveBeenCalledWith(1000, "status_timeout");
+  expect(onStatus).toHaveBeenCalledWith("closed");
+  await jest.advanceTimersByTimeAsync(1_000);
+  expect(MockSocket.instances).toHaveLength(2);
+});
+
+it("reconnects when an incoming timeout close throws", async () => {
+  const { onStatus } = connection(); await flush();
+  const socket = MockSocket.instances[0]; socket.onopen?.();
+  socket.emit({ type: "snapshot", data: {} });
+  socket.close.mockImplementation(() => { throw new Error("socket already gone"); });
+  await jest.advanceTimersByTimeAsync(65_000);
+  expect(onStatus).toHaveBeenCalledWith("closed");
+  await jest.advanceTimersByTimeAsync(1_000);
+  expect(MockSocket.instances).toHaveLength(2);
+});
+
+it("refreshes incoming liveness on healthy heartbeats", async () => {
+  const { onStatus } = connection(); await flush();
+  const socket = MockSocket.instances[0]; socket.onopen?.();
+  socket.emit({ type: "snapshot", data: {} });
+  onStatus.mockClear();
+  await jest.advanceTimersByTimeAsync(60_000);
+  socket.emit({ type: "ping" });
+  await jest.advanceTimersByTimeAsync(60_000);
+  expect(socket.close).not.toHaveBeenCalled();
+  expect(onStatus).not.toHaveBeenCalledWith("closed");
+});
+
+it("cleans the incoming watchdog across stop and restart", async () => {
+  const { conn, onStatus } = connection(); await flush();
+  const old = MockSocket.instances[0]; old.onopen?.(); old.emit({ type: "snapshot", data: {} });
+  conn.stop(); conn.start(); await flush();
+  const current = MockSocket.instances[1]; current.onopen?.(); current.emit({ type: "snapshot", data: {} });
+  onStatus.mockClear();
+  await jest.advanceTimersByTimeAsync(64_999);
+  expect(old.close).toHaveBeenCalled();
+  expect(current.close).not.toHaveBeenCalled();
+  expect(onStatus).not.toHaveBeenCalledWith("closed");
+  await jest.advanceTimersByTimeAsync(1);
+  expect(current.close).toHaveBeenCalledWith(1000, "incoming_timeout");
+});
+
 it("does not let an old socket close or message overwrite a restarted connection", async () => {
   const { conn, onMessage, onStatus } = connection(); await flush(); const old = MockSocket.instances[0];
   conn.stop(); conn.start(); await flush(); const current = MockSocket.instances[1];

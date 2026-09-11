@@ -135,15 +135,18 @@ class PrintMonitorService : Service() {
             if (!e.optBoolean("stale") && e.optString("severity") == "error") errors.add(e.optString("code", "hms"))
         } }
         val jobId = job?.optString("subtask_name", "")?.takeUnless { it == "null" } ?: ""
-        val events = tracker.update(PrintState(true, phase, jobId, errors))
-        // Save before posting so service recovery does not repeat an old alert.
-        val trackerState = JSONObject().put("phase", tracker.phase).put("job", tracker.job)
-            .put("armed", tracker.armed).put("errors", JSONArray(tracker.errors.sorted()))
-        if (trackerState.toString() != savedTracker) {
-            if (!MonitorStorage.updateTracker(this, storageSession, trackerState)) return
-            savedTracker = trackerState.toString()
+        val events = tracker.updatePersisted(PrintState(true, phase, jobId, errors)) { candidate ->
+            // A failed save must leave the old in-memory transition available for retry.
+            val trackerState = JSONObject().put("phase", candidate.phase).put("job", candidate.job)
+                .put("armed", candidate.armed).put("errors", JSONArray(candidate.errors.sorted()))
+            val encoded = trackerState.toString()
+            if (encoded != savedTracker) {
+                if (!MonitorStorage.updateTracker(this, storageSession, trackerState)) return@updatePersisted false
+                if (!MonitorStorage.isActive(this, storageSession)) return@updatePersisted false
+                savedTracker = encoded
+            }
+            true
         }
-        if (events.isNotEmpty() && !MonitorStorage.isActive(this, storageSession)) return
         for (event in events) alert(when(event) {
             "finished" -> "Print finished"
             "paused" -> "Print paused · attention needed"

@@ -85,7 +85,9 @@ class PairedViewer(private val reactContext: ThemedReactContext) : WebView(react
                     val r = response
                     require(r.code !in 300..399)
                     val body = r.body ?: throw IllegalStateException()
-                    if (r.code >= 400) emit("topPairError", reason = if (r.code in listOf(401,403)) "auth" else "unavailable")
+                    ViewerResponsePolicy.errorReason(req.isForMainFrame, r.code)?.let {
+                        emit("topPairError", reason = it)
+                    }
                     val stream = object : FilterInputStream(body.byteStream()) {
                         override fun close() { super.close(); r.close() }
                     }

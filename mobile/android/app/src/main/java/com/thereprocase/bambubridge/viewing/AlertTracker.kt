@@ -8,6 +8,19 @@ class AlertTracker {
     var job = ""
     var armed = false
     var errors = emptySet<String>()
+
+    /** Commit a transition only after its restart state has been saved. */
+    fun updatePersisted(input: PrintState, persist: (AlertTracker) -> Boolean): List<String> {
+        val candidate = AlertTracker().also {
+            it.phase = phase; it.job = job; it.armed = armed; it.errors = errors
+        }
+        val events = candidate.update(input)
+        if (!persist(candidate)) return emptyList()
+        phase = candidate.phase; job = candidate.job
+        armed = candidate.armed; errors = candidate.errors
+        return events
+    }
+
     fun update(input: PrintState): List<String> {
         val next = if (input.phase == "completed") input.copy(phase = "finished") else input
         if (!next.connected) return emptyList()

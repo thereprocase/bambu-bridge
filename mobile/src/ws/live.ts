@@ -50,6 +50,7 @@ export class LiveConnection {
   private attempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  private incomingTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private printerId: string, private opts: LiveOpts) {}
@@ -63,8 +64,9 @@ export class LiveConnection {
   private clearTimers() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
+    if (this.incomingTimer) clearTimeout(this.incomingTimer);
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
-    this.reconnectTimer = this.snapshotTimer = this.keepaliveTimer = null;
+    this.reconnectTimer = this.snapshotTimer = this.incomingTimer = this.keepaliveTimer = null;
   }
 
   stop() {
@@ -111,13 +113,29 @@ export class LiveConnection {
     this.ws = socket;
     let gotSnapshot = false;
     const current = () => !this.stopped && generation === this.generation && this.ws === socket;
+    const expire = (reason: string) => {
+      if (!current()) return;
+      // Invalidate ownership before close(): some socket implementations do
+      // not deliver onclose, or throw when the peer is already gone.
+      this.ws = null;
+      this.clearTimers();
+      try { socket.close(1000, reason); } catch { /* retry below */ }
+      notifyRequestFailed(baseUrl);
+      this.opts.onStatus?.("closed");
+      this.scheduleReconnect();
+    };
+    const armIncomingWatchdog = () => {
+      if (!current()) return;
+      if (this.incomingTimer) clearTimeout(this.incomingTimer);
+      this.incomingTimer = setTimeout(() => expire("incoming_timeout"), 65_000);
+    };
     const pong = () => {
       if (current() && socket.readyState === WebSocket.OPEN) {
         try { socket.send(JSON.stringify({ type: "pong" })); } catch { /* close drives retry */ }
       }
     };
     this.snapshotTimer = setTimeout(() => {
-      if (current() && !gotSnapshot) socket.close(1000, "status_timeout");
+      if (current() && !gotSnapshot) expire("status_timeout");
     }, 15_000);
     socket.onopen = () => {
       if (!current()) return;
@@ -126,6 +144,7 @@ export class LiveConnection {
       notifyRequestSucceeded(baseUrl);
       const { baseUrlLan } = useBridgeStore.getState();
       useNetStore.getState().setReach(baseUrlLan && sameOrigin(baseUrl, baseUrlLan) ? "lan" : "remote");
+      armIncomingWatchdog();
       this.keepaliveTimer = setInterval(pong, 30_000);
     };
     socket.onmessage = (ev: { data: unknown }) => {
@@ -133,13 +152,14 @@ export class LiveConnection {
       let msg: LiveMessage;
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
       if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
-      if (msg.type === "ping") { pong(); return; }
+      if (msg.type === "ping") { pong(); armIncomingWatchdog(); return; }
       if (msg.type === "hello") {
         if (msg.protocol_version !== 1) {
           this.stop();
           this.opts.onStatus?.("error", "This bridge needs a newer app version.");
           return;
         }
+        armIncomingWatchdog();
       } else if (msg.type === "snapshot" || msg.type === "delta") {
         if (!msg.data || typeof msg.data !== "object" || Array.isArray(msg.data)) return;
         if (msg.type === "delta" && !gotSnapshot) return;
@@ -148,11 +168,14 @@ export class LiveConnection {
           this.attempt = 0;
           if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
           this.snapshotTimer = null;
+          armIncomingWatchdog();
           this.opts.onMessage(msg);
           if (current()) this.opts.onStatus?.("open");
           return;
         }
+        armIncomingWatchdog();
       } else if (msg.type !== "event" || typeof msg.event !== "string") return;
+      else armIncomingWatchdog();
       this.opts.onMessage(msg);
     };
     socket.onerror = () => {

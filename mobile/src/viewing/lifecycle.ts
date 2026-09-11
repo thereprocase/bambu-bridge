@@ -2,7 +2,7 @@ import * as Network from "expo-network";
 import { useEffect } from "react";
 import { AppState } from "react-native";
 import { resetEndpointCache } from "../api/endpoint";
-import { useLiveStore } from "../store/live";
+import { cancelSnapshotCache, flushSnapshotCache, useLiveStore } from "../store/live";
 import { useBridgeStore } from "../store/bridge";
 import { useViewingStore } from "./state";
 import { viewingNative } from "./native";
@@ -30,6 +30,7 @@ export function useConnectionLifecycle() {
       if (state === "active") refresh();
       else {
         if (timer) clearTimeout(timer);
+        flushSnapshotCache();
         for (const conn of Object.values(useLiveStore.getState().conns)) conn.stop();
       }
     });
@@ -38,9 +39,11 @@ export function useConnectionLifecycle() {
       if (old.bootstrapped && (next.bearer !== old.bearer || next.pairing?.spki !== old.pairing?.spki ||
           next.baseUrl !== old.baseUrl || next.baseUrlLan !== old.baseUrlLan)) {
         void viewingNative?.stopMonitor().catch(() => {});
+        for (const conn of Object.values(useLiveStore.getState().conns)) conn.stop();
+        cancelSnapshotCache();
         refresh();
       }
     });
-    return () => { net.remove(); foreground.remove(); config(); if (timer) clearTimeout(timer); };
+    return () => { net.remove(); foreground.remove(); config(); if (timer) clearTimeout(timer); flushSnapshotCache(); };
   }, []);
 }

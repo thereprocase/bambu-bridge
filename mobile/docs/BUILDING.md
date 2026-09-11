@@ -73,7 +73,7 @@ All three sources must be updated together on every release:
 | `app.json` | `expo.version` | `"0.18.3"` |
 | `package.json` | `version` | `"0.18.3"` |
 
-For 0.20.0, `versionCode` is 24. `package-lock.json` also mirrors the version.
+For 0.20.1, `versionCode` is 24. `package-lock.json` also mirrors the version.
 
 The native viewing and print-monitor code has JVM tests alongside the existing
 TLS tests. Run `./gradlew testReleaseUnitTest` as well as the signed build. UI

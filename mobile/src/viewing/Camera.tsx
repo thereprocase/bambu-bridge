@@ -6,6 +6,7 @@ import { useBridgeStore } from "../store/bridge";
 import { useNetStore } from "../store/net";
 import { useViewingStore } from "./state";
 import { viewingConfig } from "./native";
+import { CAMERA_HUD_INTERVAL_MS, shouldPublishCameraHud } from "./hud";
 
 interface CameraEvent { state: string; fps: number; width: number; height: number }
 const NativeCamera = requireNativeComponent<ViewProps & {
@@ -22,45 +23,74 @@ export function Camera({ printer, fullscreen = false }: { printer: string; fulls
   const [source, setSource] = useState<string | null>(null);
   const [state, setState] = useState("connecting");
   const [fps, setFps] = useState(0);
-  const [lastFrame, setLastFrame] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const base = useRef("");
   const failures = useRef(0);
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hud = useRef({ state: "connecting", fps: 0, lastFrame: null as number | null, publishedAt: 0 });
+  const routeHealthy = useRef(false);
+  const routeNotifiedAt = useRef(0);
   const active = focused && foreground;
   useEffect(() => {
     const subscription = AppState.addEventListener("change", value => setForeground(value === "active"));
     return () => subscription.remove();
   }, []);
-  useEffect(() => { setLastFrame(null); failures.current = 0; }, [printer]);
+  useEffect(() => {
+    hud.current = { state: "connecting", fps: 0, lastFrame: null, publishedAt: 0 };
+    routeHealthy.current = false;
+    routeNotifiedAt.current = 0;
+    setFps(0);
+    failures.current = 0;
+  }, [printer]);
   useEffect(() => {
     let cancelled = false;
+    hud.current = { ...hud.current, state: "connecting" };
+    routeHealthy.current = false;
+    routeNotifiedAt.current = 0;
     setSource(null);
     if (!active) return;
     setState("connecting");
     void viewingConfig(printer).then(config => {
       if (!cancelled) { base.current = config.base; setSource(JSON.stringify(config)); }
-    }).catch(() => { if (!cancelled) setState("auth"); });
+    }).catch(() => {
+      if (!cancelled) { hud.current = { ...hud.current, state: "auth" }; setState("auth"); }
+    });
     const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => { cancelled = true; clearInterval(clock); if (retry.current) clearTimeout(retry.current); retry.current = null; };
   }, [printer, active, revision, bearer, attempt]);
 
   function onState({ nativeEvent: event }: NativeSyntheticEvent<CameraEvent>) {
     if (!active) return;
-    setState(event.state);
+    const at = Date.now();
+    const previous = hud.current;
     if (event.state === "frame") {
-      const at = Date.now(); setLastFrame(at); setNow(at); setFps(event.fps);
+      hud.current = { ...previous, state: event.state, fps: event.fps, lastFrame: at };
       failures.current = 0;
-      notifyRequestSucceeded(base.current);
-      const lan = useBridgeStore.getState().baseUrlLan;
-      useNetStore.getState().setReach(lan && sameOrigin(base.current, lan) ? "lan" : "remote");
+      if (!routeHealthy.current || at - routeNotifiedAt.current >= CAMERA_HUD_INTERVAL_MS) {
+        routeHealthy.current = true;
+        routeNotifiedAt.current = at;
+        notifyRequestSucceeded(base.current);
+        const lan = useBridgeStore.getState().baseUrlLan;
+        useNetStore.getState().setReach(lan && sameOrigin(base.current, lan) ? "lan" : "remote");
+      }
     } else if (["network", "unavailable"].includes(event.state) && !retry.current) {
+      hud.current = { ...previous, state: event.state };
+      routeHealthy.current = false;
       if (event.state === "network") notifyRequestFailed(base.current);
       const delay = Math.min(15_000, 1000 * 2 ** Math.min(failures.current++, 4));
       retry.current = setTimeout(() => { retry.current = null; setAttempt(v => v + 1); }, delay);
+    } else {
+      hud.current = { ...previous, state: event.state };
+    }
+    if (shouldPublishCameraHud({ previousState: previous.state, nextState: event.state,
+      publishedAt: previous.publishedAt, now: at, hadFrame: previous.lastFrame !== null })) {
+      hud.current.publishedAt = at;
+      setState(event.state);
+      setFps(hud.current.fps);
+      setNow(at);
     }
   }
-  const age = lastFrame === null ? null : Math.max(0, Math.floor((now - lastFrame)/1000));
+  const age = hud.current.lastFrame === null ? null : Math.max(0, Math.floor((now - hud.current.lastFrame)/1000));
   const stale = age !== null && age >= 5;
   const label = state === "identity" ? "Bridge identity could not be verified. Check pairing in Settings."
     : state === "auth" ? "Camera access rejected. Check your pairing or API key."

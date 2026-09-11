@@ -14,11 +14,10 @@
 
 import { create } from "zustand";
 
-import { kv } from "../lib/kv";
 import { qaLog } from "../lib/qalog";
 import { applyDelta, LiveConnection, LiveMessage, LiveStatus } from "../ws/live";
+import { createSnapshotCache } from "./snapshotCache";
 
-const KV_SNAP = (id: string) => `live.${id}.snapshot`;
 const RING_SIZE = 100;
 
 // QA throttle: track last emission timestamp per printer so status.snap fires
@@ -54,18 +53,20 @@ const empty = (): PrinterLive => ({
   eventLog: [],
 });
 
-function loadCached(printerId: string): Record<string, unknown> | null {
-  const raw = kv.getString(KV_SNAP(printerId));
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
+const snapshotCache = createSnapshotCache();
+const seenSnapshots = new Set<string>();
 
-function persist(printerId: string, snapshot: Record<string, unknown>) {
-  kv.set(KV_SNAP(printerId), JSON.stringify(snapshot));
+export function flushSnapshotCache(): void { snapshotCache.flush(); }
+export function cancelSnapshotCache(): void { snapshotCache.cancel(); }
+
+function meaningfulTransition(previous: Record<string, unknown> | null, next: Record<string, unknown>) {
+  if (!previous) return true;
+  if (previous.phase !== next.phase) return true;
+  const oldJob = previous.job && typeof previous.job === "object" ? previous.job as Record<string, unknown> : null;
+  const newJob = next.job && typeof next.job === "object" ? next.job as Record<string, unknown> : null;
+  if (!!oldJob !== !!newJob) return true;
+  if (previous.job !== next.job && (!oldJob || !newJob)) return true;
+  return ["id", "job_id", "subtask_name", "status"].some((field) => oldJob?.[field] !== newJob?.[field]);
 }
 
 export const useLiveStore = create<LiveStore>((set, get) => ({
@@ -77,7 +78,7 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
     if (conns[printerId]) return;
 
     // Seed with cached snapshot so UI doesn't flash blank.
-    const cached = loadCached(printerId);
+    const cached = snapshotCache.read(printerId);
     set((s) => ({
       printers: {
         ...s.printers,
@@ -110,7 +111,9 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
             // headline, job, temps, cooling, lights, ams, …, _raw}`.
             // Store verbatim — it is already the shape `viewOf` reads.
             snapshot = msg.data;
-            persist(printerId, snapshot);
+            snapshotCache.schedule(printerId, snapshot,
+              !seenSnapshots.has(printerId) || meaningfulTransition(prev.snapshot, snapshot));
+            seenSnapshots.add(printerId);
           } else if (msg.type === "delta") {
             // Bridge deltas (contract §5.3) are root-level translated leaves,
             // deep-nested, e.g. `{"temps":{"nozzle":{"current_c":254.5}}}`.
@@ -124,7 +127,9 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
               // delta directly so screens have something coherent to read.
               snapshot = { ...msg.data };
             }
-            persist(printerId, snapshot);
+            snapshotCache.schedule(printerId, snapshot,
+              !seenSnapshots.has(printerId) || meaningfulTransition(prev.snapshot, snapshot));
+            seenSnapshots.add(printerId);
           } else if (msg.type === "event") {
             const ev: LiveEvent = {
               name: msg.event,
@@ -219,6 +224,8 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
   closeConnection: (printerId: string) => {
     const { conns } = get();
     conns[printerId]?.stop();
+    snapshotCache.flush(printerId);
+    seenSnapshots.delete(printerId);
     set((s) => {
       const nextConns = { ...s.conns };
       delete nextConns[printerId];
@@ -229,6 +236,8 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
   reset: () => {
     const { conns } = get();
     Object.values(conns).forEach((c) => c.stop());
+    snapshotCache.cancel();
+    seenSnapshots.clear();
     set({ conns: {}, printers: {} });
   },
 }));
