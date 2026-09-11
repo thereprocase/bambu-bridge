@@ -26,8 +26,9 @@ export function mountNative(parent, app) {
       el('strong', { text: '1. Enable Orca access' })]), status, output, rotate);
   card.appendChild(el('p', { class: 'field__hint mt-3', text: 'This is full native printer access over your private LAN/Tailscale connection. The separate 8-character code controls only this gateway. Disabling it disconnects native clients; a print already running continues.' }));
   const diagnostics = el('p', { class: 'field__hint', role: 'status' });
+  const uploadList = el('div', { class: 'stack mt-3' });
   const check = el('button', { class: 'btn btn--ghost mt-3', text: 'Check Orca connection' });
-  card.append(check, diagnostics);
+  card.append(check, diagnostics, uploadList);
   check.addEventListener('click', async () => {
     check.disabled = true;
     const res = await app.api.api('/native', { cache: 'no-store' });
@@ -47,12 +48,38 @@ export function mountNative(parent, app) {
     const uploads = res.data.uploads || [];
     const uploadStates = { receiving: 'Receiving into Beluga', stored: 'Saved safely in Beluga; awaiting delivery',
       delivering: 'Saved in Beluga; delivering to printer', delivered: 'Printer file delivery confirmed',
-      failed: 'FAILED — manual review required' };
-    const startStates = { queued: 'start held until delivery', dispatching: 'start dispatch in progress',
-      sent: 'start command sent; physical start not yet confirmed', unknown: 'START OUTCOME UNKNOWN — do not retry blindly' };
-    if (uploads.length) diagnostics.textContent += '\n' + uploads.slice(0, 20).map(upload =>
-      `${upload.id}: ${uploadStates[upload.state] || upload.state}; ${upload.bytes} bytes. ` +
-      `${startStates[upload.start_state] || ''} [${upload.code || 'pending'}]`).join('\n');
+      failed: 'FAILED — manual review required', external: 'Existing printer file; start tracked by Beluga' };
+    const startStates = { reserved: 'app job reserved; preparing file', queued: 'start held until delivery', dispatching: 'start dispatch in progress',
+      sent: 'start command sent; physical start not yet confirmed', unknown: 'START OUTCOME UNKNOWN — do not retry blindly',
+      accepted: 'printer accepted the start command', running: 'matching print observed', completed: 'print completed',
+      resolved: 'job ended or owner resolved it', rejected: 'printer rejected the start',
+      cancelled: 'queued start cancelled', blocked: 'start blocked; printer not ready' };
+    clear(uploadList);
+    for (const upload of uploads.slice(0, 20)) {
+      const item = el('div', { class: 'stack' }, [el('p', { text:
+        `${upload.id}: ${uploadStates[upload.state] || upload.state}; ${upload.bytes} bytes. ` +
+        `${startStates[upload.start_state] || ''} [${upload.code || 'pending'}]` })]);
+      const actions = [];
+      if (upload.start_state === 'queued') actions.push(['cancel', 'Cancel queued start', 'Cancel only this held start request. This sends no command to the printer and does not stop another print.']);
+      if (['unknown', 'accepted', 'sent', 'running', 'blocked', 'cancelled', 'rejected'].includes(upload.start_state))
+        actions.push(['resolve', 'Resolve after checking printer', 'Confirm the printer is idle and this job is not running or waiting to start. This clears the pending-start reservation; it does not send a print command.']);
+      if (upload.state === 'failed') actions.push(['retry_delivery', 'Retry delivery', 'Retry this saved file’s delivery. If its start command is still queued, successful delivery will start the print. The printer must be idle.']);
+      if (['failed', 'delivered', 'external'].includes(upload.state)) actions.push(['discard', 'Discard local cached copy', 'Remove only Beluga’s local cached payload. This does not delete the printer’s file. Unresolved jobs cannot be discarded.']);
+      for (const [action, label, body] of actions) {
+        const button = el('button', { class: 'btn btn--ghost', text: label });
+        button.addEventListener('click', async () => {
+          if (!await confirmSheet({ title: label + '?', body, confirmLabel: label }) || !current()) return;
+          button.disabled = true;
+          const result = await app.api.postJson('/native/uploads/' + upload.id,
+            { action, confirm: 'I checked the printer and this action' });
+          if (!current()) return;
+          if (!result.ok) toast(result.message || 'Action refused; check printer state.');
+          check.click();
+        });
+        item.appendChild(button);
+      }
+      uploadList.appendChild(item);
+    }
   });
   function message(text, error = false) { status.textContent = text; status.className = 'statusline ' + (error ? 'is-err' : 'is-info'); }
   function showSetup(data, openManual = false) {

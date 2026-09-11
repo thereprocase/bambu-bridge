@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import re
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -32,6 +34,34 @@ class ExistingCode(BaseModel):
     access_code: str = Field(min_length=8, max_length=8, pattern=r"^[A-Za-z0-9]+$")
 
 
+class UploadAction(BaseModel):
+    action: Literal["resolve", "retry_delivery", "discard", "cancel"]
+    confirm: Literal["I checked the printer and this action"]
+
+
+@router.post("/uploads/{identifier}")
+async def upload_action(identifier: str, body: UploadAction, request: Request) -> dict[str, Any]:
+    instance = gateway(request)
+    if instance.inbox is None:
+        raise HTTPException(409, "Durable inbox is not enabled")
+    if not re.fullmatch(r"[a-f0-9]{32}", identifier):
+        raise HTTPException(404, "Upload not found")
+    async with instance.inbox_dispatch_lock:
+        try:
+            row = await asyncio.to_thread(instance.inbox.get, identifier)
+            if row["printer"] != instance.config["printer_id"]:
+                raise HTTPException(404, "Upload not found")
+            if body.action != "cancel":
+                instance.require_idle()
+            method = getattr(instance.inbox, body.action)
+            await asyncio.to_thread(method, identifier)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    instance.inbox_wake.set()
+    instance.inbox_status = await asyncio.to_thread(instance.inbox.status)
+    return {"uploads": instance.inbox_status}
+
+
 @router.get("")
 def status(request: Request) -> dict[str, Any]:
     instance = request.app.state.native_gateway
@@ -49,6 +79,8 @@ async def enable(body: Enable, request: Request) -> dict[str, Any]:
         raise HTTPException(422, "Native P1S mode requires a registered P1S")
     try:
         return await instance.enable(body.printer_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
             503, "Native listener failed; check the server's bind address and ports"
@@ -91,7 +123,10 @@ async def save_access_code(body: ExistingCode, request: Request) -> dict[str, st
 
 @router.delete("", status_code=204)
 async def disable(request: Request) -> Response:
-    await gateway(request).disable()
+    try:
+        await gateway(request).disable()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
 
