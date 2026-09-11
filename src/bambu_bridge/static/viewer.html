@@ -121,7 +121,7 @@
     <div class="layer"><span id="layerNow">0</span>
       <small>/ <span id="layerTot">0</span></small></div>
   </div>
-  <div id="cap">Z-tracked · printer reports no XY · <a href="https://github.com/thereprocase/bambu-bridge/tree/v0.4.2" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">Source &amp; AGPL license</a></div>
+  <div id="cap">Z-tracked · printer reports no XY · <a href="https://github.com/thereprocase/bambu-bridge/tree/v0.5.0" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">Source &amp; AGPL license</a></div>
 
   <div id="bar" class="hidden">
     <input id="slider" type="range" min="0" max="1" value="0" step="1"
@@ -965,9 +965,9 @@ const STATE = {
 };
 
 /* ── 6. Networking ────────────────────────────────────────────────────── */
-async function loadMesh(){
+async function loadMesh(toolpathTried = false){
   showLoading("fetching model…");
-  _T.fetch_start = performance.now();
+  if (!_T.fetch_start) _T.fetch_start = performance.now();
   let res;
   try { res = await api("/viz/mesh"); }
   catch(e){ return showError("network", "Could not reach the printer bridge."); }
@@ -989,7 +989,9 @@ async function loadMesh(){
   // geometry_available:false (empty vertex/triangle arrays) and we switch to
   // the toolpath render path — a first-class mode, not a fallback hack.
   if(j.geometry_available === false){
-    return loadToolpath();
+    return toolpathTried
+      ? showError("nojob", "No geometry to show in this file.")
+      : loadToolpath();
   }
 
   const t_parse0 = performance.now();
@@ -1001,8 +1003,8 @@ async function loadMesh(){
   applyMesh(mesh);
 }
 
-// Second fetch: the gcode toolpath. Has its own loading state, and on failure
-// shows exactly one error (loadMesh already returned, so no double-overlay).
+// Load the print toolpath first. Sliced files usually have no mesh, so a
+// mesh-first request adds a printer file lookup without useful geometry.
 // Requests fmt=bin when the browser supports ArrayBuffer — eliminates
 // JSON.parse and base64-decode from the critical path.
 async function loadToolpath(){
@@ -1011,7 +1013,7 @@ async function loadToolpath(){
   const useBin = SUPPORTS_BIN_TOOLPATH;
   const path = useBin ? "/viz/toolpath?fmt=bin" : "/viz/toolpath";
 
-  _T.fetch_start = performance.now();
+  if (!_T.fetch_start) _T.fetch_start = performance.now();
   let res;
   try { res = await api(path); }
   catch(e){ return showError("network", "Could not reach the printer bridge."); }
@@ -1020,8 +1022,7 @@ async function loadToolpath(){
     return showError("auth","Your access token was rejected or expired. Open the viewer again from the app or your Home Assistant dashboard.");
   if(res.status===404)
     return showError("nojob","No active job to visualize.","Start a print, then reopen this view.");
-  if(res.status===422)
-    return showError("parse","Couldn't parse this print's G-code.","The slicer file may be unsupported.");
+  if(res.status===422) return loadMesh(true); // Unsliced 3MF can still supply a mesh.
   if(!res.ok)
     return showError("network",`Unexpected server response (${res.status}).`);
 
@@ -1052,8 +1053,7 @@ async function loadToolpath(){
 
   // segment_count can legitimately be 0 (gcode had no extrusions) — friendly state.
   if(!tp || !tp.segmentCount || tp.vertexCount<2){
-    return showError("nojob","No toolpath to show yet.",
-      "This print's G-code has no extrusion moves to draw.");
+    return loadMesh(true);
   }
   applyToolpath(tp);
 }
@@ -1342,7 +1342,7 @@ document.getElementById("retry").addEventListener("click", ()=>{
   // Reset timing state so a fresh fetch gets clean measurements.
   _T.fetch_start=_T.fetch_headers=_T.fetch_body=_T.parse=_T.buffers=_T.first_frame=0;
   _T.bytes=_T.segments=0; _T.fmt="json";
-  loadMesh();
+  loadToolpath();
 });
 
 /* ── 9. Bootstrap, render loop, resize, context-loss, debug ───────────── */
@@ -1636,7 +1636,7 @@ function boot(){
   resize();
   render();
   startPolling();
-  loadMesh();
+  loadToolpath();
 }
 boot();
 </script>

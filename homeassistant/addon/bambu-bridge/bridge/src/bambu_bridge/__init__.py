@@ -1,3 +1,3 @@
 """Bambu Bridge â€” self-hosted Bambu P1S LAN protocol bridge."""
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"

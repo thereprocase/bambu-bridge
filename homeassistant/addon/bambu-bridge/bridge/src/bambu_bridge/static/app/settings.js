@@ -31,7 +31,7 @@ import { mountNative } from './native.js';
 
 // The SPA's own build constant (§6.3). Bumped by hand alongside releases; the
 // bridge version comes from GET /version separately.
-const SPA_BUILD = '0.4.2';
+const SPA_BUILD = '0.5.0';
 
 // Test-flow status-line copy — identical wording to onboarding Step 1 (§6.1).
 const TEST_COPY = {
@@ -440,15 +440,6 @@ function buildAppSection(app) {
     app.setPref('theme', themeSel.value);   // setPref re-applies theme on 'theme'
   });
 
-  // camera FPS
-  const fpsSel = el('select', { class: 'select' }, [
-    el('option', { value: '0.5', text: '0.5 fps' }),
-    el('option', { value: '1', text: '1 fps' }),
-    el('option', { value: '2', text: '2 fps' }),
-  ]);
-  fpsSel.value = String(app.prefs.cameraFps);
-  fpsSel.addEventListener('change', () => app.setPref('cameraFps', Number(fpsSel.value)));
-
   // default unload temperature (180–280)
   const unloadInput = el('input', {
     class: 'input', type: 'number', min: '180', max: '280', step: '5',
@@ -474,7 +465,8 @@ function buildAppSection(app) {
         el('label', { class: 'field__label', text: 'Theme' }), themeSel,
       ]),
       el('div', { class: 'field' }, [
-        el('label', { class: 'field__label', text: 'Camera frame rate' }), fpsSel,
+        el('div', { class: 'field__label', text: 'Live camera' }),
+        el('p', { class: 'field__hint', text: 'Streams every frame at the printer’s full camera rate. Reconnects automatically if the feed stops.' }),
       ]),
       el('div', { class: 'field' }, [
         el('label', { class: 'field__label', text: 'Default unload temperature (°C)' }),
@@ -520,7 +512,7 @@ function buildAboutSection(app) {
 
   return el('div', { class: 'section' }, [
     el('div', { class: 't-section', text: 'About & updates' }),
-    el('a', { class: 'btn btn--ghost btn--block mt-2', href: 'https://github.com/thereprocase/bambu-bridge/tree/v0.4.2', target: '_blank', rel: 'noopener noreferrer', text: 'Source code & AGPL license' }),
+    el('a', { class: 'btn btn--ghost btn--block mt-2', href: 'https://github.com/thereprocase/bambu-bridge/tree/v0.5.0', target: '_blank', rel: 'noopener noreferrer', text: 'Source code & AGPL license' }),
     el('div', { class: 'card mt-2' }, [
       el('div', { class: 'row row--between' }, [
         el('span', { class: 'dim', text: 'Bridge version' }), bridgeVerEl,
