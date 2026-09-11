@@ -359,13 +359,13 @@ async def test_native_upload_failure_is_sanitized_and_fresh_session_can_retry(
     upstream_port, storage = ftps_server
     gateway.app.state.ftps_port = upstream_port
     original = FtpsTransfer._connect
-    failed_once = False
+    connection_count = 0
 
     def connect(transfer):
-        nonlocal failed_once
+        nonlocal connection_count
         backend = original(transfer)
-        if not failed_once:
-            failed_once = True
+        connection_count += 1
+        if connection_count == 2:  # fresh upload connection, not login connection
 
             def fail(*_args, **_kwargs):
                 raise ConnectionResetError(104, "synthetic-private-filename-and-code")
@@ -402,6 +402,59 @@ async def test_native_upload_failure_is_sanitized_and_fresh_session_can_retry(
     await asyncio.to_thread(upload, False)
     assert (storage / "retry-fixture.3mf").read_bytes() == b"fixture"
     gateway.service().send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize("offset", [None, "3"])
+async def test_upload_does_not_reuse_idle_login_session_and_preserves_directory(
+    gateway,
+    ftps_server,
+    monkeypatch,
+    offset,
+):
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    (storage / "cache").mkdir(exist_ok=True)
+    (storage / "cache" / "relative.3mf").write_bytes(b"ABC")
+    original = FtpsTransfer._connect
+    connections = []
+    writes = []
+
+    def connect(transfer):
+        backend = original(transfer)
+        connections.append(backend)
+        stored = backend.storbinary
+        number = len(connections)
+
+        def store(*args, **kwargs):
+            writes.append((number, kwargs.get("rest")))
+            if number == 1:
+                raise ConnectionResetError("idle login session is unusable")
+            return stored(*args, **kwargs)
+
+        backend.storbinary = store
+        return backend
+
+    monkeypatch.setattr(FtpsTransfer, "_connect", connect)
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        try:
+            ftp.connect("127.0.0.1", port(gateway, 1))
+            ftp.login("bblp", gateway.test_code)
+            ftp.prot_p()
+            ftp.cwd("cache")
+            if offset is not None:
+                ftp.sendcmd("REST " + offset)
+            result = ftp.storbinary("STOR relative.3mf", io.BytesIO(b"complete fixture"))
+            assert result.startswith("226")
+        finally:
+            ftp.close()
+
+    await asyncio.to_thread(exchange)
+    assert len(connections) == 2
+    assert writes == [(2, offset)]  # exactly one write, on the fresh connection
+    prefix = b"ABC" if offset else b""
+    assert (storage / "cache" / "relative.3mf").read_bytes() == prefix + b"complete fixture"
     gateway.service().send_raw.assert_not_awaited()
 
 

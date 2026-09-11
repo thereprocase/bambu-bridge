@@ -30,6 +30,8 @@ async def serve_ftps(
     channel: asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]] | None = None
     user = ""
     private = True
+    upstream_directory = "/"
+    restart_offset: str | None = None
     peer = writer.get_extra_info("peername")[0]
     data_writer: asyncio.StreamWriter | None = None
     limit = gateway.app.state.settings.bridge_max_transfer_bytes
@@ -90,6 +92,7 @@ async def serve_ftps(
                         service.ip, service.access_code, port=gateway.app.state.ftps_port
                     )._connect
                 )
+                upstream_directory = await asyncio.to_thread(backend.pwd)
                 await reply("230 Login successful")
                 gateway.note("ftps", "authenticated")
                 continue
@@ -161,11 +164,30 @@ async def serve_ftps(
                                     raise ValueError("Transfer limit exceeded")
                                 chunks.append(chunk)
                             await clear_passive()
-                            gateway.service()
+                            service = gateway.service()
+                            phase = "connecting_for_upload"
+                            # The laptop transfer can take minutes. Do not
+                            # reuse a printer control session that sat idle
+                            # throughout it. Refresh BEFORE any STOR, never
+                            # replay a write whose outcome is uncertain.
+                            await asyncio.to_thread(backend.close)
+                            backend = await asyncio.to_thread(
+                                FtpsTransfer(
+                                    service.ip,
+                                    service.access_code,
+                                    port=gateway.app.state.ftps_port,
+                                )._connect
+                            )
+                            phase = "restoring_upload_directory"
+                            await asyncio.to_thread(backend.cwd, upstream_directory)
                             phase = "uploading_to_printer"
                             await asyncio.to_thread(
-                                backend.storbinary, "STOR " + argument, io.BytesIO(b"".join(chunks))
+                                backend.storbinary,
+                                "STOR " + argument,
+                                io.BytesIO(b"".join(chunks)),
+                                rest=restart_offset,
                             )
+                            restart_offset = None
                         else:
                             phase = "reading_from_printer"
                             result: list[bytes] = []
@@ -232,7 +254,12 @@ async def serve_ftps(
                 "REST",
             }:
                 try:
-                    await reply(await asyncio.to_thread(backend.sendcmd, command))
+                    response = await asyncio.to_thread(backend.sendcmd, command)
+                    if verb in ("CWD", "CDUP"):
+                        upstream_directory = await asyncio.to_thread(backend.pwd)
+                    elif verb == "REST":
+                        restart_offset = argument
+                    await reply(response)
                 except ftplib.Error:
                     await reply("550 Printer rejected the file operation")
             else:
