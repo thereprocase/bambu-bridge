@@ -156,6 +156,7 @@ class NativeGateway:
         self.config: dict[str, str] | None = None
         self.serial: str | None = None
         self.context: ssl.SSLContext | None = None
+        self.data_context: ssl.SSLContext | None = None
         self.last_error: str | None = None
         self.diagnostics: dict[str, dict[str, Any]] = {}
         self.sessions: dict[asyncio.StreamWriter, dict[str, Any]] = {}
@@ -251,6 +252,15 @@ class NativeGateway:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(cert), str(key))
         self.context = context
+        # Upload-only TLS connections do not benefit from post-handshake
+        # resumption tickets. Older one-way-shutdown clients may close without
+        # draining them, resetting an otherwise fully written data connection.
+        # Keep TLS1.3, the certificate and the phone/control contexts unchanged.
+        data_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        data_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        data_context.num_tickets = 0
+        data_context.load_cert_chain(str(cert), str(key))
+        self.data_context = data_context
         from bambu_bridge.native_ftps import serve_ftps
 
         try:

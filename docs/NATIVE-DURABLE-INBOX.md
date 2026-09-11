@@ -47,6 +47,12 @@ at 512 MiB / 128 records; there is deliberately no automatic deletion yet.
   protocol already delivered EOF no longer erases previously buffered bytes.
   Unit tests distinguish these cases. A local blocked-printer fixture exposed
   the late BrokenPipe failure; this does not prove all live Orca resets share it.
+- Expanding the old-curl matrix to durable custody reproduced curl 18 / FTP451
+  with an incoming TLS1.3 ConnectionResetError on two runs. The passive data TLS
+  context now issues zero post-handshake session tickets; the old-client matrix
+  then passed both TLS versions and both custody modes (48 synthetic uploads).
+  Control, camera, MQTT and phone TLS contexts are unchanged. TLS1.3 stays enabled.
+  This is a reproduced compatibility fix, not yet live Orca verification.
 - Starts are claimed transactionally before publication and never automatically
   replayed after uncertain dispatch. Interrupted delivery is marked for review.
 - Native stop/pause cancels queued starts, serialized against native dispatch.
