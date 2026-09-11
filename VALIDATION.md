@@ -1,3 +1,26 @@
+# Continuous camera and faster viewer - 0.5.0
+
+The first focused run passed 101 camera, visualization API, and pre-warm tests.
+Eight camera recovery and viewer-startup regression cases also passed after the
+final changes, including failed-task recovery and delayed job-name telemetry.
+Ruff and mypy passed. Full Linux/Windows CI results are recorded in the release notes.
+
+A headless Chromium fixture streamed generated JPEGs over one loopback HTTP
+connection with no snapshot requests, including a saved legacy 0.5 FPS preference.
+It displayed ten frames over 421 ms, displayed its first image at 125 ms, recovered
+from a deliberately silent stream, and stopped reconnecting after the view closed.
+Widths of 320, 1280 and 3840 pixels had no horizontal overflow. The synthetic
+40-segment toolpath rendered its first frame in 51 ms without a mesh request;
+an unsliced model exercised the mesh fallback. No JavaScript errors occurred.
+These timings are fixture results, not physical-camera FPS or live-printer startup
+guarantees. Live deployment measurements belong in the release notes.
+
+Camera regressions cover silent headers, incomplete bodies, stale snapshots,
+more than 1024 consecutive failures, live-view linger and failed task recovery.
+The dependency-free Node parser tests cover arbitrary byte boundaries, coalesced
+frames, invalid lengths/JPEGs and reader cancellation. Revision checks remain
+mandatory when reusing a cached model path.
+
 # Native camera keyframe correction - 0.4.2
 
 The 0.4.1 byte-level camera checks received valid JPEGs but did not invoke

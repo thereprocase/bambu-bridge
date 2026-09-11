@@ -75,6 +75,7 @@ class VizFillError(Exception):
         self.kind = kind
         self.detail = detail
 
+
 _CACHE_MAX = 3
 
 # Delay after print_started before the pre-warm download begins (seconds).
@@ -124,9 +125,7 @@ def _cache_put_toolpath(
 # ------------------------------------------------------------------ #
 
 
-async def find_3mf(
-    ftps: FtpsTransfer, job_name: str
-) -> tuple[str, str] | None:
+async def find_3mf(ftps: FtpsTransfer, job_name: str) -> tuple[str, str] | None:
     """Locate the .3mf (or .gcode.3mf) file matching *job_name* on the printer.
 
     Searches the printer root (persistent) then /cache, trying both
@@ -230,9 +229,7 @@ class VizCache:
     def put_toolpath(self, key: _CacheKey, tp: GcodeToolpath) -> None:
         _cache_put_toolpath(self.toolpath_cache, key, tp)
 
-    def lookup_mesh(
-        self, printer_id: str, filename: str
-    ) -> tuple[_CacheKey, Mesh3MF] | None:
+    def lookup_mesh(self, printer_id: str, filename: str) -> tuple[_CacheKey, Mesh3MF] | None:
         """Return ``(key, mesh)`` for a cached entry matching printer+filename, or None."""
         for k, v in self.mesh_cache.items():
             if k[0] == printer_id and k[1] == filename:
@@ -246,6 +243,22 @@ class VizCache:
         for k, v in self.toolpath_cache.items():
             if k[0] == printer_id and k[1] == filename:
                 return k, v
+        return None
+
+    def cached_location(self, printer_id: str, job_name: str) -> tuple[str, str] | None:
+        """Reuse a known path; callers still revalidate its SIZE/MDTM every time.
+
+        Reopening a model should not need another directory listing merely to
+        rediscover the file we already parsed. Unknown revisions never qualify.
+        """
+        stem = PurePosixPath(job_name).stem
+        for filename in (job_name, f"{stem}.3mf", f"{stem}.gcode.3mf"):
+            revision = self._revisions.get((printer_id, filename))
+            if revision is not None and (
+                self.lookup_mesh(printer_id, filename) is not None
+                or self.lookup_toolpath(printer_id, filename) is not None
+            ):
+                return revision[0], filename
         return None
 
     # ------------------------------------------------------------------ #
@@ -277,7 +290,7 @@ class VizCache:
         one download-parse-memo-cache code path.
         """
         try:
-            location = await find_3mf(ftps, job_name)
+            location = self.cached_location(printer_id, job_name) or await find_3mf(ftps, job_name)
         except Exception as exc:  # noqa: BLE001
             raise VizFillError("download", f"FTPS list failed: {exc}") from exc
         if location is None:
@@ -320,6 +333,14 @@ class VizCache:
 
         key: _CacheKey = (printer_id, filename, len(data))
         self.put_mesh(key, mesh)
+        # The same archive contains the print toolpath. Pre-warm both views
+        # from this download instead of fetching the entire file twice.
+        try:
+            tp = await asyncio.to_thread(parse_gcode_from_archive, data)
+        except GcodeParseError:
+            pass  # Unsliced 3MF: a mesh-only viewer remains supported.
+        else:
+            self.put_toolpath(key, tp)
         self._record_content(printer_id, filename, data)
         log.info(
             "viz.parsed",
@@ -349,7 +370,7 @@ class VizCache:
         (via :meth:`fill_toolpath_for_request`) call this method.
         """
         try:
-            location = await find_3mf(ftps, job_name)
+            location = self.cached_location(printer_id, job_name) or await find_3mf(ftps, job_name)
         except Exception as exc:  # noqa: BLE001
             raise VizFillError("download", f"FTPS list failed: {exc}") from exc
         if location is None:
@@ -406,9 +427,7 @@ class VizCache:
 
     # ---- Pre-warm path (fire-and-forget; returns bool, never raises) --- #
 
-    async def fill_mesh(
-        self, printer_id: str, ip: str, access_code: str, job_name: str
-    ) -> bool:
+    async def fill_mesh(self, printer_id: str, ip: str, access_code: str, job_name: str) -> bool:
         """Download, parse, and cache the mesh for *job_name*.
 
         Returns ``True`` when the cache was filled (or was already populated
@@ -420,9 +439,7 @@ class VizCache:
             return True
         except VizFillError as exc:
             if exc.kind == "not_found":
-                log.debug(
-                    "viz.prewarm.file_not_found", printer_id=printer_id, job=job_name
-                )
+                log.debug("viz.prewarm.file_not_found", printer_id=printer_id, job=job_name)
             else:
                 log.warning(
                     "viz.prewarm.fill_mesh_failed",
@@ -446,9 +463,7 @@ class VizCache:
             return True
         except VizFillError as exc:
             if exc.kind == "not_found":
-                log.debug(
-                    "viz.prewarm.file_not_found", printer_id=printer_id, job=job_name
-                )
+                log.debug("viz.prewarm.file_not_found", printer_id=printer_id, job=job_name)
             else:
                 log.warning(
                     "viz.prewarm.fill_toolpath_failed",
