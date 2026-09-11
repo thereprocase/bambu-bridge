@@ -68,11 +68,13 @@ _RUNNING_TIMEOUT_S = 60  # started -> printing deadline (spec 8)
 # Job states that mean "a print is actively in flight for this printer."
 # Mirrors db/jobs._LIVE_JOB_STATES — kept here to avoid importing a private
 # symbol across package boundaries. Both sets must be kept in sync.
-_LIVE_STATES = frozenset({
-    JobState.SUBMITTED,
-    JobState.PREPARING,
-    JobState.PRINTING,
-})
+_LIVE_STATES = frozenset(
+    {
+        JobState.SUBMITTED,
+        JobState.PREPARING,
+        JobState.PRINTING,
+    }
+)
 _CANCEL_CONFIRM_S = 30  # bound the wait for the printer to confirm a stop
 # Post-RUNNING: the AMS must actually engage a tray (ams.tray_now set) within
 # this, else FED_NO_PROGRESS. In §6.3 *and* the 2026-05-19 recurrence tray_now
@@ -96,7 +98,10 @@ _ALLOWED: dict[JobState, set[JobState]] = {
     JobState.UPLOADING: {JobState.SUBMITTED, JobState.FAILED, JobState.CANCELED},
     JobState.SUBMITTED: {JobState.PREPARING, JobState.FAILED, JobState.CANCELED},
     JobState.PREPARING: {
-        JobState.PRINTING, JobState.COMPLETED, JobState.FAILED, JobState.CANCELED,
+        JobState.PRINTING,
+        JobState.COMPLETED,
+        JobState.FAILED,
+        JobState.CANCELED,
     },
     JobState.PRINTING: {JobState.COMPLETED, JobState.FAILED, JobState.CANCELED},
 }
@@ -262,9 +267,7 @@ class JobManager:
                 except Exception:  # noqa: BLE001 — never let the watch task die
                     log_.exception("jobs.watch.error", ev_name=ev.name)
 
-    async def _maybe_create_external_job(
-        self, printer_id: str, ev: Event, log_: Any
-    ) -> None:
+    async def _maybe_create_external_job(self, printer_id: str, ev: Event, log_: Any) -> None:
         """Insert an external job row if no live row exists for this printer.
 
         The live-row check fetches the most recent 50 jobs and scans for any
@@ -287,9 +290,7 @@ class JobManager:
         started_epoch: int
         if raw_started and isinstance(raw_started, str):
             try:
-                dt = datetime.strptime(raw_started, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=UTC
-                )
+                dt = datetime.strptime(raw_started, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
                 started_epoch = int(dt.timestamp())
             except ValueError:
                 started_epoch = int(time.time())
@@ -319,9 +320,7 @@ class JobManager:
         )
         log_.info("jobs.external_created", job_id=job.id, file_name=file_name)
 
-    async def _maybe_close_external_job(
-        self, printer_id: str, event_name: str, log_: Any
-    ) -> None:
+    async def _maybe_close_external_job(self, printer_id: str, event_name: str, log_: Any) -> None:
         """Close an external-origin job row on completion or failure.
 
         Only acts on rows whose metadata marks them as external and whose state
@@ -375,9 +374,7 @@ class JobManager:
                         "trigger": "printer_error",
                     },
                 )
-            log_.info(
-                "jobs.external_closed", job_id=job.id, ev_name=event_name
-            )
+            log_.info("jobs.external_closed", job_id=job.id, ev_name=event_name)
             break  # only one external job expected per printer at a time
 
     async def shutdown(self) -> None:
@@ -456,7 +453,11 @@ class JobRun:
         async with service.bus.subscribe() as sub:
             reader = asyncio.create_task(self._read_bus(sub))
             try:
-                await self._lifecycle(service)
+                if getattr(service, "job_guard", None) is not None:
+                    async with service.job_guard(self._cancel):
+                        await self._lifecycle(service)
+                else:
+                    await self._lifecycle(service)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — any failure -> failed
@@ -502,24 +503,18 @@ class JobRun:
         # Gate the .gcode.3mf BEFORE touching the printer. This is the §6.3
         # fix: an inconsistent AMS binding, bad md5, or unsafe temperature is
         # rejected here — not discovered as "printed air" 17 min in.
-        report = validate(
-            self._file_bytes, expected_ams_mapping=self._ams_mapping
-        )
+        report = validate(self._file_bytes, expected_ams_mapping=self._ams_mapping)
         if not report.ok:
             await self._fail(f"invalid_3mf: {'; '.join(report.issues)}")
             return
 
         # queued -> uploading -> started (spec 5.2: distinct transitions)
         await self._set(JobState.UPLOADING, "ftps_begin")
-        ftps = FtpsTransfer(
-            service.ip, service.access_code, port=self._ftps_port
-        )
+        ftps = FtpsTransfer(service.ip, service.access_code, port=self._ftps_port)
         sd_name = sd_filename(self._job.file_name)
         try:
             # FTP root == SD card root (REPORT §5) — store at root, not model/.
-            remote = await ftps.upload_bytes(
-                self._file_bytes, sd_name, remote_dir=""
-            )
+            remote = await ftps.upload_bytes(self._file_bytes, sd_name, remote_dir="")
         except Exception as exc:  # noqa: BLE001
             await self._fail(f"upload_error: {exc!s}")
             return
@@ -540,9 +535,7 @@ class JobRun:
         )
 
         # submitted -> preparing  (RUNNING within 60 s, else timeout-fail)
-        sig = await self._wait_signal(
-            {"running", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S
-        )
+        sig = await self._wait_signal({"running", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S)
         if sig == "cancel":
             await self._do_cancel(service, acked=False)
             return
@@ -613,9 +606,7 @@ class JobRun:
     # Transitions
     # ------------------------------------------------------------------ #
 
-    async def _wait_signal(
-        self, accept: set[str], *, timeout: float | None = None
-    ) -> str | None:
+    async def _wait_signal(self, accept: set[str], *, timeout: float | None = None) -> str | None:
         """Pull signals until one is in ``accept``; None on timeout."""
         deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
         while True:
@@ -631,9 +622,7 @@ class JobRun:
             if sig in accept:
                 return sig
 
-    def _start_spaghetti_monitor(
-        self, service: Any
-    ) -> asyncio.Task[None] | None:
+    def _start_spaghetti_monitor(self, service: Any) -> asyncio.Task[None] | None:
         """Opt-in camera failure watch, scoped to the PRINTING phase.
 
         Returns the running task, or None when disabled / no camera. The
@@ -656,13 +645,19 @@ class JobRun:
         return asyncio.create_task(monitor.run())
 
     async def _do_cancel(self, service: Any, *, acked: bool) -> None:
-        with contextlib.suppress(Exception):
+        try:
             await service.send_command("print", "stop")
+        except ValueError as exc:
+            if str(exc).startswith("BBSTOP_"):
+                await self._fail(
+                    "cancel_not_confirmed; check the printer and use printer stop controls"
+                )
+                return
+        except Exception:
+            pass
         if acked:
             # Printer was printing — wait for it to confirm the stop (spec 8).
-            await self._wait_signal(
-                {"stopped", "completed", "failed"}, timeout=_CANCEL_CONFIRM_S
-            )
+            await self._wait_signal({"stopped", "completed", "failed"}, timeout=_CANCEL_CONFIRM_S)
         await self._set(JobState.CANCELED, "user_cancel")
 
     async def _complete(self) -> None:
@@ -677,17 +672,13 @@ class JobRun:
         await self._set(JobState.COMPLETED, "gcode_finish")
 
     async def _fail(self, reason: str) -> None:
-        await self._jobs.update(
-            self._job.id, finished_at=int(time.time()), error_code=reason
-        )
+        await self._jobs.update(self._job.id, finished_at=int(time.time()), error_code=reason)
         await self._set(JobState.FAILED, reason)
 
     async def _set(self, new: JobState, trigger: str) -> None:
         cur = self._job.state
         if new != cur and new not in _ALLOWED.get(cur, set()):
-            self._log.warning(
-                "job.illegal_transition", frm=cur.value, to=new.value
-            )
+            self._log.warning("job.illegal_transition", frm=cur.value, to=new.value)
             return
         fields: dict[str, Any] = {"state": new}
         if new is JobState.SUBMITTED and self._job.started_at is None:
