@@ -1,5 +1,5 @@
 name: Bambu Bridge
-version: "0.5.0"
+version: "0.6.0"
 slug: bambu_bridge
 description: >-
   LAN bridge for Bambu Lab printers — a translated REST/WebSocket API that
