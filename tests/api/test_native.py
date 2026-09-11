@@ -6,8 +6,11 @@ import asyncio
 import ftplib
 import io
 import json
+import os
+import shutil
 import ssl
 import struct
+import threading
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -463,6 +466,109 @@ async def test_failed_auth_rate_limited(gateway):
         assert not await gateway.authenticate("bblp", "BAD_CODE", "attacker")
     assert not await gateway.authenticate("bblp", gateway.test_code, "attacker")
     assert await gateway.authenticate("bblp", gateway.test_code, "different-peer")
+
+
+@pytest.mark.parametrize("maximum", ["1.2", "1.3"])
+async def test_curl_native_upload_complete(gateway, ftps_server, tmp_path, maximum):
+    curl = os.environ.get("BELUGA_TEST_CURL", "curl")
+    if not shutil.which(curl):
+        pytest.skip("curl not installed")
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    source = tmp_path / "curl-fixture.bin"
+    for attempt in range(12):
+        size = (131072, 180000, 1048576)[attempt % 3]
+        payload = (bytes(range(256)) * 4096)[:size]
+        source.write_bytes(payload)
+        name = f"curl-fixture-{maximum}-{attempt}.bin"
+        process = await asyncio.create_subprocess_exec(
+            curl,
+            "--silent",
+            "--show-error",
+            "--insecure",
+            "--ssl-reqd",
+            "--tls-max",
+            maximum,
+            "--max-time",
+            "20",
+            "--user",
+            "bblp:" + gateway.test_code,
+            "--upload-file",
+            str(source),
+            f"ftps://127.0.0.1:{port(gateway, 1)}/{name}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, error = await process.communicate()
+        assert process.returncode == 0, error.decode()
+        assert (storage / name).read_bytes() == payload
+    gateway.service().send_raw.assert_not_awaited()
+
+
+async def test_durable_receipt_does_not_wait_for_printer_and_start_is_held(gateway, monkeypatch):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    release = threading.Event()
+    connected = threading.Event()
+    delivered = []
+
+    class Backend:
+        def storbinary(self, command, source):
+            delivered.append((command, source.read()))
+
+        def close(self):
+            pass
+
+    def connect(_transfer):
+        connected.set()
+        assert release.wait(10), "test did not release fake printer"
+        return Backend()
+
+    monkeypatch.setattr(FtpsTransfer, "_connect", connect)
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=3)
+        try:
+            ftp.connect("127.0.0.1", port(gateway, 1))
+            ftp.login("bblp", gateway.test_code)
+            ftp.prot_p()
+            ftp.cwd("cache")
+            return ftp.storbinary("STOR fast.3mf", io.BytesIO(b"fast fixture"))
+        finally:
+            ftp.close()
+
+    try:
+        receipt = await asyncio.wait_for(asyncio.to_thread(exchange), 4)
+        assert receipt.startswith("226 BBFTP_STORED id=")
+        assert delivered == []
+        row = await asyncio.to_thread(
+            gateway.inbox.hold_start,
+            SERIAL,
+            {
+                "print": {
+                    "command": "project_file",
+                    "sequence_id": "41",
+                    "url": "file:///sdcard/cache/fast.3mf",
+                }
+            },
+        )
+        assert row is not None
+        gateway.inbox_wake.set()
+        gateway.service().send_raw.assert_not_awaited()
+        release.set()
+        async with asyncio.timeout(5):
+            while gateway.service().send_raw.await_count == 0:
+                await asyncio.sleep(0.01)
+        assert delivered == [("STOR " + row["remote"], b"fast fixture")]
+        assert gateway.service().send_raw.await_args.args[0]["print"]["url"] == (
+            "file:///sdcard" + row["remote"]
+        )
+        gateway.inbox_wake.set()
+        await asyncio.sleep(0.05)
+        gateway.service().send_raw.assert_awaited_once()
+    finally:
+        release.set()
 
 
 async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
