@@ -6,6 +6,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-11
+
+- Add approximate browser-hosted 3D toolhead tracking that follows sliced
+  extrusion paths with distance weighting and inferred straight travel.
+- Calibrate remaining time from observed layer durations, resynchronize on
+  reported layer changes, and freeze the estimate while paused or offline.
+- Keep the estimate clearly separate from printer telemetry: XY position,
+  speeds, and travel are inferred. Reopen the 3D viewer to use it; no APK is
+  required. Position, speed and travel are inferred; this is not measured XY.
+
 ## [0.5.0] - 2026-09-10
 
 - Stream the dashboard camera continuously with Bearer-authenticated MJPEG,

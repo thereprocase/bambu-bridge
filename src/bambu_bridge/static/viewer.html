@@ -40,7 +40,7 @@
   /* ── Top-left job HUD ────────────────────────────────────────────── */
   #hud{position:fixed;top:max(12px,env(safe-area-inset-top));
     left:max(12px,env(safe-area-inset-left));pointer-events:none;
-    text-shadow:0 1px 3px rgba(0,0,0,.6);max-width:70vw;}
+    text-shadow:0 1px 3px rgba(0,0,0,.6);max-width:calc(52vw - 18px);}
   #hud .job{font-size:15px;font-weight:600;letter-spacing:.01em;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   #hud .layer{font-size:28px;font-weight:700;margin-top:2px;
@@ -49,8 +49,11 @@
   #cap{position:fixed;right:max(12px,env(safe-area-inset-right));
     top:max(12px,env(safe-area-inset-top));pointer-events:none;
     font-size:11px;color:var(--text-dim);text-align:right;
-    text-shadow:0 1px 3px rgba(0,0,0,.6);max-width:46vw;line-height:1.35;}
+    text-shadow:0 1px 3px rgba(0,0,0,.6);max-width:calc(48vw - 18px);line-height:1.35;}
   #cap a{pointer-events:auto;display:inline-block;padding:6px 0;}
+  #tracking{display:block;color:var(--amber);font-weight:600;}
+  #trackingNote{display:block;}
+  #live.held .dot{animation:none;box-shadow:none;background:var(--amber);}
 
   /* ── Bottom control bar ──────────────────────────────────────────── */
   #bar{position:fixed;left:0;right:0;
@@ -121,7 +124,7 @@
     <div class="layer"><span id="layerNow">0</span>
       <small>/ <span id="layerTot">0</span></small></div>
   </div>
-  <div id="cap">Z-tracked · printer reports no XY · <a href="https://github.com/thereprocase/bambu-bridge/tree/v0.5.0" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">Source &amp; AGPL license</a></div>
+  <div id="cap"><span id="tracking">Layer tracking</span><span id="trackingNote">Printer reports no live XY</span><a href="https://github.com/thereprocase/bambu-bridge/tree/v0.6.0" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline">Source &amp; AGPL license</a></div>
 
   <div id="bar" class="hidden">
     <input id="slider" type="range" min="0" max="1" value="0" step="1"
@@ -175,6 +178,8 @@ const ROUTE = (() => {
   return { printerId, token, base };
 })();
 const POLL_MS = 3000;          // live-state cadence
+const STATUS_TTL_MS = 12000;   // no animation on an unreachable bridge
+const TELEMETRY_TTL_MS = 65000; // a connected MQTT socket can still be stale
 const SCRUB_PER_S = 10;        // hold-to-scrub speed
 const BAMBU_GREEN = [0x00/255, 0xAE/255, 0x42/255];
 
@@ -937,6 +942,60 @@ const canvas = document.getElementById("gl");
 const renderer = createRenderer(canvas);
 const camera   = createCamera();
 
+// BEGIN TOOLHEAD MOTION
+// Build an approximate, layer-local motion timeline from extrusion GL_LINES.
+// Layer spans use the existing inclusive {v0, v1} vertex convention.
+function buildMotionPath(tp, span){
+  const pos=tp && tp.pos;
+  const n=pos && Number.isFinite(pos.length) ? Math.floor(pos.length/3) : 0;
+  const raw0=span && Number.isFinite(span.v0) ? Math.floor(span.v0) : 0;
+  const raw1=span && Number.isFinite(span.v1) ? Math.floor(span.v1) : -1;
+  const v0=Math.max(0,Math.min(n-1,raw0+(raw0&1)));
+  const v1=Math.max(-1,Math.min(n-1,raw1));
+  const segments=[];
+  const EPS=1e-6;
+  const xyz=(v)=>{
+    const j=v*3, x=Number(pos[j]), y=Number(pos[j+1]), z=Number(pos[j+2]);
+    return Number.isFinite(x)&&Number.isFinite(y)&&Number.isFinite(z)
+      ? [x,y,z] : null;
+  };
+  const distance=(a,b)=>Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+  let previousEnd=null, previousReveal=0;
+  for(let i=v0; i+1<=v1; i+=2){
+    const a=xyz(i), b=xyz(i+1);
+    if(!a||!b) continue;
+    if(previousEnd){
+      const travel=distance(previousEnd,a);
+      if(travel>EPS) segments.push({a:previousEnd,b:a,weight:Math.max(EPS,travel/3),travel:true,reveal0:previousReveal,reveal1:previousReveal});
+    }
+    const extrusion=Math.max(EPS,distance(a,b));
+    segments.push({a,b,weight:extrusion,travel:false,reveal0:i,reveal1:i+1});
+    previousEnd=b; previousReveal=i+1;
+  }
+  const cumulative=[]; let total=0;
+  for(const s of segments){ total+=s.weight; cumulative.push(total); }
+  return {segments,cumulative,total,v0,v1};
+}
+
+function sampleMotionPath(path, fraction){
+  const list=path&&Array.isArray(path.segments)?path.segments:[];
+  if(!list.length) return {position:null,reveal:0,travel:false};
+  const total=Number.isFinite(path.total)&&path.total>0 ? path.total : 0;
+  const f=Number.isFinite(fraction) ? Math.max(0,Math.min(1,fraction)) : 0;
+  if(!total) return {position:list[0].a.slice(),reveal:list[0].reveal0,travel:!!list[0].travel};
+  const target=f*total, cumulative=path.cumulative;
+  let lo=0, hi=cumulative.length-1;
+  while(lo<hi){ const mid=(lo+hi)>>1; if(cumulative[mid]<target) lo=mid+1; else hi=mid; }
+  const s=list[lo], start=lo?cumulative[lo-1]:0;
+  const t=s.weight>0 ? Math.max(0,Math.min(1,(target-start)/s.weight)) : 0;
+  return {
+    position:[s.a[0]+(s.b[0]-s.a[0])*t,s.a[1]+(s.b[1]-s.a[1])*t,s.a[2]+(s.b[2]-s.a[2])*t],
+    reveal:s.travel?s.reveal0:s.reveal0+(s.reveal1-s.reveal0)*t,
+    travel:!!s.travel,
+  };
+}
+// END TOOLHEAD MOTION
+
 const STATE = {
   mesh:null,             // current geometry (mesh OR toolpath; kind distinguishes)
   mode:"mesh",           // "mesh" | "toolpath"
@@ -956,12 +1015,22 @@ const STATE = {
   reveal:0,              // current reveal front, in vertex-sequence space
   spanStart:0,           // current layer's first vertex (seq)
   spanEnd:0,             // current layer's last vertex (seq)
-  revealT0:0,            // perf-time when the current layer's sweep started
   estLayerSec:30,        // estimated seconds per layer (bootstrap then EMA)
   remainingMin:null,     // printer's reported time-remaining (minutes)
-  layerChanges:0,        // how many layer ticks observed (for EMA warmup)
-  lastLayerChangeAt:0,   // perf-time of the last layer_num change
   lastLayerNum:null,     // previous layer_num (to detect changes)
+  measuredLayerSec:null,
+  layerElapsed:0,        // active, fresh print seconds only; never wall time
+  measurementValid:false,
+  layerSynced:false,     // opened mid-layer: wait for an observed boundary
+  motionPath:null,
+  motionPoint:null,
+  motionFraction:0,
+  tickAt:performance.now(),
+  freshUntil:0,
+  pollController:null,
+  jobKey:null,
+  jobChanged:false,
+  trackingStatus:"waiting",
 };
 
 /* ── 6. Networking ────────────────────────────────────────────────────── */
@@ -1059,6 +1128,7 @@ async function loadToolpath(){
 }
 
 function applyMesh(mesh){
+  if(STATE.jobChanged) return;
   STATE.mesh=mesh;
   STATE.mode="mesh";
   STATE.totalLayers = mesh.totalLayers && mesh.totalLayers>0
@@ -1085,6 +1155,7 @@ function applyMesh(mesh){
 }
 
 function applyToolpath(tp){
+  if(STATE.jobChanged) return;
   STATE.mesh=tp;                       // unified geometry slot (kind distinguishes)
   STATE.mode="toolpath";
   STATE.totalLayers = tp.totalLayers && tp.totalLayers>0
@@ -1101,14 +1172,12 @@ function applyToolpath(tp){
   setDisplayedLayer(STATE.following ? STATE.liveLayer : 0, false);
   document.getElementById("jobName").textContent = tp.job;
   document.getElementById("bar").classList.remove("hidden");
-  // We genuinely have layer XY in toolpath mode — update the caption, drop the
-  // "no XY" disclaimer (kept only for Z-tracked mesh mode).
-  document.getElementById("cap").textContent = "layer-tracked toolpath";
   hideOverlay();
   updateColorChip();
   updateLivePill();
   // Initialize the reveal front at the current live layer's span start.
-  snapRevealToLayer(STATE.displayedLayer, true);
+  snapRevealToLayer(STATE.liveLayer, true);
+  STATE.measurementValid=false; // fetching a model did not observe a full layer
   STATE.needsDraw=true;
   STATE._awaitFirstFrame=true;
 }
@@ -1134,67 +1203,101 @@ function snapRevealToLayer(layerNum, resetReveal){
   if(!sp) return;
   STATE.spanStart=sp.v0; STATE.spanEnd=sp.v1;
   STATE.curLayerZ=sp.z;
-  if(resetReveal){ STATE.reveal=sp.v0; STATE.revealT0=performance.now(); }
+  STATE.motionPath=buildMotionPath(tp, sp);
+  if(resetReveal){ STATE.layerElapsed=0; STATE.motionFraction=0; }
+  sampleHead();
 }
-// Fold a fresh poll into the per-layer duration estimate.
-function updatePacing(prevLayer, newLayer, now){
-  // Bootstrap from time-remaining / layers-left (clamped 5..600 s).
-  if(STATE.remainingMin!=null && STATE.totalLayers>newLayer){
-    const boot=(STATE.remainingMin*60)/Math.max(1, STATE.totalLayers-newLayer);
-    const clamped=Math.max(5, Math.min(600, boot));
-    // Until we've measured two layer changes, trust the bootstrap outright.
-    if(STATE.layerChanges<2) STATE.estLayerSec=clamped;
+function sampleHead(){
+  const point=sampleMotionPath(STATE.motionPath, STATE.motionFraction);
+  STATE.motionPoint=point && Array.isArray(point.position) ? point : null;
+  if(STATE.motionPoint) STATE.reveal=STATE.motionPoint.reveal;
+}
+function trackingFresh(now=performance.now()){
+  return !document.hidden && !STATE.jobChanged && now<STATE.freshUntil;
+}
+// Estimate a layer duration only at a boundary. Coarse minute ETA updates must
+// never send an already moving head backwards. A complete observed layer is a
+// better clock than the remaining-job average; unobserved intervals invalidate it.
+function updatePacing(prevLayer, newLayer){
+  if(prevLayer!=null && newLayer===prevLayer+1 && STATE.measurementValid
+      && STATE.layerElapsed>0.5 && STATE.layerElapsed<3600){
+    STATE.measuredLayerSec=STATE.measuredLayerSec==null ? STATE.layerElapsed
+      : STATE.measuredLayerSec*0.7 + STATE.layerElapsed*0.3;
   }
-  if(prevLayer!=null && newLayer>prevLayer){
-    if(STATE.lastLayerChangeAt>0){
-      const measured=(now-STATE.lastLayerChangeAt)/1000/Math.max(1,newLayer-prevLayer);
-      if(measured>0.5 && measured<3600){
-        STATE.layerChanges++;
-        // EMA blend once we have a measurement (alpha 0.3).
-        STATE.estLayerSec = STATE.layerChanges<2
-          ? measured
-          : STATE.estLayerSec*0.7 + measured*0.3;
-      }
-    }
-    STATE.lastLayerChangeAt=now;
+  if(prevLayer!=null && newLayer<prevLayer) STATE.measuredLayerSec=null;
+  const left=Math.max(1, STATE.totalLayers-newLayer+1);
+  const bootstrap=STATE.remainingMin>0 ? STATE.remainingMin*60/left : 30;
+  STATE.estLayerSec=Math.max(5,Math.min(3600,STATE.measuredLayerSec||bootstrap));
+  STATE.layerSynced=prevLayer!=null && newLayer===prevLayer+1 && trackingFresh();
+  STATE.measurementValid=STATE.layerSynced;
+}
+function loseTracking(){
+  STATE.freshUntil=0;
+  STATE.measurementValid=false;
+  STATE.layerSynced=false;
+  STATE.tickAt=performance.now();
+  STATE.needsDraw=true;
+  updateLivePill();
+}
+// This viewer is tied to the file it loaded. Do not animate a new job over an
+// old model, including a repeated file whose synthesized start time changed.
+function acceptSnapshot(s, now=performance.now(), wallNow=Date.now()){
+  advanceReveal(now); // close the old interval before changing phase/freshness
+  const job=s.job||{}, session=s.session||{};
+  const key={name:job.subtask_name||null,start:job.started_at||null};
+  const oldKey=STATE.jobKey;
+  if(oldKey && ((key.name && oldKey.name && key.name!==oldKey.name)
+      || (key.start && oldKey.start && key.start!==oldKey.start))){
+    STATE.jobChanged=true;
+    loseTracking();
+    showError("nojob","The print changed.","Reload its toolpath to track the new print.");
+    document.getElementById("retry").textContent="Reload toolpath";
+    return;
   }
+  STATE.jobKey={name:key.name||(oldKey&&oldKey.name),start:key.start||(oldKey&&oldKey.start)};
+  STATE.phase=s.phase||"unknown";
+  const stamp=Date.parse(session.last_telemetry_at);
+  const age=Number.isFinite(stamp) ? Math.max(0,wallNow-stamp) : Infinity;
+  STATE.freshUntil=session.connected===true && age<TELEMETRY_TTL_MS
+    ? now+Math.min(STATUS_TTL_MS, TELEMETRY_TTL_MS-age) : 0;
+  if(!trackingFresh(now)){ STATE.measurementValid=false; STATE.layerSynced=false; }
+  const ln=Math.max(0,intOr(job.layer_num,0));
+  const tot=intOr(job.total_layer_num,0);
+  const rem=job.remaining_min==null ? null : Number(job.remaining_min);
+  STATE.remainingMin=Number.isFinite(rem) && rem>=0 ? rem : null;
+  const prevLayer=STATE.lastLayerNum;
+  STATE.liveLayer=ln;
+  if(tot>0 && (!STATE.mesh || !STATE.mesh.totalLayers)){
+    STATE.totalLayers=tot; slider.max=tot;
+  }
+  if(prevLayer!==ln){
+    updatePacing(prevLayer,ln);
+    snapRevealToLayer(ln,true); // keep the live estimate current even while scrubbing
+  }
+  STATE.lastLayerNum=ln;
+  STATE.tickAt=now;
+  if(STATE.following) setDisplayedLayer(STATE.liveLayer,false);
+  STATE.needsDraw=true;
+  updateLivePill();
 }
 
 async function pollState(){
-  if(document.hidden) return;
-  let res;
-  try { res = await api(""); } catch(e){ return; }   // transient; keep polling
-  if(!res.ok) return;
-  let s; try { s=await res.json(); } catch(e){ return; }
-  const job=s.job||{};
-  STATE.phase = s.phase || "unknown";
-  const ln = intOr(job.layer_num, STATE.liveLayer);
-  const tot= intOr(job.total_layer_num, 0);
-  // time-remaining: accept common field names (minutes).
-  const rem = (job.remaining_time!=null) ? Number(job.remaining_time)
-            : (s.remaining_min!=null)    ? Number(s.remaining_min) : null;
-  if(rem!=null && isFinite(rem)) STATE.remainingMin=rem;
-
-  const prevLayer=STATE.lastLayerNum;
-  STATE.liveLayer = ln;
-  if(tot>0 && tot!==STATE.totalLayers && (!STATE.mesh || !STATE.mesh.totalLayers)){
-    STATE.totalLayers=tot; slider.max=tot;          // live total refines fallback
+  if(document.hidden || STATE.pollController || STATE.jobChanged) return;
+  const controller=new AbortController();
+  STATE.pollController=controller;
+  const timeout=setTimeout(()=>controller.abort(),8000);
+  try{
+    const res=await api("",{signal:controller.signal,cache:"no-store"});
+    if(!res.ok) throw new Error("status unavailable");
+    const s=await res.json();
+    // A response from before a hide/abort must not restart animation.
+    if(!controller.signal.aborted && !document.hidden) acceptSnapshot(s);
+  } catch(e){
+    if(STATE.pollController===controller) loseTracking();
+  } finally {
+    clearTimeout(timeout);
+    if(STATE.pollController===controller) STATE.pollController=null;
   }
-
-  // Toolpath LIVE: maintain the per-layer pacing estimate and, on a layer
-  // change, snap the reveal front to the new layer's span start.
-  if(STATE.mode==="toolpath"){
-    updatePacing(prevLayer, ln, performance.now());
-    if(prevLayer!==ln && STATE.following){
-      snapRevealToLayer(ln, true);
-    }
-  }
-  STATE.lastLayerNum=ln;
-
-  if(STATE.following){
-    setDisplayedLayer(STATE.liveLayer, false);
-  }
-  updateLivePill();
 }
 function intOr(v,d){ const n=parseInt(v,10); return Number.isFinite(n)?n:d; }
 
@@ -1205,6 +1308,8 @@ function startPolling(){
 }
 function stopPolling(){
   if(STATE.pollTimer){ clearInterval(STATE.pollTimer); STATE.pollTimer=null; }
+  if(STATE.pollController){ STATE.pollController.abort(); STATE.pollController=null; }
+  loseTracking();
 }
 
 /* ── 7. UI wiring ─────────────────────────────────────────────────────── */
@@ -1264,9 +1369,29 @@ liveBtn.addEventListener("click", ()=>{
 });
 function updateLivePill(){
   const txt=document.getElementById("liveTxt");
+  const fresh=trackingFresh();
+  const status=STATE.jobChanged ? "changed" : !STATE.following ? "browsing"
+    : !fresh ? "offline" : STATE.phase==="paused" ? "paused"
+    : STATE.phase!=="printing" || STATE.liveLayer<1 ? "waiting"
+    : STATE.motionFraction>=1 ? "awaiting-layer" : "following";
+  STATE.trackingStatus=status;
+  const estimated=STATE.mode==="toolpath";
+  const label=status==="changed" ? "Reload toolpath" : status==="browsing" ? "Layer preview"
+    : status==="offline" ? "Waiting for live data" : status==="paused" ? "Paused"
+    : status==="awaiting-layer" ? "Waiting for next layer"
+    : status==="waiting" ? (STATE.phase==="completed" ? "Print complete" : "Waiting for printing")
+    : estimated ? "Estimated toolhead" : "Live layer";
+  document.getElementById("tracking").textContent=label;
+  document.getElementById("trackingNote").textContent=estimated
+    ? (status==="following" && !STATE.layerSynced
+      ? "Approximate XY · syncs at next layer"
+      : STATE.following && STATE.liveLayer>0
+        ? "Approximate XY · layer reported by printer" : "Sliced path · travel is approximate")
+    : "Printer reports no live XY";
+  liveBtn.classList.toggle("held",status!=="following");
   if(STATE.following){
     liveBtn.classList.add("following"); liveBtn.classList.remove("paused");
-    txt.textContent="LIVE";
+    txt.textContent=status==="offline" ? "RECONNECTING" : status==="paused" ? "PAUSED" : "LIVE";
   } else {
     liveBtn.classList.add("paused"); liveBtn.classList.remove("following");
     txt.textContent="RETURN TO LIVE";
@@ -1339,6 +1464,7 @@ function hideOverlay(){
   overlay.classList.remove("show");
 }
 document.getElementById("retry").addEventListener("click", ()=>{
+  if(STATE.jobChanged){ location.reload(); return; }
   // Reset timing state so a fresh fetch gets clean measurements.
   _T.fetch_start=_T.fetch_headers=_T.fetch_body=_T.parse=_T.buffers=_T.first_frame=0;
   _T.bytes=_T.segments=0; _T.fmt="json";
@@ -1354,38 +1480,6 @@ function resize(){
 }
 window.addEventListener("resize", resize);
 
-// Last below-clip vertex's XY — a true toolpath estimate of the head position
-// on the current layer. Scans the float32 buffer (no allocation) and caches by
-// clipZ so per-frame redraws while idle don't re-scan ~6MB of vertices.
-let _nozCache={z:NaN, xy:null};
-function lastSolidEndpoint(m, clipZ){
-  if(_nozCache.z===clipZ) return _nozCache.xy;
-  const p=m.pos; let bx=null,by=null,bz=-Infinity;
-  // Walk forward; the toolpath is layer-ordered, so the LAST vertex at or below
-  // clipZ (and at the highest such Z) is the most recently printed point.
-  for(let i=0;i<p.length;i+=3){
-    const z=p[i+2];
-    if(z<=clipZ && z>=bz){ bz=z; bx=p[i]; by=p[i+1]; }
-  }
-  _nozCache={z:clipZ, xy:(bx===null?null:[bx,by])};
-  return _nozCache.xy;
-}
-
-// World XYZ at the reveal front: interpolate inside the segment straddling the
-// fractional front so the nozzle glides rather than hops vertex-to-vertex.
-function revealFrontPos(m, frontSeq){
-  const p=m.pos;
-  let i=Math.floor(frontSeq);
-  const maxV=m.vertexCount-1;
-  if(i<0) i=0; if(i>maxV) i=maxV;
-  // GL_LINES pairs: segment is (2k, 2k+1). Interpolate toward the pair's end.
-  const a=i, b=Math.min(maxV, i+ (i%2===0?1:0));   // bias to the pair endpoint
-  const f=Math.max(0,Math.min(1, frontSeq-i));
-  const ax=p[a*3],ay=p[a*3+1],az=p[a*3+2];
-  const bx=p[b*3],by=p[b*3+1],bz=p[b*3+2];
-  return [ax+(bx-ax)*f, ay+(by-ay)*f, az+(bz-az)*f];
-}
-
 // Theme palette resolved per-frame so toggles take effect immediately.
 function frameParams(w,h){
   const m=STATE.mesh;
@@ -1393,8 +1487,10 @@ function frameParams(w,h){
   const theme = STATE.colorMode==="theme";
   const color = activeColor();
 
-  // Reveal front is active only in toolpath LIVE-follow while printing.
-  const revealOn = !!(isTP && STATE.following && STATE.phase==="printing");
+  // Paused/stale estimates retain the exact frozen front, never reveal a whole
+  // layer or move its head just because live data temporarily stopped.
+  const revealOn = !!(isTP && STATE.following && STATE.liveLayer>0
+    && STATE.motionPoint && (STATE.phase==="printing" || STATE.phase==="paused"));
 
   // clipZ: in toolpath LIVE we lock the band to the current layer's own Z (from
   // its vertex span) so the front and band sit on the real working layer; else
@@ -1402,6 +1498,9 @@ function frameParams(w,h){
   let clipZ;
   if(revealOn && STATE.curLayerZ!=null){
     clipZ = STATE.curLayerZ;
+  } else if(isTP && STATE.displayedLayer>0){
+    const sp=layerSpan(m,STATE.displayedLayer-1);
+    clipZ=sp ? sp.z : m.min[2];
   } else {
     clipZ = m ? (STATE.displayedLayer * m.layerH + (m.min?m.min[2]:0)) : 0;
   }
@@ -1413,26 +1512,13 @@ function frameParams(w,h){
                         Math.min(1,color[2]*1.6+0.2)];
   const bg = theme ? [0x11/255,0x11/255,0x13/255] : [0x0c/255,0x0d/255,0x0f/255];
 
-  // Nozzle placement:
-  //  • mesh mode        → bbox-center XY (no real XY), clipZ + offset.
-  //  • toolpath LIVE    → rides the reveal front (true XY on the working layer).
-  //  • toolpath scrubbed→ endpoint of the last below-clip vertex pair.
+  // The tip follows an estimated extrusion/travel path, without decorative
+  // bobbing. A mesh cannot establish XY; do not invent a moving head for it.
   let nozOrigin=null, nozAlpha=1;
-  if(m){
-    const t=(performance.now()-STATE.t0)/1000;
-    const bob=(STATE.following && STATE.phase==="printing")
-              ? Math.sin(t*2.2)*m.layerH*0.6 : 0;   // gentler now the front moves
-    const off=Math.max(m.layerH*2, m.size[2]*0.01);
-    if(isTP && revealOn){
-      const fp=revealFrontPos(m, STATE.reveal);
-      nozOrigin=[fp[0], fp[1], fp[2]+off+bob];
-    } else if(isTP){
-      const xy=lastSolidEndpoint(m, clipZ);
-      if(xy) nozOrigin=[xy[0], xy[1], clipZ+off+bob];
-      else   nozOrigin=[m.center[0], m.center[1], clipZ+off+bob];
-    } else {
-      nozOrigin=[m.center[0], m.center[1], clipZ+off+bob];
-    }
+  if(revealOn){
+    const fp=STATE.motionPoint.position;
+    nozOrigin=[fp[0],fp[1],fp[2]+Math.max(0.05,m.layerH*0.15)];
+    nozAlpha=STATE.motionPoint.travel ? 0.55 : 1;
   }
   return { clipZ, color, band, hemi: theme?1.0:0.35, bg,
            nozOrigin, nozAlpha, w, h,
@@ -1445,20 +1531,14 @@ function render(){
   const moving=camera.inertia();
   if(moving) STATE.needsDraw=true;
 
-  // Reveal-front advance (toolpath LIVE while printing). Sweep the current
-  // layer's vertex span over estLayerSec, then HOLD at spanEnd — a stalled
-  // front at 100% is honest; the next layer tick snaps it forward. This is the
-  // only thing that keeps the loop continuously running while following.
-  const revealActive = STATE.mode==="toolpath" && STATE.following
-                    && STATE.phase==="printing";
-  if(revealActive){
-    advanceReveal(performance.now());
-    STATE.needsDraw=true;
-  }
-
-  // Bob (mesh + toolpath) also needs continuous frames while following+printing.
-  const animating = STATE.mesh && STATE.following && STATE.phase==="printing";
-  if(STATE.needsDraw || animating){
+  const previousStatus=STATE.trackingStatus;
+  advanceReveal(performance.now());
+  // Updating text only on state changes avoids a DOM mutation every frame.
+  const expectedFresh=trackingFresh();
+  if((previousStatus==="following" && (!expectedFresh || STATE.motionFraction>=1))
+      || (previousStatus!=="offline" && previousStatus!=="changed"
+        && STATE.following && !expectedFresh)) updateLivePill();
+  if(STATE.needsDraw){
     const aspect=w/Math.max(1,h);
     renderer.draw(camera.view(), camera.proj(aspect), camera.eye(),
                   frameParams(w,h));
@@ -1487,14 +1567,21 @@ function render(){
   requestAnimationFrame(render);
 }
 
-// Linearly sweep the reveal front across the current layer span in estLayerSec,
-// holding at spanEnd (no loop). Called per-frame while LIVE+printing.
+// Advance only over observed active time. No catch-up after a hidden WebView,
+// stalled request or a sleeping computer; fresh telemetry resumes from here.
 function advanceReveal(now){
-  const span=Math.max(1, STATE.spanEnd-STATE.spanStart);
-  const dur=Math.max(0.5, STATE.estLayerSec);
-  const elapsed=(now-STATE.revealT0)/1000;
-  const frac=Math.max(0, Math.min(1, elapsed/dur));
-  STATE.reveal=STATE.spanStart + frac*span;
+  const delta=Math.max(0,(now-STATE.tickAt)/1000);
+  STATE.tickAt=now;
+  if(!trackingFresh(now) || delta>2){
+    STATE.measurementValid=false; STATE.layerSynced=false; return;
+  }
+  if(STATE.phase!=="printing" || STATE.liveLayer<1 || STATE.jobChanged) return;
+  STATE.layerElapsed+=delta;
+  if(!STATE.motionPath) return;
+  const old=STATE.motionFraction;
+  STATE.motionFraction=Math.min(1,STATE.layerElapsed/Math.max(0.5,STATE.estLayerSec));
+  sampleHead();
+  if(STATE.following && old!==STATE.motionFraction) STATE.needsDraw=true;
 }
 
 /* ── Pointer input: orbit / pan / zoom, mouse + touch ─────────────────── */
@@ -1597,9 +1684,10 @@ window.__viz = {
   // than overwriting it on the next tick (lets QA freeze the front for a shot).
   setReveal(frac){
     frac=Math.max(0,Math.min(1, Number(frac)||0));
-    const span=Math.max(1, STATE.spanEnd-STATE.spanStart);
-    STATE.reveal=STATE.spanStart + frac*span;
-    STATE.revealT0=performance.now() - frac*Math.max(0.5,STATE.estLayerSec)*1000;
+    STATE.motionFraction=frac;
+    STATE.layerElapsed=frac*Math.max(0.5,STATE.estLayerSec);
+    STATE.tickAt=performance.now();
+    sampleHead();
     STATE.needsDraw=true;
   },
   setEstLayerSec(s){ STATE.estLayerSec=Math.max(0.5, Number(s)||30); },
@@ -1626,6 +1714,9 @@ window.__viz = {
       loadState: STATE.loadState,         // "loading" | "ready" | "error"
       segmentCount:(STATE.mesh&&STATE.mesh.kind==="toolpath")?STATE.mesh.segmentCount:null,
       revealFrac, estLayerSec:STATE.estLayerSec,
+      headPosition:STATE.motionPoint ? STATE.motionPoint.position : null,
+      trackingStatus:STATE.trackingStatus,
+      motionFraction:STATE.motionFraction,layerSynced:STATE.layerSynced,
       timings }; },
 };
 
