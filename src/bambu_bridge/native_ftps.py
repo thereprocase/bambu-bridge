@@ -277,6 +277,7 @@ async def serve_ftps(
                                     gateway.config["printer_id"],
                                     logical_path(argument, upstream_directory),
                                     limit,
+                                    peer=peer,
                                 )
                                 phase = "receiving_client_data"
                                 stored = await gateway.inbox.receive(data_reader, row, limit)

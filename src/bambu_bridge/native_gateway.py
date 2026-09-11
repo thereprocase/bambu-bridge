@@ -852,6 +852,8 @@ class NativeGateway:
         report_topic = f"device/{serial}/report".encode()
         request_topic = f"device/{serial}/request".encode()
         subscribed = False
+        peer = writer.get_extra_info("peername")[0]
+        seen_publishes: dict[bytes, bytes] = {}
         lock = asyncio.Lock()
 
         async def send(kind: int, body: bytes = b"") -> None:
@@ -915,6 +917,14 @@ class NativeGateway:
                         pos += 2 if qos else 0
                         if topic != request_topic or qos > 1 or head & 1:
                             return
+                        fingerprint = hashlib.sha256(data[pos:]).digest()
+                        if qos and head & 8 and seen_publishes.get(mid) == fingerprint:
+                            await send(0x40, mid)
+                            continue
+                        if qos:
+                            seen_publishes[mid] = fingerprint
+                            if len(seen_publishes) > 256:
+                                del seen_publishes[next(iter(seen_publishes))]
                         payload = json.loads(data[pos:])
                         if not isinstance(payload, dict):
                             return
@@ -938,7 +948,10 @@ class NativeGateway:
                             if self.inbox is not None:
                                 try:
                                     held = await asyncio.to_thread(
-                                        self.inbox.hold_start, self.config["printer_id"], translated
+                                        self.inbox.hold_start,
+                                        self.config["printer_id"],
+                                        translated,
+                                        peer=peer,
                                     )
                                 except ValueError as exc:
                                     await report(

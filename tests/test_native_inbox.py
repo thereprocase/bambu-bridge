@@ -269,3 +269,18 @@ async def test_plain_gcode_staging_preserves_command_path_form(tmp_path):
         }
     }
     assert inbox.translated_report("fixture-printer", ack)["print"]["sequence_id"] == "22"
+
+
+async def test_same_filename_from_another_client_cannot_replace_start_input(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    rows = []
+    for peer in ("fixture-client-a", "fixture-client-b"):
+        row = inbox.reserve("fixture-printer", "/cache/test.3mf", 1024, peer=peer)
+        reader = asyncio.StreamReader()
+        reader.feed_data(peer.encode())
+        reader.feed_eof()
+        rows.append(await inbox.receive(reader, row, 1024))
+    with pytest.raises(ValueError, match="BBSTART_UPLOAD_OWNER_MISMATCH"):
+        inbox.hold_start("fixture-printer", start(), peer="fixture-client-c")
+    held = inbox.hold_start("fixture-printer", start(), peer="fixture-client-a")
+    assert held["id"] == rows[0]["id"]

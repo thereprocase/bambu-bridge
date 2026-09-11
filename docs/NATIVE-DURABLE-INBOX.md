@@ -69,6 +69,9 @@ never presented as complete receipts.
 - Starts are claimed transactionally before publication and never automatically
   replayed after uncertain dispatch. Interrupted delivery is marked for review.
 - Native stop/pause cancels queued starts, serialized against native dispatch.
+- Upload-to-start matching is scoped to the authenticated connection's network
+  peer so two computers using the same filename do not swap inputs. In-session
+  QoS1 duplicate publishes are acknowledged without repeating their command.
 - A unique immutable file in a fresh active printer report identifies the staged
   run even if its acknowledgment was lost. Only a subsequent matching terminal
   report releases that run automatically. Idle alone never proves a start.
