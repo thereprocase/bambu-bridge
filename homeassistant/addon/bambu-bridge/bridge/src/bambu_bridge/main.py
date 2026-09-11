@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import APIRouter, FastAPI
+from fastapi.responses import JSONResponse
 
 from bambu_bridge import __version__
 from bambu_bridge.api import (
@@ -46,6 +47,7 @@ from bambu_bridge.db.jobs import (
     PrinterRepo,
     SlicedDateRepo,
 )
+from bambu_bridge.db.starts import StartConflict, StartRepo
 from bambu_bridge.native_gateway import NativeGateway
 from bambu_bridge.orca import OrcaStore
 from bambu_bridge.pairing import PairingStore
@@ -118,6 +120,7 @@ def create_app(
         # Must be registered before registry.load() so persisted printers
         # get the external-print watcher attached on startup (same as
         # EventPersister and NotificationService).
+        await StartRepo(db).recover()
         registry.add_listener(job_manager.attach)
         await registry.load()
 
@@ -187,6 +190,12 @@ def create_app(
             log.info("bridge.stopped")
 
     app = FastAPI(title="Bambu Bridge", version=__version__, lifespan=lifespan)
+
+    @app.exception_handler(StartConflict)
+    async def start_conflict_handler(_request: object, exc: StartConflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={
+            "error": "start_conflict", "message": str(exc),
+        })
     api_errors.install(app)  # universal envelope on every error path (contract §2)
 
     # One app (shared app.state); a prefixed router rather than a mounted

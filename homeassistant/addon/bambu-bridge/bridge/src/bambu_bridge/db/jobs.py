@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib import resources
@@ -35,9 +36,8 @@ class JobState(StrEnum):
                                  └───────────┴─→ failed ┘
                                              └─→ canceled
 
-    `submitted` is the printer's acknowledgement that the project_file
-    landed (`result:"success"` came back), **not** that the print began —
-    the §6.3 distinction. `preparing` covers the heat-soak + bed-leveling
+    `submitted` records a dispatch attempt, not acknowledgement or proof
+    that printing began. `preparing` covers the heat-soak + bed-leveling
     window where `gcode_state == RUNNING` but `layer_num == 0`. `printing`
     is gated on `layer_num > 0`. (`canceled` is US single-l; deliberate
     inconsistency with `completed` — see contract §7.4 note.)
@@ -173,6 +173,11 @@ class Database:
 
     def __init__(self, path: str) -> None:
         self._path = path
+        # Dedicated transaction connections must also see test in-memory DBs.
+        self.connection_uri = (
+            f"file:bridge-{uuid.uuid4().hex}?mode=memory&cache=shared"
+            if path == ":memory:" else path
+        )
         self._conn: aiosqlite.Connection | None = None
 
     @property
@@ -184,7 +189,7 @@ class Database:
     async def connect(self) -> None:
         if self._path not in (":memory:", ""):
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(self._path)
+        self._conn = await aiosqlite.connect(self.connection_uri, uri=True)
         self._conn.row_factory = aiosqlite.Row
         # Assert WAL + FK enforcement on every connection (spec 9).
         await self._conn.execute("PRAGMA journal_mode=WAL")

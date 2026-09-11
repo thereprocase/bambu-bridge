@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 import structlog
@@ -40,6 +41,8 @@ class Event:
     type: EventType
     data: dict[str, Any]
     name: str | None = None
+    observed_at: float = field(default_factory=time.monotonic)
+    session_id: str | None = None
 
     def to_wire(self) -> dict[str, Any]:
         msg: dict[str, Any] = {"type": self.type}
@@ -91,6 +94,7 @@ class EventBus:
     def __init__(self, maxsize: int = 256) -> None:
         self._subscribers: set[asyncio.Queue[Event]] = set()
         self._maxsize = maxsize
+        self.session_id: str | None = None
 
     @property
     def subscriber_count(self) -> int:
@@ -107,6 +111,7 @@ class EventBus:
 
     def publish(self, event: Event) -> None:
         """Non-blocking fan-out. Drops the oldest event for full queues."""
+        event = replace(event, session_id=self.session_id)
         for queue in self._subscribers:
             if queue.full():
                 with contextlib.suppress(asyncio.QueueEmpty):  # race only

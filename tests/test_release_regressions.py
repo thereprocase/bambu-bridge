@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import zipfile
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -43,8 +44,9 @@ def test_uvicorn_credentials_are_redacted_before_handlers() -> None:
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
         try:
-            logger.info('%s - "WebSocket /status?token=%s&other=visible" [accepted]',
-                        "synthetic", secret)
+            logger.info(
+                '%s - "WebSocket /status?token=%s&other=visible" [accepted]', "synthetic", secret
+            )
             logger.info("GET /camera?token=unknown-client-token&quality=1")
             logger.info("Authorization: Bearer another-client-key")
             try:
@@ -59,8 +61,9 @@ def test_uvicorn_credentials_are_redacted_before_handlers() -> None:
     assert "another-client-key" not in result
     assert "other=visible" in result
     assert "[REDACTED]" in result
-    event = log_redaction.redact_event(None, "info", {"access_code": "12345678",
-                                                    "nested": {"message": secret}})
+    event = log_redaction.redact_event(
+        None, "info", {"access_code": "12345678", "nested": {"message": secret}}
+    )
     assert secret not in json.dumps(event)
     assert "12345678" not in json.dumps(event)
 
@@ -70,13 +73,23 @@ def test_uvicorn_http_access_formatter_keeps_redacted_arguments(status_code: int
     secret = "synthetic-access-log-secret"
     log_redaction.install(secret)
     record = logging.getLogger("uvicorn.access").makeRecord(
-        "uvicorn.access", logging.INFO, __file__, 0,
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        0,
         '%s - "%s %s HTTP/%s" %d',
-        ("127.0.0.1:12345", "GET", f"/status?token={secret}&api_key=unknown&view=1",
-         "1.1", status_code), None,
+        (
+            "127.0.0.1:12345",
+            "GET",
+            f"/status?token={secret}&api_key=unknown&view=1",
+            "1.1",
+            status_code,
+        ),
+        None,
     )
     formatter = AccessFormatter(
-        '%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False,
+        '%(client_addr)s - "%(request_line)s" %(status_code)s',
+        use_colors=False,
     )
     rendered = formatter.format(record)
     plain = logging.Formatter().format(record)
@@ -103,30 +116,50 @@ class FakeJobs:
         return self.rows.get(id)
 
 
-async def test_terminal_jobs_release_payload_and_manager_entry() -> None:
-    repo = FakeJobs()
-    service = SimpleNamespace(bus=EventBus())
-    manager = JobManager(repo, SimpleNamespace(add=AsyncMock()),
-                         SimpleNamespace(get=lambda _: service))  # type: ignore[arg-type]
+async def test_terminal_jobs_release_payload_and_manager_entry(tmp_path) -> None:
+    from bambu_bridge.db.jobs import Database, JobRepo, Printer, PrinterRepo
+
+    database = Database(str(tmp_path / "cleanup.db"))
+    await database.connect()
+    await PrinterRepo(database).add(
+        Printer(
+            id="synthetic", friendly_name="Test", ip="127.0.0.1", access_code="fixture", added_at=1
+        )
+    )
+    repo = JobRepo(database)
+    service = SimpleNamespace(
+        bus=EventBus(),
+        connected=True,
+        snapshot=lambda: {
+            "phase": "idle",
+            "session": {"connected": True, "last_telemetry_at": datetime.now(UTC).isoformat()},
+        },
+    )
+    manager = JobManager(
+        repo, SimpleNamespace(add=AsyncMock()), SimpleNamespace(get=lambda _: service)
+    )  # type: ignore[arg-type]
     runs = []
     for i in range(3):
         job = await manager.submit("synthetic", bytes([i]) * 1024, f"job-{i}.3mf")
         run = manager._runs[job.id]
         runs.append(run)
         await run.request_cancel()
+        # The next intent is admitted only after the previous cancellation
+        # commits its release. Concurrent live starts now correctly conflict.
+        await run._task
     await asyncio.gather(*(run._task for run in runs))
     await asyncio.sleep(0)
-    assert all(j.state.terminal for j in repo.rows.values())
+    assert all(j.state.terminal for j in await repo.list())
     assert all(run._file_bytes == b"" for run in runs)
     assert manager._runs == {}
     await manager.shutdown()
+    await database.close()
 
 
 def archive(x: int) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("Metadata/plate_1.gcode",
-                   f"G90\nM83\nG1 X0 Y0 Z0.2\nG1 X{x} Y0 E1\n")
+        z.writestr("Metadata/plate_1.gcode", f"G90\nM83\nG1 X0 Y0 Z0.2\nG1 X{x} Y0 E1\n")
     return buf.getvalue()
 
 
@@ -156,8 +189,11 @@ async def test_replaced_same_size_toolpath_changes_geometry_and_etag() -> None:
     ftps = MutableFiles()
     cache = VizCache()
     _, before = await cache._run_fill_toolpath("synthetic", ftps, "sample.gcode.3mf")  # type: ignore[arg-type]
-    first_etag = _viz_etag("sample.gcode.3mf", len(ftps.data),
-                          revision=cache.content_id("synthetic", "sample.gcode.3mf"))
+    first_etag = _viz_etag(
+        "sample.gcode.3mf",
+        len(ftps.data),
+        revision=cache.content_id("synthetic", "sample.gcode.3mf"),
+    )
     _, warm = await cache._run_fill_toolpath("synthetic", ftps, "sample.gcode.3mf")  # type: ignore[arg-type]
     assert warm is before and ftps.downloads == 1
     new_data = archive(20)
@@ -167,8 +203,11 @@ async def test_replaced_same_size_toolpath_changes_geometry_and_etag() -> None:
     _, after = await cache._run_fill_toolpath("synthetic", ftps, "sample.gcode.3mf")  # type: ignore[arg-type]
     assert after.bbox_max[0] == 20
     assert ftps.downloads == 2
-    assert first_etag != _viz_etag("sample.gcode.3mf", len(ftps.data),
-                                  revision=cache.content_id("synthetic", "sample.gcode.3mf"))
+    assert first_etag != _viz_etag(
+        "sample.gcode.3mf",
+        len(ftps.data),
+        revision=cache.content_id("synthetic", "sample.gcode.3mf"),
+    )
     ftps.directory = "cache"
     _, relocated = await cache._run_fill_toolpath("synthetic", ftps, "sample.gcode.3mf")  # type: ignore[arg-type]
     assert relocated is not after and ftps.downloads == 3
@@ -208,9 +247,14 @@ def test_delete_uses_requested_directory_and_unicode_download_works(
         assert response.content == ftps.data
 
 
-@pytest.mark.parametrize("field,value", [
-    ("ip", "not-an-ip"), ("access_code", "x"), ("friendly_name", ""),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("ip", "not-an-ip"),
+        ("access_code", "x"),
+        ("friendly_name", ""),
+    ],
+)
 def test_printer_updates_reject_bad_fields(field: str, value: str) -> None:
     with pytest.raises(ValidationError):
         printers.UpdatePrinter(**{field: value})
@@ -221,7 +265,8 @@ async def test_printer_update_destination_policy_runs_before_persistence() -> No
     app = SimpleNamespace(state=SimpleNamespace(settings=Settings()))
     request = Request({"type": "http", "app": app})
     response = await printers.update_printer(
-        "synthetic", printers.UpdatePrinter(ip="127.0.0.1"), request, registry)
+        "synthetic", printers.UpdatePrinter(ip="127.0.0.1"), request, registry
+    )
     assert response.status_code == 422
     registry.update.assert_not_awaited()
 
@@ -234,8 +279,12 @@ def test_long_outage_backoff_remains_finite() -> None:
 def test_restored_status_distinguishes_early_finish_from_completed_layers() -> None:
     assert _job_context({"gcode_state": "FINISH"}) == "done"
     assert _job_anomaly({"gcode_state": "FINISH", "mc_percent": 20}) is not None
-    assert _job_anomaly({"gcode_state": "FINISH", "mc_percent": 97,
-                         "layer_num": 581, "total_layer_num": 581}) is None
+    assert (
+        _job_anomaly(
+            {"gcode_state": "FINISH", "mc_percent": 97, "layer_num": 581, "total_layer_num": 581}
+        )
+        is None
+    )
     assert stage_text(22)
     decoded = decode_hms_entry(0x07002000, 0x00020001, "printing")
     assert decoded["hex"] == "0700_2000_0002_0001"

@@ -318,6 +318,8 @@ async def delete_printer(
     except PrinterNotFoundError:
         return errors.not_found("printer", printer_id)
 
+    if await request.app.state.jobs.starts.active(printer_id):
+        return errors.conflict(message="Resolve the active start before removing this printer")
     if not cascade_jobs:
         repo = _job_repo(request)
         active = [
