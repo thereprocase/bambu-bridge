@@ -60,6 +60,7 @@ class NativeInbox:
                 "dispatched_at": "INTEGER",
                 "retained": "INTEGER NOT NULL DEFAULT 1",
                 "kind": "TEXT NOT NULL DEFAULT 'upload'",
+                "client_peer": "TEXT",
             }.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE uploads ADD COLUMN {name} {definition}")
@@ -101,7 +102,9 @@ class NativeInbox:
                 "WHERE start_state='reserved'"
             )
 
-    def reserve(self, printer: str, name: str, maximum: int) -> dict[str, Any]:
+    def reserve(
+        self, printer: str, name: str, maximum: int, *, peer: str | None = None
+    ) -> dict[str, Any]:
         identifier = uuid.uuid4().hex
         logical = logical_path(name)
         suffix = ".gcode.3mf" if logical.endswith(".3mf") else posixpath.splitext(logical)[1]
@@ -116,9 +119,9 @@ class NativeInbox:
             if used + maximum > self.budget or count >= 128:
                 raise OSError("Inbox capacity exhausted")
             db.execute(
-                "INSERT INTO uploads (id,printer,logical,remote,bytes,state,created) "
-                "VALUES (?,?,?,?,?,'receiving',unixepoch())",
-                (identifier, printer, logical, remote, maximum),
+                "INSERT INTO uploads (id,printer,logical,remote,bytes,state,created,client_peer) "
+                "VALUES (?,?,?,?,?,'receiving',unixepoch(),?)",
+                (identifier, printer, logical, remote, maximum, peer),
             )
         return self.get(identifier)
 
@@ -250,7 +253,9 @@ class NativeInbox:
                 is not None
             )
 
-    def hold_start(self, printer: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def hold_start(
+        self, printer: str, payload: dict[str, Any], *, peer: str | None = None
+    ) -> dict[str, Any] | None:
         command = payload.get("print")
         if not isinstance(command, dict) or command.get("command") not in (
             "project_file",
@@ -269,10 +274,17 @@ class NativeInbox:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 "SELECT * FROM uploads WHERE printer=? AND logical=? "
+                "AND kind='upload' "
+                "AND (client_peer=? OR client_peer IS NULL) "
                 "ORDER BY created DESC,rowid DESC LIMIT 1",
-                (printer, logical),
+                (printer, logical, peer),
             ).fetchone()
             if row is None:
+                if db.execute(
+                    "SELECT 1 FROM uploads WHERE printer=? AND logical=? AND kind='upload' LIMIT 1",
+                    (printer, logical),
+                ).fetchone():
+                    raise ValueError("BBSTART_UPLOAD_OWNER_MISMATCH")
                 return None
             prior = db.execute(
                 "SELECT id FROM uploads WHERE printer=? AND command=? AND id<>? "

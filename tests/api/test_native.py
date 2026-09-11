@@ -21,7 +21,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from bambu_bridge.config import Settings
-from bambu_bridge.native_gateway import NativeGateway
+from bambu_bridge.native_gateway import NativeGateway, field, packet, read_packet
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.protocol.camera import build_auth_packet
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
@@ -568,6 +568,7 @@ async def test_durable_receipt_does_not_wait_for_printer_and_start_is_held(gatew
                     "url": "file:///sdcard/cache/fast.3mf",
                 }
             },
+            peer="127.0.0.1",
         )
         assert row is not None
         gateway.inbox_wake.set()
@@ -642,6 +643,39 @@ async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gat
         with pytest.raises(ValueError, match="BBSTOP_START_NOT_CONFIRMED"):
             await service.send_command("print", "stop")
     service._mqtt.publish.assert_awaited_once()
+
+
+async def test_mqtt_qos_duplicate_does_not_repeat_a_start(gateway):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 0), ssl=tls())
+    connect = (
+        field(b"MQTT")
+        + b"\x04\xc2\x00\x3c"
+        + field(b"fixture-client")
+        + field(b"bblp")
+        + field(gateway.test_code.encode())
+    )
+    writer.write(packet(0x10, connect))
+    await writer.drain()
+    assert await read_packet(reader) == (0x20, b"\x00\x00")
+    payload = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": "fixture-duplicate",
+            "url": "file:///sdcard/existing.3mf",
+        }
+    }
+    body = (
+        field(f"device/{gateway.serial}/request".encode())
+        + b"\x00\x01"
+        + json.dumps(payload).encode()
+    )
+    for head in (0x32, 0x3A):
+        writer.write(packet(head, body))
+        await writer.drain()
+        assert await read_packet(reader) == (0x40, b"\x00\x01")
+    gateway.service().send_raw.assert_awaited_once()
+    writer.close()
+    await writer.wait_closed()
 
 
 async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
