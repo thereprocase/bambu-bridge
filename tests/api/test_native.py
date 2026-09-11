@@ -26,6 +26,7 @@ from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.protocol.camera import build_auth_packet
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 from bambu_bridge.service.events import Event, EventBus
+from bambu_bridge.service.printer import PrinterService
 from tests.conftest import ACCESS_CODE
 
 SERIAL = "NATIVE_TEST_P1S"
@@ -544,7 +545,12 @@ async def test_durable_receipt_does_not_wait_for_printer_and_start_is_held(gatew
             ftp.login("bblp", gateway.test_code)
             ftp.prot_p()
             ftp.cwd("cache")
-            return ftp.storbinary("STOR fast.3mf", io.BytesIO(b"fast fixture"))
+            receipt = ftp.storbinary("STOR fast.3mf", io.BytesIO(b"fast fixture"))
+            assert ftp.size("fast.3mf") == len(b"fast fixture")
+            parts = []
+            ftp.retrbinary("RETR fast.3mf", parts.append)
+            assert b"".join(parts) == b"fast fixture"
+            return receipt
         finally:
             ftp.close()
 
@@ -579,6 +585,63 @@ async def test_durable_receipt_does_not_wait_for_printer_and_start_is_held(gatew
         gateway.service().send_raw.assert_awaited_once()
     finally:
         release.set()
+
+
+async def test_common_service_gate_serializes_native_and_app_starts(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    # Exercise the real service wire methods, without a hardware transport.
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    command = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": "external-1",
+            "url": "file:///sdcard/existing.3mf",
+        }
+    }
+    await service.send_raw(command)
+    service._mqtt.publish.assert_awaited_once()
+    with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
+        await service.send_command("print", "project_file", url="file:///sdcard/other.3mf")
+    assert service._mqtt.publish.await_count == 1
+    # Explicit stop remains allowed; it must not create a new start owner.
+    await service.send_command("print", "stop")
+    assert service._mqtt.publish.await_count == 2
+    with pytest.raises(ValueError, match="BBSTART_USE_FILE_COMMAND"):
+        await service.send_command("print", "gcode_line", param="M24\n")
+    assert service._mqtt.publish.await_count == 2
+    with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
+        await gateway.disable()
+
+
+async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    cancelled = asyncio.Event()
+    async with gateway.guard_managed_job(cancelled):
+        assert gateway.inbox.status()[0]["start_state"] == "reserved"
+        with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
+            gateway.inbox.claim_external(
+                SERIAL, {"print": {"command": "project_file", "url": "/other.3mf"}}
+            )
+        cancelled.set()
+        with pytest.raises(ValueError, match="BBSTART_CANCELLED"):
+            await service.send_command("print", "project_file", url="file:///sdcard/managed.3mf")
+    service._mqtt.publish.assert_not_awaited()
+    assert gateway.inbox.status()[0]["start_state"] == "cancelled"
+    async with gateway.guard_managed_job(asyncio.Event()):
+        await service.send_command("print", "project_file", url="file:///sdcard/managed.3mf")
+        assert gateway.inbox.status()[0]["start_state"] == "sent"
+        with pytest.raises(ValueError, match="BBSTOP_START_NOT_CONFIRMED"):
+            await service.send_command("print", "stop")
+    service._mqtt.publish.assert_awaited_once()
 
 
 async def test_rsa_only_native_tls_preserves_phone_identity(gateway):

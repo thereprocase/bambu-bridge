@@ -94,6 +94,7 @@ async def serve_ftps(
             command = line.decode("utf-8").rstrip("\r\n")
             verb, _, argument = command.partition(" ")
             verb = verb.upper()
+            local_entry = None
             if verb == "QUIT":
                 await reply("221 Goodbye")
                 return
@@ -151,6 +152,29 @@ async def serve_ftps(
                 if verb == "REST":
                     await reply("502 Resumed uploads are not supported by durable custody")
                     continue
+                if verb in ("SIZE", "RETR", "DELE", "MDTM", "RNFR"):
+                    local_entry = await asyncio.to_thread(
+                        gateway.inbox.lookup,
+                        gateway.config["printer_id"],
+                        logical_path(argument, upstream_directory),
+                    )
+                    if local_entry:
+                        if verb == "RNFR":
+                            await reply(
+                                "502 Staged files are immutable; upload under the final name"
+                            )
+                            continue
+                        if verb == "SIZE" and local_entry["sha256"]:
+                            await reply(f"213 {local_entry['bytes']}")
+                            continue
+                        if verb in ("DELE", "RNFR") and (
+                            local_entry["state"] in ("receiving", "stored", "delivering")
+                            or local_entry["start_state"]
+                            in ("queued", "dispatching", "sent", "accepted", "running", "unknown")
+                        ):
+                            await reply("450 BBSTART_UNRESOLVED; file is in use")
+                            continue
+                        command = verb + " " + local_entry["remote"]
                 if verb in (
                     "RETR",
                     "LIST",
@@ -163,7 +187,7 @@ async def serve_ftps(
                     "RNTO",
                     "MKD",
                     "RMD",
-                ):
+                ) and not (verb == "RETR" and local_entry and local_entry["retained"]):
                     if backend is None:
                         service = gateway.service()
                         backend = await asyncio.to_thread(
@@ -225,6 +249,10 @@ async def serve_ftps(
                 if channel is None:
                     await reply("425 Use PASV or EPSV first")
                     continue
+                if verb == "STOR" and gateway.inbox is not None and gateway.inbox_task.done():
+                    await reply("451 BBFTP_DELIVERY_WORKER_UNAVAILABLE; upload not accepted")
+                    await clear_passive()
+                    continue
                 if gateway.inbox is not None and gateway.transfer_lock.locked():
                     await reply("452 BBFTP_BUSY; upload not accepted")
                     await clear_passive()
@@ -232,6 +260,7 @@ async def serve_ftps(
                 await reply("150 Opening data connection")
                 phase = "waiting_for_transfer_slot"
                 total = 0
+                row = None
                 started = time.monotonic()
                 try:
                     async with gateway.transfer_lock:
@@ -291,6 +320,25 @@ async def serve_ftps(
                                 rest=restart_offset,
                             )
                             restart_offset = None
+                        elif (
+                            verb == "RETR"
+                            and gateway.inbox is not None
+                            and local_entry
+                            and local_entry["retained"]
+                        ):
+                            phase = "reading_server_storage"
+                            source = await asyncio.to_thread(
+                                gateway.inbox.open_verified, local_entry["id"]
+                            )
+                            try:
+                                while chunk := await asyncio.to_thread(source.read, 256 * 1024):
+                                    phase = "sending_client_data"
+                                    data_writer.write(chunk)
+                                    await asyncio.wait_for(data_writer.drain(), 30)
+                                    total += len(chunk)
+                            finally:
+                                await asyncio.to_thread(source.close)
+                            await clear_passive()
                         else:
                             phase = "reading_from_printer"
                             result: list[bytes] = []
@@ -313,6 +361,8 @@ async def serve_ftps(
                             await clear_passive()
                     await reply("226 Transfer complete")
                 except Exception as exc:
+                    if row is not None:
+                        total = row.get("received_bytes", total)
                     # Log structure, never exception text: FTP replies may
                     # contain filenames, addresses, or credentials.
                     ftp_code = None
@@ -365,6 +415,8 @@ async def serve_ftps(
                         upstream_directory = await asyncio.to_thread(backend.pwd)
                     elif verb == "REST":
                         restart_offset = argument
+                    elif verb == "DELE" and local_entry and gateway.inbox is not None:
+                        await asyncio.to_thread(gateway.inbox.deleted, local_entry["id"])
                     await reply(response)
                 except ftplib.Error:
                     await reply("550 Printer rejected the file operation")
