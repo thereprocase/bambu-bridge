@@ -15,18 +15,98 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from bambu_bridge.api import errors
-from bambu_bridge.api.auth import require_auth
+from bambu_bridge.api.auth import require_auth, require_owner
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.db.jobs import QueueRepo
 from bambu_bridge.service.jobs import JobManager
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 
 router = APIRouter(tags=["queue"], dependencies=[Depends(require_auth)])
+
+
+class StartStoredFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
+    file_name: str = Field(min_length=1, max_length=255)
+    ams_mapping: list[int] | None = None
+
+
+def operation_view(operation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: operation[key]
+        for key in (
+            "id",
+            "printer_id",
+            "job_id",
+            "state",
+            "holds_printer",
+            "revision",
+            "created_at",
+            "updated_at",
+            "reason",
+        )
+    }
+
+
+@router.post("/printers/{printer_id}/start-operations", status_code=202)
+async def start_stored_file(printer_id: str, body: StartStoredFile, request: Request) -> Any:
+    try:
+        _validate_ams(body.ams_mapping)
+    except _SlotError:
+        raise HTTPException(422, "Physical AMS slots must be 1–4") from None
+    operation = await _job_manager(request).start_stored(
+        body.operation_id,
+        printer_id,
+        body.file_name,
+        "/" + body.file_name,
+        body.ams_mapping,
+    )
+    return operation_view(operation)
+
+
+@router.get("/start-operations/{operation_id}")
+async def get_start_operation(operation_id: str, request: Request) -> Any:
+    operation = await _job_manager(request).starts.get(operation_id)
+    if operation is None:
+        raise HTTPException(404, "Start operation not found")
+    return operation_view(operation)
+
+
+@router.get("/printers/{printer_id}/start-operation")
+async def active_start_operation(printer_id: str, request: Request) -> Any:
+    operation = await _job_manager(request).starts.active(printer_id)
+    return operation_view(operation) if operation else None
+
+
+class ResolveStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=1)
+    confirm_printer_idle: bool
+
+
+@router.post("/start-operations/{operation_id}/resolve", dependencies=[Depends(require_owner)])
+async def resolve_start(operation_id: str, body: ResolveStart, request: Request) -> Any:
+    if not body.confirm_printer_idle:
+        raise HTTPException(422, "Inspect the printer and explicitly confirm it is idle")
+    manager = _job_manager(request)
+    operation = await manager.starts.get(operation_id)
+    if operation is None:
+        raise HTTPException(404, "Start operation not found")
+    if operation["state"] != "outcome_unknown" or operation["revision"] != body.revision:
+        raise HTTPException(409, "Operation changed; refresh before resolving")
+    # Stop only the local worker, never the physical printer. No dispatch task
+    # may remain runnable after its reservation is released.
+    await manager.quiesce_start(operation["job_id"])
+    manager.require_idle(manager._registry.get(operation["printer_id"]))
+    await manager.starts.resolve_unknown(operation_id, body.revision)
+    resolved = await manager.starts.get(operation_id)
+    assert resolved is not None
+    return operation_view(resolved)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,9 +185,7 @@ async def list_queue(
     return [i.model_dump(mode="json") for i in items]
 
 
-@router.post(
-    "/printers/{printer_id}/queue", status_code=status.HTTP_201_CREATED
-)
+@router.post("/printers/{printer_id}/queue", status_code=status.HTTP_201_CREATED)
 async def add_to_queue(
     printer_id: str,
     body: AddQueueItem,
@@ -152,9 +230,7 @@ async def get_queue_item(item_id: str, request: Request) -> Any:
 
 
 @router.patch("/queue/{item_id}")
-async def reorder_queue_item(
-    item_id: str, body: ReorderQueueItem, request: Request
-) -> Any:
+async def reorder_queue_item(item_id: str, body: ReorderQueueItem, request: Request) -> Any:
     updated = await _queue_repo(request).reorder(item_id, body.position)
     if updated is None:
         return errors.not_found("queue item", item_id)
@@ -169,9 +245,7 @@ async def delete_queue_item(item_id: str, request: Request) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post(
-    "/queue/{item_id}/start", status_code=status.HTTP_201_CREATED
-)
+@router.post("/queue/{item_id}/start", status_code=status.HTTP_201_CREATED)
 async def start_queue_item(
     item_id: str,
     request: Request,
@@ -179,11 +253,17 @@ async def start_queue_item(
 ) -> Any:
     """Pop the queue item, submit it as a job, and return the job."""
     repo = _queue_repo(request)
+    manager = _job_manager(request)
+    prior = await manager.starts.get("queue-" + item_id)
+    if prior:
+        job = await manager.get(prior["job_id"])
+        assert job is not None
+        return job.model_dump(mode="json")
     item = await repo.get(item_id)
     if item is None:
         return errors.not_found("queue item", item_id)
     try:
-        service = registry.get(item.printer_id)
+        registry.get(item.printer_id)
     except PrinterNotFoundError:
         # Printer was deleted while item was queued — drop the orphan.
         await repo.delete(item_id)
@@ -202,31 +282,14 @@ async def start_queue_item(
                 }
             ],
         )
-    # Pull bytes from FTPS so JobManager.submit() can re-validate the 3MF.
-    # The .gcode.3mf was already uploaded; we just round-trip to validate.
-    from bambu_bridge.protocol.ftps import FtpsTransfer
-
-    ftps = FtpsTransfer(
-        service.ip,
-        service.access_code,
-        port=request.app.state.ftps_port,
-    )
-    try:
-        data = await ftps.download_bytes(item.file_name, remote_dir="")
-    except Exception as exc:  # noqa: BLE001 — FTPS failure → 502
-        return errors.envelope(
-            error=errors.ERR_FTPS_FAILED,
-            message=f"Couldn't retrieve staged file: {type(exc).__name__}: {exc}",
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            context={"printer_id": item.printer_id, "file_name": item.file_name},
-            raw={"exc_type": type(exc).__name__, "exc_str": str(exc) or repr(exc)},
-        )
-    job = await _job_manager(request).submit(
+    operation = await manager.start_stored(
+        "queue-" + item_id,
         item.printer_id,
-        data,
         item.file_name,
-        ams_mapping=item.ams_mapping,
+        item.file_path,
+        item.ams_mapping,
+        queue_id=item_id,
     )
-    # Remove from queue once accepted.
-    await repo.delete(item_id)
+    job = await manager.get(operation["job_id"])
+    assert job is not None
     return job.model_dump(mode="json")

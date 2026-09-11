@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -209,6 +210,7 @@ class PrinterService:
         self._camera: CameraStream | None = None
 
         self.bus = EventBus()
+        self.start_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self.raw_bus = EventBus()  # native P1S clients need every ack, even unchanged reports
         self._native_categories: dict[str, dict[str, Any]] = {}
         self._on_seen = on_seen
@@ -431,9 +433,14 @@ class PrinterService:
     # ----------------------------------------------------------------- #
 
     async def send_command(
-        self, category: str, command: str, **fields: Any
+        self, category: str, command: str, *,
+        before_publish: Callable[[], None] | None = None, **fields: Any
     ) -> None:
-        await self._mqtt.publish(build_command(category, command, **fields))
+        envelope = build_command(category, command, **fields)
+        if before_publish is None:
+            await self._mqtt.publish(envelope)
+        else:
+            await self._mqtt.publish(envelope, before_publish=before_publish)
 
     async def send_raw(self, envelope: dict[str, Any]) -> None:
         """Publish a pre-built command envelope (e.g. from protocol.commands).
@@ -442,6 +449,20 @@ class PrinterService:
         typed control endpoints use so the builder stays the single source of
         wire truth.
         """
+        from bambu_bridge.service.command_guard import guard_passthrough
+
+        guard_passthrough(envelope)
+        command = envelope.get("print")
+        if isinstance(command, dict) and command.get("command") == "gcode_file":
+            raise ConnectionError(
+                "Raw gcode-file starts bypass slice validation; use managed 3MF starts"
+            )
+        if isinstance(command, dict) and command.get("command") == "project_file":
+            handler = getattr(self, "start_handler", None)
+            if handler is None:
+                raise ConnectionError("Managed print starts are unavailable")
+            await handler(command)
+            return
         await self._mqtt.publish(envelope)
 
     # ----------------------------------------------------------------- #
@@ -544,6 +565,9 @@ class PrinterService:
 
     async def _handle_lost(self) -> None:
         self._connected = False
+        # A print may end and another start while offline. Never retain a
+        # session identity that could authorize a stale worker's stop.
+        self.bus.session_id = None
         self._disconnected_at = time.time()
         # Desync: while disconnected the toolhead may move (firmware recovery,
         # operator at the screen, a print starting) without us seeing it. Drop
@@ -686,8 +710,14 @@ class PrinterService:
     # ----------------------------------------------------------------- #
 
     def _refresh_gcode_state(self) -> None:
+        previous = self._gcode_state
         raw = self._state.get("gcode_state")
         self._gcode_state = GcodeState(raw) if raw is not None else None
+        if self._gcode_state is GcodeState.RUNNING and previous in _INACTIVE_STATES:
+            # Local observation generation, NOT a firmware command receipt.
+            # Stamped before delta and named events so old queued events cannot
+            # complete/cancel the following same-file print.
+            self.bus.session_id = uuid.uuid4().hex
 
     # gcode_state values where a print is in flight — used to decide whether a
     # seed-time restart should recover started_at. PAUSE counts: a print paused
