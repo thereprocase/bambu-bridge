@@ -18,6 +18,7 @@
  */
 
 import { qaLog } from "../lib/qalog";
+import { pairedFetch, PairingSecurityError } from "../pairing/native";
 import { useBridgeStore } from "../store/bridge";
 import { useNetStore, type Reach } from "../store/net";
 import {
@@ -91,6 +92,7 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     reportReach(base);
     return result;
   } catch (e) {
+    if (e instanceof PairingSecurityError) throw e;
     // Network-layer failure (not an HTTP error the bridge sent) → try the
     // other configured URL exactly once. HTTP 4xx/5xx errors don't trigger
     // fallback — they came from the bridge successfully, meaning the path
@@ -185,7 +187,10 @@ async function requestVia<T>(
   // The timeout covers headers AND the body; a stalled body must not leave
   // camera polling or controls waiting forever.
   try {
-    const response = await fetch(url, { method, headers, body, signal: controller.signal });
+    const response = useBridgeStore.getState().pairing
+      ? await pairedFetch(url, method, headers, body, opts.timeoutMs ?? 15_000,
+        !!opts.rawBytes, controller.signal)
+      : await fetch(url, { method, headers, body, signal: controller.signal });
     if (response.status === 204) return undefined as T;
     if (!response.ok) {
       const envelope = await safeEnvelope(response);
@@ -206,7 +211,7 @@ async function requestVia<T>(
       throw new BridgeError({ error: "internal_error", message: "The bridge returned an unreadable response." }, response.status);
     }
   } catch (e) {
-    if (e instanceof BridgeError) throw e;
+    if (e instanceof BridgeError || e instanceof PairingSecurityError) throw e;
     qaLog("api.error", { path, method, status: 0, code: "network_error", ms: Date.now() - t0 });
     throw new BridgeNetworkError(method !== "GET");
   } finally {

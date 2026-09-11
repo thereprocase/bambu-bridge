@@ -15,6 +15,7 @@ import { ToastHost } from "../src/components/Toast";
 import { qaLog } from "../src/lib/qalog";
 import { useBridgeStore } from "../src/store/bridge";
 import { ThemeProvider, useTheme } from "../src/theme/ThemeProvider";
+import { useConnectionLifecycle } from "../src/viewing/lifecycle";
 
 export default function RootLayout() {
   return (
@@ -27,6 +28,7 @@ export default function RootLayout() {
 }
 
 function Bootstrap() {
+  useConnectionLifecycle();
   const { c } = useTheme();
   const bootstrap = useBridgeStore((s) => s.bootstrap);
   const bootstrapped = useBridgeStore((s) => s.bootstrapped);
@@ -78,6 +80,8 @@ function Bootstrap() {
             and the stack back-arrow, matching settings/add-printer chrome.
             Title/header colors are overridden in-screen for the dark canvas. */}
         <Stack.Screen name="viewer" options={{ title: "3D · Live" }} />
+        <Stack.Screen name="camera" options={{ title: "Camera" }} />
+        <Stack.Screen name="connection" options={{ title: "Check connection" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       </Stack>
       <ToastHost />

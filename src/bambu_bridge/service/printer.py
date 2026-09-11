@@ -209,6 +209,8 @@ class PrinterService:
         self._camera: CameraStream | None = None
 
         self.bus = EventBus()
+        self.raw_bus = EventBus()  # native P1S clients need every ack, even unchanged reports
+        self._native_categories: dict[str, dict[str, Any]] = {}
         self._on_seen = on_seen
         self._state: dict[str, Any] = {}
         self._connected = False
@@ -383,6 +385,13 @@ class PrinterService:
             filament_memory=self._filament_memory,
         )
         return translate_snapshot(self._state, ctx)
+
+    def native_snapshot(self) -> dict[str, Any]:
+        """Protocol-shaped state for native LAN clients, including AMS/virtual tray."""
+        snapshot = dict(self._native_categories)
+        if "print" in snapshot:
+            snapshot["print"] = {**snapshot["print"], "command": "push_status", "msg": 0}
+        return snapshot
 
     def summary(self) -> dict[str, Any]:
         """Compact last-known state for the printer list (spec 6 GET /printers)."""
@@ -613,6 +622,13 @@ class PrinterService:
             )
 
     async def _handle_report(self, report: ReportMessage) -> None:
+        raw = report.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+        for category, payload in raw.items():
+            if isinstance(payload, dict):
+                self._native_categories[category] = _deep_merge(
+                    self._native_categories.get(category, {}), payload
+                )
+        self.raw_bus.publish(Event("snapshot", raw))
         # Full passthrough: ``print`` stays flattened at the state root (the
         # established wire contract — clients read state.gcode_state etc.);
         # every *other* category the P1S emits (info, system, mc_print,

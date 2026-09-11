@@ -5,7 +5,7 @@ Contract invariants tested:
 1. print_started triggers a warm task that fills both caches (no HTTP request).
 2. Failure path: FTPS download raises → caches remain empty, no propagation.
 3. Debounce: second schedule_prewarm while first task is in flight does not
-   double-fetch (FTPS fetch count stays 2 for mesh+toolpath, not 4).
+   double-fetch (FTPS fetch count stays 1 for mesh+toolpath, not 2).
 4. Endpoint behaviour unchanged when cache pre-warmed: GET /viz/toolpath
    returns cached=True without a second FTPS fetch.
 5. fill_mesh / fill_toolpath return False (not raise) on download error.
@@ -154,8 +154,8 @@ async def test_prewarm_fills_both_caches(
     tp_hit = vc.lookup_toolpath(SERIAL, "benchy.gcode.3mf")
     assert mesh_hit is not None, "mesh cache should be populated after pre-warm"
     assert tp_hit is not None, "toolpath cache should be populated after pre-warm"
-    # Two fill calls — one for mesh, one for toolpath — each downloads once.
-    assert fetch_count == 2, f"expected 2 FTPS fetches (mesh+toolpath), got {fetch_count}"
+    # Both parsed representations come from one shared archive download.
+    assert fetch_count == 1, f"expected 1 shared FTPS fetch (mesh+toolpath), got {fetch_count}"
 
 
 # --------------------------------------------------------------------------- #
@@ -229,9 +229,9 @@ async def test_prewarm_debounce(monkeypatch: pytest.MonkeyPatch) -> None:
 
     await asyncio.sleep(0.3)
 
-    # Only one warm ran: 2 FTPS fetches (mesh + toolpath), NOT 4.
-    assert fetch_count == 2, (
-        f"expected 2 FTPS fetches (one warm, mesh+toolpath), got {fetch_count}"
+    # Both warm requests share one archive download and both parsed views.
+    assert fetch_count == 1, (
+        f"expected 1 shared FTPS fetch (one warm, mesh+toolpath), got {fetch_count}"
     )
 
 
@@ -371,14 +371,14 @@ async def test_fill_skips_download_when_already_cached(
     ok1_tp = await vc.fill_toolpath(SERIAL, "127.0.0.1", "code", "cached.gcode.3mf")
     assert ok1_mesh is True
     assert ok1_tp is True
-    assert fetch_count == 2  # one download per fill path
+    assert fetch_count == 1  # shared archive for both fill paths
 
     # Second fill — must skip FTPS.
     ok2_mesh = await vc.fill_mesh(SERIAL, "127.0.0.1", "code", "cached.gcode.3mf")
     ok2_tp = await vc.fill_toolpath(SERIAL, "127.0.0.1", "code", "cached.gcode.3mf")
     assert ok2_mesh is True
     assert ok2_tp is True
-    assert fetch_count == 2, "no additional FTPS fetches when already cached"
+    assert fetch_count == 1, "no additional FTPS fetches when already cached"
 
 
 # --------------------------------------------------------------------------- #

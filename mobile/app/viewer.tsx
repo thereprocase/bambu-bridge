@@ -18,9 +18,11 @@
  */
 
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, BackHandler, Text, View } from "react-native";
+import { ActivityIndicator, AppState, BackHandler, Text, View } from "react-native";
 import WebView from "react-native-webview";
+import { PairedViewer } from "../src/pairing/PairedViewer";
 
 import { notifyRequestFailed } from "../src/api/endpoint";
 import { buildViewerUrl, isViewerNavigationAllowed, safeVizTimings } from "../src/api/viewer";
@@ -28,6 +30,8 @@ import { useBridgeStore } from "../src/store/bridge";
 import { Button } from "../src/components/Button";
 import { qaLog } from "../src/lib/qalog";
 import { useTheme } from "../src/theme/ThemeProvider";
+import { useViewingScreen } from "../src/viewing/screen";
+import { useViewingStore } from "../src/viewing/state";
 
 // Matches the viewer canvas so there's no white flash before WebGL paints.
 const VIEWER_BG = "#111113";
@@ -39,15 +43,25 @@ function firstParam(v: string | string[] | undefined): string | undefined {
 }
 
 export default function ViewerScreen() {
-  const { c, space, type } = useTheme();
+  useViewingScreen();
+  const networkRevision = useViewingStore(s => s.networkRevision);
+  const theme = useTheme();
+  const { space, type } = theme;
+  const c = { ...theme.c, text: "#f4f4f5", muted: "#aaa" };
+  const focused = useIsFocused();
+  const [foreground, setForeground] = useState(AppState.currentState === "active");
+  const active = focused && foreground;
   const router = useRouter();
   const params = useLocalSearchParams();
   const printerId = firstParam(params.printer);
 
   const networkFailed = useRef(false);
+  const autoAttempts = useRef(0);
+  const autoRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const baseUrl = useBridgeStore((s) => s.baseUrl);
   const baseUrlLan = useBridgeStore((s) => s.baseUrlLan);
   const bearer = useBridgeStore((s) => s.bearer);
+  const pairing = useBridgeStore((s) => s.pairing);
 
   // URL is resolved async (the base URL comes from the LAN/Tailscale resolver),
   // so we hold three states: resolving → ready(uri) → unconfigured(null).
@@ -62,6 +76,27 @@ export default function ViewerScreen() {
   // Viewer page may drive loading/ready/error via viz.state postMessage.
   // null = no viz.state received yet (fall back to onLoad / onError behavior).
   const [vizState, setVizState] = useState<"loading" | "ready" | "error" | null>(null);
+
+  useEffect(() => {
+    const listener = AppState.addEventListener("change", state => setForeground(state === "active"));
+    return () => listener.remove();
+  }, []);
+
+  useEffect(() => {
+    autoAttempts.current = 0;
+    return () => { if (autoRetry.current) clearTimeout(autoRetry.current); autoRetry.current = null; };
+  }, [printerId, networkRevision, bearer, active]);
+
+  function recoverNetwork() {
+    networkFailed.current = true;
+    if (autoRetry.current || autoAttempts.current >= 3) return;
+    const delay = 1000 * 2 ** autoAttempts.current++;
+    autoRetry.current = setTimeout(() => {
+      autoRetry.current = null;
+      if (uri) notifyRequestFailed(uri);
+      setReloadKey(k => k + 1);
+    }, delay);
+  }
 
   // Android hardware back: when viewer is focused, intercept the hardware back
   // button and pop the stack via router.back() rather than letting the default
@@ -85,6 +120,7 @@ export default function ViewerScreen() {
 
   useEffect(() => {
     let cancelled = false;
+    if (!active) { setUri(null); setResolving(false); return; }
     if (!printerId) {
       setResolving(false);
       // No printer param — treat as a configuration error state.
@@ -117,9 +153,12 @@ export default function ViewerScreen() {
     return () => {
       cancelled = true;
     };
-  }, [printerId, reloadKey, baseUrl, baseUrlLan, bearer]);
+  }, [printerId, reloadKey, baseUrl, baseUrlLan, bearer, pairing, networkRevision, active]);
 
   function retry() {
+    autoAttempts.current = 0;
+    if (autoRetry.current) clearTimeout(autoRetry.current);
+    autoRetry.current = null;
     setLoadError(null);
     setVizState(null);
     if (networkFailed.current && uri) notifyRequestFailed(uri);
@@ -152,6 +191,7 @@ export default function ViewerScreen() {
     } else if (msgType === "viz.state") {
       const state = msg.state;
       if (state === "loading" || state === "ready" || state === "error") {
+        if (state === "ready") autoAttempts.current = 0;
         setVizState(state);
         qaLog("viz.state.web", { state });
         // If the page signals error, surface it like an onError.
@@ -167,12 +207,14 @@ export default function ViewerScreen() {
   const header = (
     <Stack.Screen
       options={{
-        title: "3D · Live",
+        title: "3D view",
         headerStyle: { backgroundColor: VIEWER_BG },
         headerTintColor: c.text,
       }}
     />
   );
+
+  if (!active) return <View style={{ flex: 1, backgroundColor: VIEWER_BG }}>{header}</View>;
 
   // Bad/lost param, or no base/bearer configured → explain, don't show a blank
   // WebView. Never claim "unknown".
@@ -214,7 +256,16 @@ export default function ViewerScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: VIEWER_BG }}>
       {header}
-      <WebView
+      {pairing ? <PairedViewer key={reloadKey} uri={uri}
+        style={{ flex: 1, backgroundColor: VIEWER_BG }}
+        onMessage={handleWebViewMessage}
+        onError={(event) => {
+          if (event.nativeEvent.reason === "network") recoverNetwork();
+          setLoadError("Couldn't securely load the viewer. Check the connection or pair the bridge again.");
+          qaLog("viewer.state", { state: "error" });
+        }}
+        onLoad={() => { if (!vizState) setVizState("ready"); }}
+      /> : <WebView
         key={reloadKey}
         source={{ uri }}
         style={{ flex: 1, backgroundColor: VIEWER_BG }}
@@ -234,7 +285,7 @@ export default function ViewerScreen() {
         setDisplayZoomControls={false}
         overScrollMode="never"
         onError={() => {
-          networkFailed.current = true;
+          recoverNetwork();
           setLoadError("Couldn't load the 3D viewer. Check the printer connection and retry.");
           qaLog("viewer.state", { state: "error" });
         }}
@@ -260,7 +311,7 @@ export default function ViewerScreen() {
           </View>
         )}
         startInLoadingState
-      />
+      />}
 
       {/* Viz-state loading overlay: shown while the page has signaled "loading"
           (viz.state postMessage) but not yet "ready". Dismissed as soon as the

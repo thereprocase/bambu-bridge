@@ -10,7 +10,8 @@ from urllib.parse import quote, quote_plus
 
 _QUERY = re.compile(r'''(?i)([?&](?:token|api_key|access_token|access_code|key)=)[^&\s\#'"<>]*''')
 _BEARER = re.compile(r'''(?i)(\bBearer\s+)[^\s'"<>]+''')
-_SECRET_FIELDS = {"token", "api_key", "bridge_api_key", "bridge_viz_token", "access_code"}
+_SLICER = re.compile(r"\bbbs_[A-Za-z0-9_-]{32,}")
+_SECRET_FIELDS = {"token", "api_key", "bridge_api_key", "bridge_viz_token", "access_code", "secret"}
 _secrets: frozenset[str] = frozenset()
 _original_factory = logging.getLogRecordFactory()
 
@@ -19,7 +20,7 @@ def redact(value: str) -> str:
     for secret in _secrets:
         value = value.replace(secret, "[REDACTED]")
     value = _QUERY.sub(r"\1[REDACTED]", value)
-    return _BEARER.sub(r"\1[REDACTED]", value)
+    return _SLICER.sub("[REDACTED]", _BEARER.sub(r"\1[REDACTED]", value))
 
 
 def _record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:

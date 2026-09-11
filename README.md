@@ -1,6 +1,6 @@
 # Bambu Bridge
 
-Initial bridge and Android companion.
+Secure pairing, slicer gateway and camera viewing.
 
 This is a consolidated development milestone. The bridge is at the repository
 root and its Android companion is under mobile/. See the latest main branch

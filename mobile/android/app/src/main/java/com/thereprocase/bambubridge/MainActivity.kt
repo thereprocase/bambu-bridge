@@ -10,8 +10,19 @@ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnable
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 import expo.modules.ReactActivityDelegateWrapper
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import com.thereprocase.bambubridge.pairing.SecureBridgeModule
 
 class MainActivity : ReactActivity() {
+  private val bridgeScanner = registerForActivityResult(ScanContract()) { result ->
+    SecureBridgeModule.finishScan(result.contents)
+  }
+  fun scanBridgeCode() {
+    bridgeScanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+      .setPrompt("Scan the pairing code from your Bambu Bridge installer")
+      .setBeepEnabled(false).setBarcodeImageEnabled(false).setOrientationLocked(false))
+  }
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.

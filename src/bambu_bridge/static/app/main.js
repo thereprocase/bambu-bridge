@@ -45,7 +45,7 @@
 //      setCurrentPrinterId(id),  // select a printer; persists to localStorage (bbl.currentPrinter)
 //
 //      // --- preferences (localStorage-backed, see prefs() ) ---
-//      prefs,            // live prefs object: {theme,cameraFps,defaultUnloadC,devMode,updateManifestUrl}
+//      prefs,            // live prefs object: {theme,defaultUnloadC,devMode,updateManifestUrl}
 //      setPref(k,v),     // update one pref, persist, re-apply theme if needed
 //      isDevMode(),      // boolean (gates _raw rendering)
 //
@@ -95,7 +95,6 @@ const LS_TOUR_SEEN = 'bbl.tourSeen';
 
 const DEFAULT_PREFS = {
   theme: 'system',          // 'system' | 'dark' | 'light'
-  cameraFps: 1,             // 0.5 | 1 | 2
   defaultUnloadC: 220,      // 180–280
   devMode: false,           // gates _raw rendering
   updateManifestUrl: '',    // off by default (airgap-friendly)

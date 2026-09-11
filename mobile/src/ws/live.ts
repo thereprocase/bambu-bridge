@@ -20,6 +20,7 @@
  */
 
 import { qaLog } from "../lib/qalog";
+import { PairedSocket } from "../pairing/native";
 import { notifyRequestFailed, notifyRequestSucceeded, resolveBaseUrl, sameOrigin } from "../api/endpoint";
 import { useBridgeStore } from "../store/bridge";
 import { useNetStore } from "../store/net";
@@ -43,7 +44,7 @@ export interface LiveOpts {
 }
 
 export class LiveConnection {
-  private ws: WebSocket | null = null;
+  private ws: WebSocket | PairedSocket | null = null;
   private stopped = true;
   private generation = 0;
   private attempt = 0;
@@ -94,12 +95,14 @@ export class LiveConnection {
     }
     const wsBase = baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:").replace(/\/+$/, "");
     const url = `${wsBase}/printers/${encodeURIComponent(this.printerId)}/status`;
-    let socket: WebSocket;
+    let socket: WebSocket | PairedSocket;
     try {
       const NativeSocket = WebSocket as unknown as new (
         url: string, protocols: undefined, options: { headers: Record<string, string> },
       ) => WebSocket;
-      socket = new NativeSocket(url, undefined, { headers: { Authorization: `Bearer ${bearer}` } });
+      socket = useBridgeStore.getState().pairing
+        ? new PairedSocket(url, bearer)
+        : new NativeSocket(url, undefined, { headers: { Authorization: `Bearer ${bearer}` } });
     } catch {
       this.opts.onStatus?.("error", "Couldn't open the live connection.");
       this.scheduleReconnect();
@@ -125,7 +128,7 @@ export class LiveConnection {
       useNetStore.getState().setReach(baseUrlLan && sameOrigin(baseUrl, baseUrlLan) ? "lan" : "remote");
       this.keepaliveTimer = setInterval(pong, 30_000);
     };
-    socket.onmessage = (ev) => {
+    socket.onmessage = (ev: { data: unknown }) => {
       if (!current()) return;
       let msg: LiveMessage;
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
@@ -157,7 +160,7 @@ export class LiveConnection {
       qaLog("ws.state", { status: "error" });
       this.opts.onStatus?.("error", "The live connection was interrupted.");
     };
-    socket.onclose = (ev) => {
+    socket.onclose = (ev: { code: number }) => {
       if (!current()) return;
       this.ws = null;
       this.clearTimers();

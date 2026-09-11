@@ -16,6 +16,9 @@ import { create } from "zustand";
 import { kv } from "../lib/kv";
 import { registerQaSecret } from "../lib/qalog";
 import { clearBearer, loadBearer, saveBearer } from "../lib/secrets";
+import { configureTransport } from "../pairing/native";
+import { type PairedProfile, secureBase } from "../pairing/protocol";
+import { loadPairing, savePairing, clearPairing } from "../pairing/storage";
 
 const KV_BASE_URL = "bridge.baseUrl";
 const KV_BASE_URL_LAN = "bridge.baseUrlLan";
@@ -54,6 +57,10 @@ export type HealthState =
   | { state: "unreachable"; at: number; detail: string }; // network / 5xx
 
 interface BridgeStore {
+  pairing: PairedProfile | null;
+  activatePairing(p: PairedProfile): Promise<void>;
+  setPairedRemote(url: string): Promise<void>;
+  forgetPairing(): Promise<void>;
   baseUrl: string;            // remote/Tailscale URL — the always-available fallback
   baseUrlLan: string | null;  // optional faster LAN URL, used only on a saved network
   savedNetworks: SavedNetwork[];
@@ -72,6 +79,28 @@ interface BridgeStore {
 }
 
 export const useBridgeStore = create<BridgeStore>((set, get) => ({
+  pairing: null,
+  activatePairing: async (p) => {
+    const previous = get().pairing;
+    await configureTransport(p);
+    try { await savePairing(p); }
+    catch (e) { await configureTransport(previous); throw e; }
+    registerQaSecret(p.token);
+    set({ pairing: p, baseUrl: p.remoteUrl || p.baseUrl, baseUrlLan: p.baseUrl,
+      bearer: p.token, health: { state: "unknown" } });
+  },
+  setPairedRemote: async (url) => {
+    const current = get().pairing;
+    if (!current) throw new Error("Pair a bridge first.");
+    await get().activatePairing({ ...current, remoteUrl: url.trim() ? secureBase(url.trim()) : undefined });
+  },
+  forgetPairing: async () => {
+    const bearer = await loadBearer().catch(() => null);
+    await clearPairing();
+    await configureTransport(null);
+    set({ pairing: null, baseUrl: kv.getString(KV_BASE_URL) ?? "",
+      baseUrlLan: kv.getString(KV_BASE_URL_LAN) || null, bearer, health: { state: "unknown" } });
+  },
   baseUrl: kv.getString(KV_BASE_URL) ?? "",
   baseUrlLan: kv.getString(KV_BASE_URL_LAN) || null,
   savedNetworks: loadSavedNetworks(),
@@ -80,12 +109,14 @@ export const useBridgeStore = create<BridgeStore>((set, get) => ({
   bootstrapped: false,
 
   setBaseUrl: (url) => {
+    if (get().pairing) throw new Error("Disconnect the paired bridge before using manual setup.");
     const trimmed = url.trim();
     kv.set(KV_BASE_URL, trimmed);
     set({ baseUrl: trimmed, health: { state: "unknown" } });
   },
 
   setBaseUrlLan: (url) => {
+    if (get().pairing) throw new Error("Disconnect the paired bridge before using manual setup.");
     const trimmed = url.trim();
     if (trimmed) {
       kv.set(KV_BASE_URL_LAN, trimmed);
@@ -113,6 +144,7 @@ export const useBridgeStore = create<BridgeStore>((set, get) => ({
   },
 
   setBearer: async (value) => {
+    if (get().pairing) throw new Error("Disconnect the paired bridge before using manual setup.");
     const trimmed = value.trim();
     registerQaSecret(trimmed);
     await saveBearer(trimmed);
@@ -128,6 +160,14 @@ export const useBridgeStore = create<BridgeStore>((set, get) => ({
 
   bootstrap: async () => {
     try {
+      const pairing = await loadPairing();
+      if (pairing) {
+        await configureTransport(pairing);
+        registerQaSecret(pairing.token);
+        set({ pairing, baseUrl: pairing.remoteUrl || pairing.baseUrl,
+          baseUrlLan: pairing.baseUrl, bearer: pairing.token, bootstrapped: true });
+        return;
+      }
       const bearer = await loadBearer();
       registerQaSecret(bearer);
       set({ bearer, bootstrapped: true });

@@ -73,6 +73,13 @@ All three sources must be updated together on every release:
 | `app.json` | `expo.version` | `"0.18.3"` |
 | `package.json` | `version` | `"0.18.3"` |
 
+For 0.20.0, `versionCode` is 24. `package-lock.json` also mirrors the version.
+
+The native viewing and print-monitor code has JVM tests alongside the existing
+TLS tests. Run `./gradlew testReleaseUnitTest` as well as the signed build. UI
+checks on an x86 emulator require an x86 build (`-PreactNativeArchitectures=x86_64`);
+the distributed phone APK uses `-PreactNativeArchitectures=arm64-v8a`.
+
 `build.gradle` is the canonical source for Android identity. `app.json` and `package.json`
 mirror it. Keep all three in sync before cutting a release.
 

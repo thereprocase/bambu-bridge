@@ -360,8 +360,11 @@ def install(app: FastAPI) -> None:
             f"{'.'.join(str(p) for p in err.get('loc', ()))}: {err.get('msg', '')}"
             for err in exc.errors()
         ]
+        # Validation inputs can contain pairing secrets and printer credentials.
+        # Field locations and messages diagnose the problem without echoing them.
         safe_errors = [
-            {k: _json_safe(v) for k, v in err.items()} for err in exc.errors()
+            {k: _json_safe(v) for k, v in err.items() if k not in {"input", "ctx"}}
+            for err in exc.errors()
         ]
         return envelope(
             error=ERR_INVALID_INPUT,

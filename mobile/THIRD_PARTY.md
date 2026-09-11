@@ -19,6 +19,12 @@ and [Hermes](https://github.com/facebook/hermes).
 Expo vector icon sets and their fonts retain their upstream notices and licenses.
 The Gradle wrapper is distributed under its upstream Apache-2.0 license.
 
+The offline pairing scanner uses [ZXing Android Embedded](https://github.com/journeyapps/zxing-android-embedded)
+and [ZXing core](https://github.com/zxing/zxing), both Apache-2.0 licensed.
+Native paired HTTPS and WebSockets use [OkHttp and Okio](https://github.com/square/okhttp),
+also Apache-2.0 licensed. Pairing does not require Google Play services or a
+network download of a barcode model.
+
 No Bambu firmware, proprietary network plug-in, access codes, or cloud SDK is
 included in this source tree. The app uses the separately hosted bridge API.
 Bambu Lab and P1S names identify compatible products and do not imply affiliation.

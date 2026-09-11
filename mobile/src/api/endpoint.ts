@@ -64,8 +64,8 @@ function syncConfiguration(): string {
   return config;
 }
 function configKey(): string {
-  const { baseUrl, baseUrlLan, savedNetworks } = useBridgeStore.getState();
-  return JSON.stringify([baseUrl, baseUrlLan, savedNetworks.map((n) => n.prefix).sort()]);
+  const { baseUrl, baseUrlLan, savedNetworks, pairing } = useBridgeStore.getState();
+  return JSON.stringify([baseUrl, baseUrlLan, pairing?.spki, savedNetworks.map((n) => n.prefix).sort()]);
 }
 /** When LAN is "cooled down": monotonic ms timestamp until which we must not
  * prefer LAN. 0 = not cooled down. */
@@ -179,13 +179,14 @@ async function resolve(): Promise<CachedDecision> {
   // quirk, airplane-mode race) falls through to remote — never throw out of
   // the resolver, a request must always get *some* URL to try.
   let fingerprintMatch = false;
-  if (baseUrlLan && savedNetworks.length > 0) {
+  if (baseUrlLan && (savedNetworks.length > 0 || useBridgeStore.getState().pairing)) {
     try {
       const state = await Network.getNetworkStateAsync();
       if (state.type === Network.NetworkStateType.WIFI) {
         const ip = await Network.getIpAddressAsync();
         const prefix = prefixOf(ip);
-        if (prefix && savedNetworks.some((n) => n.prefix === prefix)) {
+        if (useBridgeStore.getState().pairing ||
+            (prefix && savedNetworks.some((n) => n.prefix === prefix))) {
           fingerprintMatch = true;
         }
       }

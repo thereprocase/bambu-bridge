@@ -6,17 +6,15 @@
  * UI doesn't flash.
  *
  * Top: headline + progress (or "Connect a printer" if none registered).
- * Middle: 1fps camera snapshot poll.
+ * Middle: full-rate live camera stream.
  * Bottom: temp + fan readout + quick actions (pause/resume/stop/light).
  */
 
 import { Ionicons } from "@expo/vector-icons";
-import { Image as ExpoImage } from "expo-image";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   Alert,
-  AppState,
   Linking,
   Pressable,
   RefreshControl,
@@ -25,9 +23,7 @@ import {
   View,
 } from "react-native";
 
-import { downloadSnapshot } from "../../src/api/files";
 import { printAction, setLight } from "../../src/api/control";
-import { resolveEndpoint } from "../../src/api/endpoint";
 import { BridgeError } from "../../src/api/errors";
 import { Button } from "../../src/components/Button";
 import { ProgressBar } from "../../src/components/ProgressBar";
@@ -38,6 +34,11 @@ import { isSafeBambuWikiUrl, viewOf } from "../../src/lib/snapshot";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
 import { useTheme } from "../../src/theme/ThemeProvider";
+
+import { Camera } from "../../src/viewing/Camera";
+import { useNetStore } from "../../src/store/net";
+import { canViewJob } from "../../src/viewing/job";
+import { MonitorControls } from "../../src/viewing/MonitorControls";
 
 export default function StatusScreen() {
   const { c, space, type } = useTheme();
@@ -62,83 +63,9 @@ export default function StatusScreen() {
   // handles the cold-launch MMKV-cached state where `status` is "connecting".
   const wsConnected = status === "open";
 
-  // The 3D viewer is only meaningful while there's a job loaded on the bed —
-  // printing/paused/preparing. Same phase gate idiom as the Quick actions, and
-  // (like them) also gated on a live WS so a stale cached phase can't enable it.
-  const jobActive =
-    wsConnected &&
-    (view.phase === "printing" ||
-      view.phase === "paused" ||
-      view.phase === "preparing");
-
-  // Camera: TRUE double-buffer. Two absolutely-positioned <ExpoImage>s (A and
-  // B) fill the same box. The one that is FRONT is fully opaque and visible;
-  // its source is NEVER mutated while it's visible. When new frame bytes
-  // arrive we load them into the BACK image's source and wait for its `onLoad`
-  // (decode complete) before flipping which buffer is front. Because the swap
-  // is decode-gated — not timing-gated — the displayed frame is held intact
-  // until the next one is fully ready, so there is no placeholder/strobe gap.
-  //
-  // `snapErr`/`snapFails` are informational — a failed poll does NOT clear
-  // either buffer; we keep the last good frame and count consecutive failures
-  // to dim + badge the container once the view is clearly no longer live.
-  const [uriA, setUriA] = useState<string | null>(null);
-  const [uriB, setUriB] = useState<string | null>(null);
-  const [front, setFront] = useState<"a" | "b">("a");
-  const [snapErr, setSnapErr] = useState<string | null>(null);
-  const [snapFails, setSnapFails] = useState(0);
-  const [appActive, setAppActive] = useState(AppState.currentState === "active");
-  // Which path the bridge resolver is currently using (LAN vs Tailscale),
-  // shown as a one-liner in the header so the operator can tell they're on
-  // the fast local path. Resolved on focus; best-effort, never blocks.
-  const [activePath, setActivePath] = useState<"lan" | "remote" | null>(null);
-
-  // Issues card collapse state — starts expanded so new warnings are seen.
+  const activePath = useNetStore(s => s.reach);
   const [issuesExpanded, setIssuesExpanded] = useState(true);
-
-  // `front` mirrored into a ref so the async poll + the onLoad handlers read
-  // the live value (not the value captured when the effect/handler closed).
-  const frontRef = useRef<"a" | "b">("a");
-  // The buffer a freshly-fetched frame was just written into and is awaiting
-  // decode. Its onLoad performs the flip; we ignore onLoad from the (already
-  // visible) front buffer so re-layouts don't spuriously flip.
-  const pendingRef = useRef<"a" | "b" | null>(null);
-
-  // Threshold of consecutive failed polls before we flag the (still-shown)
-  // frame as stale. ~5s of dead feed at 1fps.
-  const STALE_AFTER_FAILS = 5;
-
-  // Decode-complete handler: promote the just-loaded back buffer to front.
-  // Only acts if this buffer is the pending one, so an onLoad fired by the
-  // already-visible buffer (e.g. remount) can't flip us to a blank slot.
-  const onBufferLoad = useCallback((buf: "a" | "b") => {
-    if (pendingRef.current !== buf) return;
-    pendingRef.current = null;
-    frontRef.current = buf;
-    setFront(buf);
-  }, []);
-
-  // Switching printers must drop BOTH buffers immediately — showing one
-  // printer's bed under another printer's telemetry is worse than a momentary
-  // blank. (Background/tab-switch deliberately do NOT clear.)
-  useEffect(() => {
-    setUriA(null);
-    setUriB(null);
-    setFront("a");
-    frontRef.current = "a";
-    pendingRef.current = null;
-    setSnapErr(null);
-    setSnapFails(0);
-  }, [selectedId]);
-
-  // Track app foreground/background so we don't burn 1fps camera traffic
-  // while the screen is off or the user is in another app.
-  useEffect(() => {
-    const sub = AppState.addEventListener("change", (s) => {
-      setAppActive(s === "active");
-    });
-    return () => sub.remove();
-  }, []);
+  const viewAvailable = canViewJob(live?.snapshot ?? null);
 
   // Refresh the registered-printers list on focus — non-blocking, mirroring
   // the config deep-link route (commit ace9d72). WS/camera run off the
@@ -159,78 +86,6 @@ export default function StatusScreen() {
         void refreshPrinters();
       }
     }, [refreshPrinters]),
-  );
-
-  // Resolve which bridge path is live (LAN/Tailscale) when the screen gains
-  // focus. Fire-and-forget; a failure just leaves the suffix off.
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      resolveEndpoint()
-        .then(({ path }) => {
-          if (!cancelled) setActivePath(path);
-        })
-        .catch(() => {
-          if (!cancelled) setActivePath(null);
-        });
-      return () => {
-        cancelled = true;
-      };
-    }, []),
-  );
-
-  // 1fps camera poll while this tab is focused AND app is foreground.
-  // Bambu's snapshot endpoint responds regardless of print phase (the
-  // operator wants the live view even when idle), so no phase gate here.
-  useFocusEffect(
-    useCallback(() => {
-      // No printer selected → nothing to show. (Backgrounding the app or
-      // leaving the tab just stops the poll via teardown; we keep the last
-      // frame so returning is instant rather than a fresh blank+decode.)
-      if (!selectedId) {
-        setUriA(null);
-        setUriB(null);
-        setSnapFails(0);
-        pendingRef.current = null;
-        return;
-      }
-      if (!appActive) return;
-      let cancelled = false;
-      let timer: ReturnType<typeof setTimeout> | null = null;
-
-      const tick = async () => {
-        try {
-          const bytes = await downloadSnapshot(selectedId);
-          if (cancelled) return;
-          const b64 = arrayBufferToBase64(bytes);
-          const uri = `data:image/jpeg;base64,${b64}`;
-          // Load into the BACK buffer (opposite of the live front). We do NOT
-          // touch the visible front buffer. The back image's `onLoad` flips
-          // the front once it has decoded — so the displayed frame is held
-          // until the next is fully ready: no placeholder/strobe gap.
-          const back = frontRef.current === "a" ? "b" : "a";
-          pendingRef.current = back;
-          if (back === "a") setUriA(uri);
-          else setUriB(uri);
-          setSnapErr(null);
-          setSnapFails(0);
-        } catch (e) {
-          if (cancelled) return;
-          // Do NOT clear the frame — keep the last good image up and just
-          // record the error + bump the consecutive-failure counter so the
-          // UI can flag staleness without the feed churning to black.
-          setSnapErr(e instanceof BridgeError ? e.envelope.message : String(e));
-          setSnapFails((n) => n + 1);
-        } finally {
-          if (!cancelled) timer = setTimeout(tick, 1000);
-        }
-      };
-      tick();
-      return () => {
-        cancelled = true;
-        if (timer) clearTimeout(timer);
-      };
-    }, [selectedId, appActive]),
   );
 
   // Empty list. This is genuinely "none registered" only if we've actually
@@ -282,7 +137,7 @@ export default function StatusScreen() {
 
   const selected = list.find((p) => p.serial === selectedId) ?? list[0];
   const pathSuffix =
-    status === "open" && activePath
+    status === "open" && (activePath === "lan" || activePath === "remote")
       ? activePath === "lan" ? " · via LAN" : " · via Tailscale"
       : "";
   const statusLabel =
@@ -441,94 +296,27 @@ export default function StatusScreen() {
         </Surface>
       )}
 
-      {/* Camera snapshot ----------------------------------------------------
-          TRUE double-buffer: two absolutely-positioned <ExpoImage>s fill the
-          same box. Exactly one is FRONT (opaque); its source is never mutated
-          while visible. New bytes load into the BACK image and only when its
-          onLoad fires (decode complete) do we flip front/back — so the feed
-          holds the last good frame until the next is fully ready: no strobe.
-          A failed poll keeps both buffers; after N misses we dim the whole
-          container and show a "Feed stale" badge instead of blanking. */}
-      {uriA || uriB ? (
-        <Surface style={{ padding: 0, overflow: "hidden" }}>
-          <View
-            style={{
-              width: "100%",
-              aspectRatio: 4 / 3,
-              // Stale dim applied to the CONTAINER so both buffers fade
-              // together — the operator can tell the view may be behind
-              // without losing the last known toolhead/bed position.
-              opacity: snapFails >= STALE_AFTER_FAILS ? 0.45 : 1,
-            }}
-          >
-            {uriA && (
-              <ExpoImage
-                source={{ uri: uriA }}
-                style={{
-                  position: "absolute",
-                  width: "100%",
-                  height: "100%",
-                  opacity: front === "a" ? 1 : 0,
-                }}
-                contentFit="cover"
-                cachePolicy="none"
-                onLoad={() => onBufferLoad("a")}
-              />
-            )}
-            {uriB && (
-              <ExpoImage
-                source={{ uri: uriB }}
-                style={{
-                  position: "absolute",
-                  width: "100%",
-                  height: "100%",
-                  opacity: front === "b" ? 1 : 0,
-                }}
-                contentFit="cover"
-                cachePolicy="none"
-                onLoad={() => onBufferLoad("b")}
-              />
-            )}
-            {snapFails >= STALE_AFTER_FAILS && (
-              <View
-                style={{
-                  position: "absolute",
-                  top: space.sm,
-                  left: space.sm,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 4,
-                  backgroundColor: "rgba(0,0,0,0.6)",
-                  paddingHorizontal: space.sm,
-                  paddingVertical: 4,
-                  borderRadius: 999,
-                }}
-              >
-                <Ionicons name="alert-circle" size={13} color={c.warn} />
-                <Text style={[type.small, { color: "#fff" }]}>Feed stale</Text>
-              </View>
-            )}
-          </View>
-        </Surface>
-      ) : snapErr ? (
-        <Surface padded>
-          <Text style={[type.small, { color: c.muted }]}>Camera: {snapErr}</Text>
-        </Surface>
-      ) : null}
+      <Surface style={{ padding: 0, overflow: "hidden" }}>
+        {selectedId && <Camera printer={selectedId} />}
+        <View style={{ padding: space.md }}>
+          <Button label="Open fullscreen camera" onPress={() => router.push({ pathname: "/camera", params: { printer: selected.serial } })} />
+        </View>
+      </Surface>
+      {selectedId && <MonitorControls printer={selectedId} />}
 
       {/* 3D viewer — sits with the camera as the other "see the print" view.
-          Enabled only when a job is loaded (printing/paused/preparing); the
+          Enabled for available current or completed job data; the
           disabled state matches the Quick-actions dimmed-button idiom. Opens
           the bridge's WebGL viewer in-app (native WebView, app/viewer.tsx). */}
       <Surface padded style={{ gap: space.sm }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <Ionicons name="cube-outline" size={18} color={jobActive ? c.text : c.muted} />
+          <Ionicons name="cube-outline" size={18} color={viewAvailable ? c.text : c.muted} />
           <Text style={[type.h2, { color: c.text, flex: 1 }]}>3D view</Text>
-          <Button label="View in 3D" disabled={!jobActive} onPress={open3D} />
+          <Button label="View in 3D" disabled={!viewAvailable} onPress={open3D} />
         </View>
-        {!jobActive && (
+        {!viewAvailable && (
           <Text style={[type.small, { color: c.muted }]}>
-            Available while a print is loaded.
+            Available when the bridge has a current or completed job file.
           </Text>
         )}
       </Surface>
@@ -733,15 +521,4 @@ function formatMin(min: number): string {
   const h = Math.floor(min / 60);
   const m = Math.round(min % 60);
   return `${h}h ${m}m`;
-}
-
-// RN Hermes lacks btoa in some configs; spell it out so the snapshot
-// data: URI works regardless of runtime.
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  if (typeof btoa === "function") return btoa(bin);
-  // Fallback — base64 by hand (rare).
-  return globalThis.Buffer ? globalThis.Buffer.from(bin, "binary").toString("base64") : bin;
 }
