@@ -40,6 +40,33 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_printer_state ON jobs(printer_id, state);
 CREATE INDEX IF NOT EXISTS idx_jobs_queued_at ON jobs(queued_at DESC);
 
+-- Start identities are retained as tombstones, not expired into new commands.
+-- A reservation is a durable row, never a long-held database transaction.
+CREATE TABLE IF NOT EXISTS start_operations (
+  id TEXT PRIMARY KEY,
+  printer_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  queue_id TEXT UNIQUE,
+  state TEXT NOT NULL,
+  holds_printer INTEGER NOT NULL DEFAULT 1 CHECK (holds_printer IN (0,1)),
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  reason TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_start_owner ON start_operations(printer_id)
+  WHERE holds_printer=1;
+
+-- Terminal operation identities survive history/printer deletion so replay
+-- cannot silently create a new print. Active ownership cannot be cascaded away.
+CREATE TRIGGER IF NOT EXISTS protect_start_owner BEFORE DELETE ON printers
+WHEN EXISTS (SELECT 1 FROM start_operations WHERE printer_id=OLD.id AND holds_printer=1)
+BEGIN
+  SELECT RAISE(ABORT, 'unresolved_start_owner');
+END;
+
 CREATE TABLE IF NOT EXISTS events (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   printer_id    TEXT NOT NULL,

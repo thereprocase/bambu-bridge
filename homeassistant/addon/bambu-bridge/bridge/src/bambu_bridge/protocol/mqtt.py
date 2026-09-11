@@ -55,10 +55,10 @@ _CONNECT_TIMEOUT = 10.0  # bound the connect; a hang must fail into _backoff
 # protocol-error catch-all). Keep flat; one new value here means one new
 # row in the contract's translation table.
 SessionErrorPhase = Literal[
-    "tls_handshake",       # OSError/SSLError/TimeoutError reaching the broker
-    "mqtt_connack",        # CONNACK non-zero (rc=5 etc.) — printer rejected creds
-    "mqtt_protocol_error", # generic aiomqtt.MqttError that isn't a CONNACK
-    "unknown",             # something else escaped the classifier
+    "tls_handshake",  # OSError/SSLError/TimeoutError reaching the broker
+    "mqtt_connack",  # CONNACK non-zero (rc=5 etc.) — printer rejected creds
+    "mqtt_protocol_error",  # generic aiomqtt.MqttError that isn't a CONNACK
+    "unknown",  # something else escaped the classifier
 ]
 
 
@@ -162,7 +162,13 @@ class MqttClient:
             self._log.info("mqtt.reconnect_wait", attempt=attempt, delay=round(delay, 1))
             await asyncio.sleep(delay)
 
-    async def publish(self, payload: dict[str, Any], *, timeout: float = 5.0) -> None:
+    async def publish(
+        self,
+        payload: dict[str, Any],
+        *,
+        timeout: float = 5.0,
+        before_publish: Callable[[], None] | None = None,
+    ) -> None:
         """Publish a command envelope to ``device/<serial>/request`` (QoS 0).
 
         Waits up to ``timeout`` for an active connection. QoS 0 is mandatory,
@@ -179,6 +185,8 @@ class MqttClient:
         client = self._client
         if client is None:  # lost between the wait and here
             raise ConnectionError(f"printer {self.serial} connection dropped")
+        if before_publish is not None:
+            before_publish()
         await client.publish(self._request_topic, json.dumps(payload), qos=0)
         self._log.debug("mqtt.published", topic=self._request_topic)
 
@@ -268,6 +276,6 @@ class MqttClient:
         # it, which crashes the reconnect loop permanently. 2**32 already dwarfs
         # _BACKOFF_CAP, so clamping the exponent changes no real-world delay.
         exp: int = min(attempt - 1, 32)
-        base: float = min(_BACKOFF_CAP, _BACKOFF_START * (2.0 ** exp))
+        base: float = min(_BACKOFF_CAP, _BACKOFF_START * (2.0**exp))
         jitter: float = random.uniform(0, base * 0.3)
         return max(_RECONNECT_FLOOR, min(_BACKOFF_CAP, base + jitter))
