@@ -11,7 +11,10 @@ import asyncio
 import contextlib
 import ftplib
 import io
+import time
 from typing import TYPE_CHECKING
+
+import structlog
 
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 
@@ -140,23 +143,31 @@ async def serve_ftps(
                     await reply("425 Use PASV or EPSV first")
                     continue
                 await reply("150 Opening data connection")
+                phase = "waiting_for_transfer_slot"
+                total = 0
+                started = time.monotonic()
                 try:
                     async with gateway.transfer_lock:
+                        phase = "waiting_for_client_data"
                         data_reader, data_writer = await asyncio.wait_for(channel, 20)
                         if verb == "STOR":
+                            phase = "receiving_client_data"
                             chunks: list[bytes] = []
                             total = 0
                             while chunk := await asyncio.wait_for(data_reader.read(65536), 60):
                                 total += len(chunk)
                                 if total > limit:
+                                    phase = "transfer_size_limit"
                                     raise ValueError("Transfer limit exceeded")
                                 chunks.append(chunk)
                             await clear_passive()
                             gateway.service()
+                            phase = "uploading_to_printer"
                             await asyncio.to_thread(
                                 backend.storbinary, "STOR " + argument, io.BytesIO(b"".join(chunks))
                             )
                         else:
+                            phase = "reading_from_printer"
                             result: list[bytes] = []
                             total = 0
 
@@ -168,15 +179,38 @@ async def serve_ftps(
                                 result.append(chunk)
 
                             await asyncio.to_thread(backend.retrbinary, command, receive)
+                            phase = "sending_client_data"
                             assert data_writer is not None
                             for chunk in result:
                                 data_writer.write(chunk)
                                 await asyncio.wait_for(data_writer.drain(), 30)
                             await clear_passive()
                     await reply("226 Transfer complete")
-                except Exception:
+                except Exception as exc:
+                    # Log structure, never exception text: FTP replies may
+                    # contain filenames, addresses, or credentials.
+                    ftp_code = None
+                    if isinstance(exc, ftplib.Error):
+                        prefix = str(exc)[:3]
+                        if len(prefix) == 3 and prefix.isascii() and prefix.isdigit():
+                            ftp_code = int(prefix)
+                    diagnostic = {
+                        "phase": phase,
+                        "operation": verb,
+                        "bytes": total,
+                        "limit_bytes": limit,
+                        "exception_type": type(exc).__name__,
+                        "ftp_reply_code": ftp_code,
+                        "errno": exc.errno if isinstance(exc, OSError) else None,
+                        "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    }
+                    gateway.note("ftps", "transfer_failed")
+                    gateway.diagnostics["ftps"]["last_transfer_failure"] = diagnostic
+                    structlog.get_logger(__name__).warning(
+                        "native.ftps.transfer_failed", **diagnostic
+                    )
                     await clear_passive()
-                    await reply("451 Printer transfer failed; file is not confirmed")
+                    await reply(f"451 Transfer failed at {phase}; file is not confirmed")
                     return  # failed transfers leave the upstream FTP stream ambiguous
             elif verb in {
                 "TYPE",

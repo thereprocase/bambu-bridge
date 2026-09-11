@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ftplib
 import io
 import json
 import ssl
@@ -20,7 +21,7 @@ from bambu_bridge.config import Settings
 from bambu_bridge.native_gateway import NativeGateway
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.protocol.camera import build_auth_packet
-from bambu_bridge.protocol.ftps import _ImplicitFTP_TLS
+from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 from bambu_bridge.service.events import Event, EventBus
 from tests.conftest import ACCESS_CODE
 
@@ -348,6 +349,59 @@ async def test_native_ftps_roundtrip_reaches_printer_before_success(gateway, ftp
         ftp.quit()
 
     await asyncio.to_thread(exchange)
+
+
+async def test_native_upload_failure_is_sanitized_and_fresh_session_can_retry(
+    gateway,
+    ftps_server,
+    monkeypatch,
+):
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    original = FtpsTransfer._connect
+    failed_once = False
+
+    def connect(transfer):
+        nonlocal failed_once
+        backend = original(transfer)
+        if not failed_once:
+            failed_once = True
+
+            def fail(*_args, **_kwargs):
+                raise ConnectionResetError(104, "synthetic-private-filename-and-code")
+
+            backend.storbinary = fail
+        return backend
+
+    monkeypatch.setattr(FtpsTransfer, "_connect", connect)
+
+    def upload(expect_failure):
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        try:
+            ftp.connect("127.0.0.1", port(gateway, 1))
+            ftp.login("bblp", gateway.test_code)
+            ftp.prot_p()
+            if expect_failure:
+                with pytest.raises(ftplib.error_temp, match="451.*uploading_to_printer") as error:
+                    ftp.storbinary("STOR /retry-fixture.3mf", io.BytesIO(b"fixture"))
+                assert "synthetic-private" not in str(error.value)
+            else:
+                assert ftp.storbinary("STOR /retry-fixture.3mf", io.BytesIO(b"fixture")).startswith(
+                    "226"
+                )
+        finally:
+            ftp.close()
+
+    await asyncio.to_thread(upload, True)
+    diagnostic = gateway.diagnostics["ftps"]["last_transfer_failure"]
+    assert diagnostic["phase"] == "uploading_to_printer"
+    assert diagnostic["bytes"] == 7
+    assert diagnostic["exception_type"] == "ConnectionResetError"
+    assert diagnostic["errno"] == 104
+    assert "synthetic-private" not in json.dumps(diagnostic)
+    await asyncio.to_thread(upload, False)
+    assert (storage / "retry-fixture.3mf").read_bytes() == b"fixture"
+    gateway.service().send_raw.assert_not_awaited()
     gateway.service().send_raw.assert_not_awaited()
 
 
