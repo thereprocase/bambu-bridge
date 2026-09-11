@@ -44,6 +44,15 @@ export function mountNative(parent, app) {
       name === 'detect' ? `IDENTIFICATION: ${phases[info.phase] || 'waiting'} (${info.tcp_connections || 0} lookups).` :
       `${name.toUpperCase()}: ${phases[info.phase] || 'waiting'} (${info.tls_connections} secure connections, ${info.auth_failures} rejected codes).`).join(' ')
       : 'No completed secure connection since the server started. Check the address and private network connection, then try Connect in Orca again.';
+    const uploads = res.data.uploads || [];
+    const uploadStates = { receiving: 'Receiving into Beluga', stored: 'Saved safely in Beluga; awaiting delivery',
+      delivering: 'Saved in Beluga; delivering to printer', delivered: 'Printer file delivery confirmed',
+      failed: 'FAILED — manual review required' };
+    const startStates = { queued: 'start held until delivery', dispatching: 'start dispatch in progress',
+      sent: 'start command sent; physical start not yet confirmed', unknown: 'START OUTCOME UNKNOWN — do not retry blindly' };
+    if (uploads.length) diagnostics.textContent += '\n' + uploads.slice(0, 20).map(upload =>
+      `${upload.id}: ${uploadStates[upload.state] || upload.state}; ${upload.bytes} bytes. ` +
+      `${startStates[upload.start_state] || ''} [${upload.code || 'pending'}]`).join('\n');
   });
   function message(text, error = false) { status.textContent = text; status.className = 'statusline ' + (error ? 'is-err' : 'is-info'); }
   function showSetup(data, openManual = false) {
