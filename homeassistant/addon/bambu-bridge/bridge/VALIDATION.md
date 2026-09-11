@@ -1,3 +1,33 @@
+# Approximate live toolhead tracking - 0.6.0
+
+Local validation on Linux (WSL), Python 3.12.3, with the locked project
+dependencies passed the full suite: 924 passed, 10 skipped, zero
+failures or errors. The run used `make test lint` with the pytest command
+overridden to use four pytest-xdist 3.8.0 workers. Ruff and mypy passed.
+The Windows PowerShell integration is platform-gated locally; Linux 3.12/3.13
+and Windows CI results accompany the release. Test inputs were copied and
+hash-checked against the working source before running.
+
+Node 24.15.0 passed all six reported tests: four camera-stream parser cases
+and the motion/state suites. Toolhead regressions cover distance-weighted
+extrusion and inferred travel, layer spans, invalid/empty geometry, ETA
+stability, pauses, lost telemetry, suspended intervals, observed layer timing,
+changed jobs, and independently fetched geometry/status identity checks.
+
+A headless Chromium fixture passed toolpath loading and movement, frozen
+positions during pause/disconnect/stale telemetry/HTTP failures, recovery
+without catch-up, layer browsing and return to LIVE, hidden-tab recovery,
+and changed-job reload. The viewer's HUD, source link and controls fit at
+320 x 640 and 1280 x 800 with no overlap or JavaScript errors. Layer-control
+icons use inline SVG so they remain visible without emoji fonts. The project
+page passed HTML/local-link checks and browser checks at 320 and 1280 pixels.
+
+Position, speed, and straight travel connectors are estimates from sliced
+extrusion lines. Layer changes are reported by the printer; this does not
+establish measured physical XY accuracy. Opening mid-layer starts an estimate
+that resynchronizes at an observed boundary. Live Home Assistant installation
+and physical-phone acceptance are not established by these software checks.
+
 # Continuous camera and faster viewer - 0.5.0
 
 The first focused run passed 101 camera, visualization API, and pre-warm tests.
