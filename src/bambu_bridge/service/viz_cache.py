@@ -290,7 +290,7 @@ class VizCache:
         one download-parse-memo-cache code path.
         """
         try:
-            location = self.cached_location(printer_id, job_name) or await find_3mf(ftps, job_name)
+            location = await find_3mf(ftps, job_name)
         except Exception as exc:  # noqa: BLE001
             raise VizFillError("download", f"FTPS list failed: {exc}") from exc
         if location is None:
@@ -370,7 +370,7 @@ class VizCache:
         (via :meth:`fill_toolpath_for_request`) call this method.
         """
         try:
-            location = self.cached_location(printer_id, job_name) or await find_3mf(ftps, job_name)
+            location = await find_3mf(ftps, job_name)
         except Exception as exc:  # noqa: BLE001
             raise VizFillError("download", f"FTPS list failed: {exc}") from exc
         if location is None:
