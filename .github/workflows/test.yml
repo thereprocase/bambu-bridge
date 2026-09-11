@@ -76,6 +76,9 @@ jobs:
       - name: Camera streaming parser
         run: node --test tests/camera-stream.test.mjs
 
+      - name: Browser toolhead regressions
+        run: node --test tests/viewer_toolhead_motion.test.cjs tests/viewer_toolhead_state.test.cjs
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

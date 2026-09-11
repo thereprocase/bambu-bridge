@@ -1,4 +1,5 @@
 <!doctype html>
+<p class="ps-note">The 0.6.0 browser viewer estimates toolhead motion along sliced extrusion with distance weighting and inferred straight travel. Layer animation uses reported remaining time and observed layer durations, resynchronizes on reported layer changes, and freezes while paused or offline. Position, speed and travel are inferred; this is not measured XY. Reopen the server-hosted 3D viewer after updating; no APK is needed.</p>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bambu Bridge · thereprocase</title><meta name="description" content="A native P1S endpoint for Orca: four-color AMS or external-spool jobs, live status and camera through your bridge over LAN or Tailscale."><meta name="theme-color" content="#0000A8">
 <link rel="canonical" href="https://thereprocase.github.io/bambu-bridge/"><meta property="og:title" content="Bambu Bridge"><meta property="og:description" content="A native P1S endpoint for Orca: four-color AMS or external-spool jobs, live status and camera through your bridge over LAN or Tailscale."><meta property="og:type" content="website"><meta property="og:url" content="https://thereprocase.github.io/bambu-bridge/">
@@ -21,12 +22,12 @@
   <div class="ps-body">
     <h3>A separate Bridge P1S, alongside your printer.</h3><p>The bridge has its own persistent serial. Your physical P1S keeps its own entry, address and credentials, so local discovery cannot replace the bridge connection. Upgrading from 0.4.0 or earlier? Run a fresh setup command for the new identity.</p>
     <ol>
-      <li><b>Prepare the bridge.</b> Install the v0.5.0 preview and follow the native setup guide to select the server’s private or Tailscale address.</li>
+      <li><b>Prepare the bridge.</b> Install the v0.6.0 preview and follow the native setup guide to select the server’s private or Tailscale address.</li>
       <li><b>Set up this computer.</b> In your HTTPS dashboard, open <b>Settings → Connect Orca to your printer</b> and enable Orca access. On Windows, close Orca and copy the setup command. Paste it into Windows PowerShell and follow the prompts; it sets the address, code and certificate together.</li>
       <li><b>Open Orca and check.</b> Select <b>Bridge P1S</b> in Device, press Play for the camera, then click <b>Check this computer</b> in the dashboard. Printer and camera have separate live checks. Manual setup remains available for macOS and Linux.</li>
     </ol>
     <p><b>The choice belongs to the print.</b> Select AMS or external spool in Orca, then use the Device view for printer status and the shared camera stream.</p>
-    <div class="ps-actions"><a class="ps-button primary" href="https://github.com/thereprocase/bambu-bridge/blob/main/docs/NATIVE-P1S.md">Native P1S setup <span aria-hidden="true">↗</span></a><a class="ps-button" href="https://github.com/thereprocase/bambu-bridge/releases/tag/v0.5.0">Get the v0.5.0 preview <span aria-hidden="true">↗</span></a></div>
+    <div class="ps-actions"><a class="ps-button primary" href="https://github.com/thereprocase/bambu-bridge/blob/main/docs/NATIVE-P1S.md">Native P1S setup <span aria-hidden="true">↗</span></a><a class="ps-button" href="https://github.com/thereprocase/bambu-bridge/releases/tag/v0.6.0">Get the v0.6.0 preview <span aria-hidden="true">↗</span></a></div>
     <p class="ps-note"><b>Preview with live protocol checks.</b> Real P1S AMS/external status, camera JPEG frames, a read-only command response and file listing have been verified. Automated tests cover uploads and print-command forwarding. A completed print through the installed Orca UI remains unverified. <a href="https://github.com/thereprocase/bambu-bridge/blob/main/VALIDATION.md">Read the validation record.</a></p>
   </div>
 </section>
