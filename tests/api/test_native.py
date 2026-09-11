@@ -469,12 +469,17 @@ async def test_failed_auth_rate_limited(gateway):
 
 
 @pytest.mark.parametrize("maximum", ["1.2", "1.3"])
-async def test_curl_native_upload_complete(gateway, ftps_server, tmp_path, maximum):
+@pytest.mark.parametrize("durable", [False, True])
+async def test_curl_native_upload_complete(gateway, ftps_server, tmp_path, maximum, durable):
     curl = os.environ.get("BELUGA_TEST_CURL", "curl")
     if not shutil.which(curl):
         pytest.skip("curl not installed")
     upstream_port, storage = ftps_server
     gateway.app.state.ftps_port = upstream_port
+    if durable:
+        await gateway.close()
+        gateway.app.state.settings.bridge_native_durable_inbox = True
+        await gateway.start()
     source = tmp_path / "curl-fixture.bin"
     for attempt in range(12):
         size = (131072, 180000, 1048576)[attempt % 3]
@@ -501,7 +506,12 @@ async def test_curl_native_upload_complete(gateway, ftps_server, tmp_path, maxim
         )
         _, error = await process.communicate()
         assert process.returncode == 0, error.decode()
-        assert (storage / name).read_bytes() == payload
+        if durable:
+            row = gateway.inbox.status()[0]
+            assert gateway.inbox.payload(row["id"]).read_bytes() == payload
+            assert row["state"] in ("stored", "delivering", "delivered")
+        else:
+            assert (storage / name).read_bytes() == payload
     gateway.service().send_raw.assert_not_awaited()
 
 
@@ -572,6 +582,11 @@ async def test_durable_receipt_does_not_wait_for_printer_and_start_is_held(gatew
 
 
 async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
+    assert gateway.data_context is not gateway.context
+    assert gateway.data_context.num_tickets == 0
+    assert gateway.context.num_tickets > 0
+    assert gateway.data_context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert gateway.data_context.maximum_version == ssl.TLSVersion.MAXIMUM_SUPPORTED
     directory = gateway.store.directory
     phone_key, _, phone_pin = identity(directory)
     before = phone_key.read_bytes()

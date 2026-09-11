@@ -209,7 +209,7 @@ async def serve_ftps(
                     data_protocol,
                     gateway.host,
                     0,
-                    ssl=gateway.context if private else None,
+                    ssl=gateway.data_context if private else None,
                     **({"ssl_handshake_timeout": 15} if private else {}),
                 )
                 port = passive.sockets[0].getsockname()[1]
