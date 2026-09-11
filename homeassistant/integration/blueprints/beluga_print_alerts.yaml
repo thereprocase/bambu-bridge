@@ -1,0 +1,76 @@
+blueprint:
+  name: Beluga printer alerts while the phone app sleeps
+  description: >-
+    Sends completion, failure, pause and problem alerts through Home Assistant.
+    Choose the phase and problem entities from the same Bambu Bridge printer.
+    Test delivery on your phone before selecting Home Assistant alerts in Beluga.
+    Alerts are based on observed state transitions; transitions missed while HA
+    is offline are not replayed. Existing historical states do not alert at startup.
+  domain: automation
+  input:
+    phase:
+      name: Printer phase sensor
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              integration: bambu_bridge
+    problem:
+      name: Printer problem binary sensor
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              integration: bambu_bridge
+    notify_service:
+      name: Phone notification action
+      description: Your existing notify.mobile_app_... action from Home Assistant.
+      selector:
+        text:
+    printer_name:
+      name: Printer display name
+      default: Printer
+      selector:
+        text:
+
+mode: queued
+max: 10
+variables:
+  printer_name: !input printer_name
+triggers:
+  - trigger: state
+    entity_id: !input phase
+    id: phase
+  - trigger: state
+    entity_id: !input problem
+    id: problem
+conditions:
+  - condition: template
+    value_template: >-
+      {% set old = trigger.from_state %}
+      {% set new = trigger.to_state %}
+      {% if old is none or new is none or old.state in ['unknown', 'unavailable'] %}
+        {{ false }}
+      {% elif trigger.id == 'phase' %}
+        {{ old.state != new.state
+           and old.state in ['preparing', 'printing', 'paused']
+           and new.state in ['finished', 'completed', 'failed', 'paused'] }}
+      {% else %}
+        {{ new.state == 'on' and (old.state == 'off'
+           or old.attributes.get('code') != new.attributes.get('code')) }}
+      {% endif %}
+actions:
+  - action: !input notify_service
+    data:
+      title: "Beluga · {{ printer_name }}"
+      message: >-
+        {% if trigger.id == 'problem' %}Printer reported an error. Open Home Assistant for details.
+        {% elif trigger.to_state.state == 'paused' %}Print paused. Check your printer.
+        {% elif trigger.to_state.state == 'failed' %}Print failed. Check your printer.
+        {% else %}Print finished.{% endif %}
+      data:
+        channel: Beluga print alerts
+        priority: high
+        ttl: 3600
+        tag: "beluga_{{ trigger.entity_id }}"
+        group: beluga
