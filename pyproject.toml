@@ -39,6 +39,7 @@ dependencies = [
     "cryptography~=48.0",
     "qrcode~=8.2",
     "pillow>=12.1,<13",
+    "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
