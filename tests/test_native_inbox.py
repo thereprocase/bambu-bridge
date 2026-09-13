@@ -307,6 +307,15 @@ async def test_common_external_start_reservation_blocks_native_until_resolved(tm
         inbox.claim_external("fixture-printer", start(url="file:///sdcard/another.3mf"))
 
 
+async def test_blocked_start_retains_actual_readiness_failure(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox)
+    inbox.hold_start("fixture-printer", start())
+    inbox.block_start(row["id"], "BBSTART_STATUS_REFRESH_TIMEOUT")
+    assert inbox.get(row["id"])["code"] == "BBSTART_STATUS_REFRESH_TIMEOUT"
+    assert inbox.claim_start(row["id"]) is None
+
+
 def test_worker_lock_prevents_second_process_recovery(tmp_path):
     first, second = NativeInbox(tmp_path), NativeInbox(tmp_path)
     first.acquire()

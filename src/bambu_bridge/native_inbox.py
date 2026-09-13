@@ -619,12 +619,12 @@ class NativeInbox:
                 (printer,),
             )
 
-    def block_start(self, identifier: str) -> None:
+    def block_start(self, identifier: str, code: str = "BBSTART_NOT_IDLE") -> None:
         with self.connect() as db:
             db.execute(
-                "UPDATE uploads SET start_state='blocked',code='BBSTART_NOT_IDLE' "
+                "UPDATE uploads SET start_state='blocked',code=? "
                 "WHERE id=? AND start_state='queued'",
-                (identifier,),
+                (code, identifier),
             )
 
     def status(self) -> list[dict[str, Any]]:
