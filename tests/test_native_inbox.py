@@ -382,3 +382,60 @@ async def test_same_filename_from_another_client_cannot_replace_start_input(tmp_
         inbox.hold_start("fixture-printer", start(), peer="fixture-client-c")
     held = inbox.hold_start("fixture-printer", start(), peer="fixture-client-a")
     assert held["id"] == rows[0]["id"]
+
+
+async def test_stage_timings_and_unchanged_telemetry(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox)
+    identifier = row["id"]
+    inbox.hold_start("fixture-printer", start())
+    inbox.transition(identifier, "stored", "delivering", "BBDELIVERY_BUSY")
+    inbox.transition(identifier, "delivering", "delivered", "BBDELIVERY_OK")
+    inbox.mark_readiness(identifier)
+    inbox.mark_readiness(identifier, ready=True)
+    payload = inbox.claim_start(identifier)
+    inbox.dispatched(identifier, "sent")
+    ack = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": payload["print"]["sequence_id"],
+            "result": "SUCCESS",
+        }
+    }
+    assert inbox.observe("fixture-printer", ack, {})
+    active = {"print": {"gcode_state": "RUNNING", "gcode_file": row["remote"]}}
+    assert inbox.observe("fixture-printer", active, active)
+    before = inbox.get(identifier)
+    assert not inbox.observe("fixture-printer", active, active)
+    assert inbox.get(identifier) == before
+    finished = {"print": {"gcode_state": "FINISH", "gcode_file": row["remote"]}}
+    assert inbox.observe("fixture-printer", finished, finished)
+    receipt = inbox.status()[0]
+    for field in (
+        "received_at",
+        "delivery_started_at",
+        "delivered_at",
+        "start_requested_at",
+        "readiness_started_at",
+        "ready_at",
+        "acknowledged_at",
+        "running_at",
+        "terminal_at",
+    ):
+        assert receipt[field] is not None, field
+    assert receipt["received_at"] <= receipt["delivered_at"] <= receipt["terminal_at"]
+
+
+async def test_old_receipt_does_not_invent_past_timings(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row, _ = await dispatched(inbox)
+    active = {"print": {"gcode_state": "RUNNING", "gcode_file": row["remote"]}}
+    inbox.observe("fixture-printer", active, active)
+    with inbox.connect() as db:
+        db.execute("UPDATE uploads SET received_at=NULL, delivered_at=NULL, running_at=NULL")
+    inbox = NativeInbox(tmp_path)
+    finished = {"print": {"gcode_state": "FINISH", "gcode_file": row["remote"]}}
+    inbox.observe("fixture-printer", finished, finished)
+    receipt = inbox.get(row["id"])
+    assert receipt["terminal_at"] is not None
+    assert all(receipt[key] is None for key in ("received_at", "delivered_at", "running_at"))

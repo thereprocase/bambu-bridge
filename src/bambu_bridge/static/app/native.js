@@ -1,5 +1,6 @@
 import { el, clear, toast, confirmSheet } from './ui.js';
 import { mountNativeGuide } from './native-guide.js';
+import { timingSummary } from './native-timings.js';
 
 export function mountNative(parent, app) {
   const section = el('section', { class: 'section', id: 'native-p1s' }, [
@@ -39,7 +40,11 @@ export function mountNative(parent, app) {
       tls_connected: 'secure connection opened', authenticated: 'code accepted',
       access_code_rejected: 'native access code rejected', disconnected: 'connection ended',
       timeout: 'connection timed out', protocol_error: 'protocol error',
-      unsupported_mqtt_version: 'unsupported MQTT version', streaming: 'camera frames flowing' };
+      unsupported_mqtt_version: 'unsupported MQTT version', streaming: 'camera frames flowing',
+      subscribed: 'printer status subscription active', command_received: 'command received',
+      start_received: 'print request received', subscription_rejected: 'status subscription rejected',
+      publish_topic_rejected: 'command targeted a different printer', publish_qos_rejected: 'unsupported message delivery mode',
+      publish_retained_rejected: 'retained command rejected' };
     const entries = Object.entries(res.data.connections || {});
     diagnostics.textContent = entries.length ? entries.map(([name, info]) =>
       name === 'detect' ? `IDENTIFICATION: ${phases[info.phase] || 'waiting'} (${info.tcp_connections || 0} lookups).` :
@@ -59,6 +64,7 @@ export function mountNative(parent, app) {
       const item = el('div', { class: 'stack' }, [el('p', { text:
         `${upload.id}: ${uploadStates[upload.state] || upload.state}; ${upload.bytes} bytes. ` +
         `${startStates[upload.start_state] || ''} [${upload.code || 'pending'}]` })]);
+      item.appendChild(el('p', { text: timingSummary(upload) }));
       const actions = [];
       if (upload.start_state === 'queued') actions.push(['cancel', 'Cancel queued start', 'Cancel only this held start request. This sends no command to the printer and does not stop another print.']);
       if (['unknown', 'accepted', 'sent', 'running', 'blocked', 'cancelled', 'rejected'].includes(upload.start_state))
