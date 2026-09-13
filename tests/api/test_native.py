@@ -71,7 +71,9 @@ async def gateway(tmp_path):
     )
     app = SimpleNamespace(
         state=SimpleNamespace(
-            registry=SimpleNamespace(get=lambda _: service), settings=Settings(), ftps_port=1
+            registry=SimpleNamespace(get=lambda _: service),
+            settings=Settings(bridge_native_camera_overlay=False),
+            ftps_port=1,
         )
     )
     gateway = NativeGateway(
@@ -759,3 +761,34 @@ async def test_discovery_is_private_and_contains_no_access_code(gateway, monkeyp
         assert b"Location: 127.0.0.1" in data
     with pytest.raises(ValueError):
         await gateway.announce("8.8.8.8")
+
+
+async def test_native_overlay_sends_decodable_keyframe(gateway):
+    from PIL import Image
+
+    from tests.test_camera_overlay import jpeg, snapshot
+
+    @asynccontextmanager
+    async def frames():
+        queue = asyncio.Queue()
+        queue.put_nowait(jpeg())
+        yield queue
+
+    gateway.service().snapshot = snapshot
+    gateway.service().camera = SimpleNamespace(subscribe=frames)
+    gateway.app.state.settings.bridge_native_camera_overlay = True
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 2), ssl=tls())
+    writer.write(build_auth_packet("bblp", gateway.test_code))
+    await writer.drain()
+    try:
+        header = await asyncio.wait_for(reader.readexactly(16), 3)
+        length, reserved, keyframe, trailing = struct.unpack("<IIII", header)
+        assert (reserved, keyframe, trailing) == (0, 1, 0)
+        frame = await asyncio.wait_for(reader.readexactly(length), 3)
+        with Image.open(io.BytesIO(frame)) as image:
+            image.load()
+            assert image.format == "JPEG" and image.size == (1280, 720)
+        assert frame != jpeg()
+    finally:
+        writer.close()
+        await writer.wait_closed()

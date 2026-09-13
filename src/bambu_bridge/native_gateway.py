@@ -25,6 +25,7 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
+from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.service.events import Event, EventBus
@@ -155,6 +156,7 @@ class NativeGateway:
         self.inbox_cancel = contextvars.ContextVar("inbox_managed_cancel", default=None)
         self.inbox_expiry: set[asyncio.TimerHandle] = set()
         self.inbox_status: list[dict[str, Any]] = []
+        self.camera_overlay = OverlayStream(self.service, lambda: self.inbox_status)
         self.inbox_reports = EventBus()
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None
@@ -851,10 +853,17 @@ class NativeGateway:
             self.note("camera", "access_code_rejected")
             return
         self.note("camera", "authenticated")
-        async with self.service().camera.subscribe() as queue:
+        source = (
+            self.camera_overlay
+            if self.app.state.settings.bridge_native_camera_overlay
+            else self.service().camera
+        )
+        async with source.subscribe() as queue:
             while True:
                 self.service()  # fence changed printer certificate / deleted printer
                 jpeg = await asyncio.wait_for(queue.get(), 45)
+                if jpeg is None:
+                    return
                 # P1S JPEG frames are independently decodable. Orca's camera
                 # player waits for the keyframe flag in the third header word;
                 # a zero here delivers bytes but never starts live view.

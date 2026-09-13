@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     # request reuses the live stream instead of opening a new TCP+TLS
     # connection. 0 = immediate teardown (original behaviour). Default 10 s.
     bridge_camera_linger_s: float = 10.0
+    bridge_native_camera_overlay: bool = True  # read-only HUD in Orca; raw HTTP camera unchanged
 
     # Print-failure detection. Phase 1 spaghetti detection is a coarse,
     # zero-dependency heuristic (vision/) — default OFF until validated
