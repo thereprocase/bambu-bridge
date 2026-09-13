@@ -6,7 +6,96 @@ import hashlib
 import pytest
 
 from bambu_bridge.native_ftps import UploadReader
-from bambu_bridge.native_inbox import InboxError, NativeInbox, logical_path
+from bambu_bridge.native_inbox import InboxError, NativeInbox, command_path, logical_path
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://tray.gcode.3mf",
+        "ftps://tray.gcode.3mf",
+        "file:///sdcard/tray.gcode.3mf",
+        "ftp:///tray.gcode.3mf",
+    ],
+)
+def test_orca_archive_url_path(url):
+    assert command_path({"command": "project_file", "url": url}) == "/tray.gcode.3mf"
+
+
+@pytest.mark.parametrize("url", ["", "ftp://", "file:///", "https://example.test/file"])
+def test_missing_archive_path_cannot_reserve_printer(tmp_path, url):
+    inbox = NativeInbox(tmp_path)
+    with pytest.raises(ValueError, match="BBSTART_INVALID_PATH"):
+        inbox.claim_external("fixture-printer", start(url))
+    assert not inbox.unresolved("fixture-printer")
+
+
+async def test_real_orca_url_uses_staged_object_and_releases_after_finish(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox, "/tray.gcode.3mf")
+    command = start("ftp://tray.gcode.3mf")
+    command["print"].update(
+        file="tray.gcode.3mf", param="Metadata/plate_1.gcode", subtask_name="tray"
+    )
+    assert inbox.hold_start("fixture-printer", command)["id"] == row["id"]
+    inbox.transition(row["id"], "stored", "delivered", "BBDELIVERY_OK")
+    payload = inbox.claim_start(row["id"])
+    assert payload["print"]["url"] == "ftp://" + row["remote"].lstrip("/")
+    assert payload["print"]["file"] == row["remote"].lstrip("/")
+    assert payload["print"]["param"] == "Metadata/plate_1.gcode"
+    active = {
+        "print": {
+            "gcode_state": "RUNNING",
+            "gcode_file": "Metadata/plate_1.gcode",
+            "subtask_name": "tray",
+        }
+    }
+    inbox.observe("fixture-printer", active, active)
+    assert inbox.get(row["id"])["start_state"] == "dispatching"
+    ack = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": payload["print"]["sequence_id"],
+            "result": "SUCCESS",
+        }
+    }
+    inbox.observe("fixture-printer", ack, active)
+    inbox.observe("fixture-printer", active, active)
+    assert inbox.get(row["id"])["start_state"] == "running"
+    terminal = {"print": {**active["print"], "gcode_state": "FINISH"}}
+    inbox.observe("fixture-printer", terminal, terminal)
+    assert not inbox.unresolved("fixture-printer")
+    assert inbox.claim_start(row["id"]) is None
+
+
+def test_external_orca_start_tracks_archive_and_requires_matching_task(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    command = start("ftp://tray.gcode.3mf")
+    command["print"]["subtask_name"] = "tray"
+    identifier = inbox.claim_external("fixture-printer", command)
+    assert inbox.get(identifier)["remote"] == "/tray.gcode.3mf"
+    ack = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": command["print"]["sequence_id"],
+            "result": "SUCCESS",
+        }
+    }
+    inbox.observe("fixture-printer", ack, {})
+    foreign = {
+        "print": {
+            "gcode_state": "RUNNING",
+            "gcode_file": "Metadata/plate_1.gcode",
+            "subtask_name": "other",
+        }
+    }
+    inbox.observe("fixture-printer", foreign, foreign)
+    assert inbox.get(identifier)["start_state"] == "accepted"
+    active = {"print": {**foreign["print"], "subtask_name": "tray"}}
+    inbox.observe("fixture-printer", active, active)
+    terminal = {"print": {**active["print"], "gcode_state": "FINISH"}}
+    inbox.observe("fixture-printer", terminal, terminal)
+    assert inbox.get(identifier)["start_state"] == "completed"
 
 
 async def stored(inbox, name="/cache/test.3mf", payload=b"fixture"):
