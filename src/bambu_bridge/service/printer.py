@@ -210,6 +210,13 @@ class PrinterService:
 
         self.bus = EventBus()
         self.raw_bus = EventBus()  # native P1S clients need every ack, even unchanged reports
+        self.command_guard: (
+            Callable[[dict[str, Any]], contextlib.AbstractAsyncContextManager[None]] | None
+        ) = None
+        self.job_guard: (
+            Callable[[asyncio.Event], contextlib.AbstractAsyncContextManager[None]] | None
+        ) = None
+        self.native_observer: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._native_categories: dict[str, dict[str, Any]] = {}
         self._on_seen = on_seen
         self._state: dict[str, Any] = {}
@@ -430,10 +437,8 @@ class PrinterService:
     # Commands (thin passthrough; typed helpers added with M3 endpoints)
     # ----------------------------------------------------------------- #
 
-    async def send_command(
-        self, category: str, command: str, **fields: Any
-    ) -> None:
-        await self._mqtt.publish(build_command(category, command, **fields))
+    async def send_command(self, category: str, command: str, **fields: Any) -> None:
+        await self.send_raw(build_command(category, command, **fields))
 
     async def send_raw(self, envelope: dict[str, Any]) -> None:
         """Publish a pre-built command envelope (e.g. from protocol.commands).
@@ -442,7 +447,11 @@ class PrinterService:
         typed control endpoints use so the builder stays the single source of
         wire truth.
         """
-        await self._mqtt.publish(envelope)
+        if self.command_guard is not None:
+            async with self.command_guard(envelope):
+                await self._mqtt.publish(envelope)
+        else:
+            await self._mqtt.publish(envelope)
 
     # ----------------------------------------------------------------- #
     # Dead-reckoned motion state (jog crash-prevention)
@@ -600,8 +609,7 @@ class PrinterService:
             if previous == "changed":
                 # operator hit /trust → pin updated → next connect cleared
                 self.bus.publish(
-                    Event("event", {"fingerprint": cert.fingerprint_sha256},
-                          name="cert_trusted")
+                    Event("event", {"fingerprint": cert.fingerprint_sha256}, name="cert_trusted")
                 )
             return
 
@@ -623,11 +631,17 @@ class PrinterService:
 
     async def _handle_report(self, report: ReportMessage) -> None:
         raw = report.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+        # Publish receipt time before any awaited observer/persistence work.
+        # A raw-bus consumer must never see new state with an old watermark.
+        if raw:
+            self._last_telemetry_at = time.time()
         for category, payload in raw.items():
             if isinstance(payload, dict):
                 self._native_categories[category] = _deep_merge(
                     self._native_categories.get(category, {}), payload
                 )
+        if self.native_observer is not None:
+            await self.native_observer(raw)
         self.raw_bus.publish(Event("snapshot", raw))
         # Full passthrough: ``print`` stays flattened at the state root (the
         # established wire contract — clients read state.gcode_state etc.);
@@ -648,11 +662,7 @@ class PrinterService:
         if self._on_seen is not None:
             await self._on_seen()
 
-        # Bump telemetry watermark — every report counts, even ones that
-        # produce an empty delta. The APK's "Last update Ns ago" subtitle
-        # reads this to render the disconnect headline (contract §6.2).
-        self._last_telemetry_at = time.time()
-
+        # Receipt watermark was already published above, before async work.
         prev_state = self._state
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
@@ -774,13 +784,9 @@ class PrinterService:
                     try:
                         await self._invalidate_filament_memory(slot)
                     except Exception:  # noqa: BLE001 — best-effort; log and move on
-                        self._log.warning(
-                            "filament_memory.invalidate_db_failed", slot=slot
-                        )
+                        self._log.warning("filament_memory.invalidate_db_failed", slot=slot)
 
-    def _emit_named_events(
-        self, prev: GcodeState | None, prev_layer_num: int
-    ) -> None:
+    def _emit_named_events(self, prev: GcodeState | None, prev_layer_num: int) -> None:
         if not self._events_seeded:
             # First report after (re)connect — establish the baseline silently.
             # Seed the error signature too so _maybe_emit_error doesn't fire

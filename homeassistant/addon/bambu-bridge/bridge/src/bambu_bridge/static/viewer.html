@@ -1034,6 +1034,21 @@ const STATE = {
   trackingStatus:"waiting",
 };
 
+let hostActive=true, renderFrame=null;
+function viewerActive(){ return hostActive && !document.hidden; }
+function setViewerActive(active){
+  hostActive=!!active;
+  if(!viewerActive()){
+    stopPolling();
+    if(renderFrame!==null){ cancelAnimationFrame(renderFrame); renderFrame=null; }
+  } else {
+    STATE.tickAt=performance.now();
+    STATE.needsDraw=true;
+    startPolling();
+    if(renderFrame===null) renderFrame=requestAnimationFrame(render);
+  }
+}
+
 /* ── 6. Networking ────────────────────────────────────────────────────── */
 async function loadMesh(toolpathTried = false){
   showLoading("fetching model…");
@@ -1214,7 +1229,7 @@ function sampleHead(){
   if(STATE.motionPoint) STATE.reveal=STATE.motionPoint.reveal;
 }
 function trackingFresh(now=performance.now()){
-  return !document.hidden && !STATE.jobChanged && now<STATE.freshUntil;
+  return viewerActive() && !STATE.jobChanged && now<STATE.freshUntil;
 }
 // Estimate a layer duration only at a boundary. Coarse minute ETA updates must
 // never send an already moving head backwards. A complete observed layer is a
@@ -1299,7 +1314,7 @@ function acceptSnapshot(s, now=performance.now(), wallNow=Date.now()){
 }
 
 async function pollState(){
-  if(document.hidden || STATE.pollController || STATE.jobChanged) return;
+  if(!viewerActive() || STATE.pollController || STATE.jobChanged) return;
   const controller=new AbortController();
   STATE.pollController=controller;
   const timeout=setTimeout(()=>controller.abort(),8000);
@@ -1308,7 +1323,7 @@ async function pollState(){
     if(!res.ok) throw new Error("status unavailable");
     const s=await res.json();
     // A response from before a hide/abort must not restart animation.
-    if(!controller.signal.aborted && !document.hidden) acceptSnapshot(s);
+    if(!controller.signal.aborted && viewerActive()) acceptSnapshot(s);
   } catch(e){
     if(STATE.pollController===controller) loseTracking();
   } finally {
@@ -1319,7 +1334,7 @@ async function pollState(){
 function intOr(v,d){ const n=parseInt(v,10); return Number.isFinite(n)?n:d; }
 
 function startPolling(){
-  if(STATE.pollTimer) return;
+  if(STATE.pollTimer || !viewerActive()) return;
   pollState();
   STATE.pollTimer=setInterval(pollState, POLL_MS);
 }
@@ -1359,6 +1374,7 @@ function holdScrub(btnId, dir){
   const btn=document.getElementById(btnId);
   let raf=null, last=0;
   const step=(ts)=>{
+    if(!viewerActive()){ raf=null; return; }
     if(!last) last=ts;
     const dt=(ts-last)/1000; last=ts;
     setDisplayedLayer(STATE.displayedLayer + dir*SCRUB_PER_S*dt, true);
@@ -1477,7 +1493,7 @@ function showError(kind, msg, sub){
 }
 function hideOverlay(){
   STATE.loadState="ready";
-  _rnwv_post({type:"viz.state", state:"ready"});
+  _rnwv_post({type:"viz.state", state:"ready", lifecycle:1});
   overlay.classList.remove("show");
 }
 document.getElementById("retry").addEventListener("click", ()=>{
@@ -1543,6 +1559,8 @@ function frameParams(w,h){
 }
 
 function render(){
+  renderFrame=null;
+  if(!viewerActive()) return;
   resize();
   const w=canvas.width, h=canvas.height;
   const moving=camera.inertia();
@@ -1581,7 +1599,7 @@ function render(){
       _rnwv_post({type:"viz.timings", ..._timings_payload});
     }
   }
-  requestAnimationFrame(render);
+  renderFrame=requestAnimationFrame(render);
 }
 
 // Advance only over observed active time. No catch-up after a hidden WebView,
@@ -1675,12 +1693,12 @@ canvas.addEventListener("webglcontextrestored",()=>{
 
 /* ── Visibility: stop polling when hidden, resume when shown ───────────── */
 document.addEventListener("visibilitychange",()=>{
-  if(document.hidden) stopPolling();
-  else { startPolling(); STATE.needsDraw=true; }
+  setViewerActive(hostActive);
 });
 
 /* ── Debug API for headless validation & device QA ────────────────────── */
 window.__viz = {
+  setActive:setViewerActive,
   setLayer(n){ setDisplayedLayer(n, true); },
   setLiveLayer(n){ STATE.liveLayer=n;
     if(STATE.mode==="toolpath") snapRevealToLayer(n, true);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,9 +45,7 @@ def _register(c: TestClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_snapshot_returns_jpeg(
-    tmp_path: Path, fake_camera: FakeCamera
-) -> None:
+async def test_snapshot_returns_jpeg(tmp_path: Path, fake_camera: FakeCamera) -> None:
     app = build_app(tmp_path / "cam.db", mqtt_port=1, camera_port=fake_camera.port)
 
     def run() -> None:
@@ -88,7 +87,8 @@ async def test_stream_endpoint_yields_framed_jpegs(
         friendly_name="Cam",
     )
     try:
-        resp = await camera_stream(SERIAL, registry)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=None)))
+        resp = await camera_stream(SERIAL, request, registry)
         assert resp.media_type == "multipart/x-mixed-replace; boundary=frame"
         body = resp.body_iterator
         try:
@@ -110,15 +110,51 @@ async def test_camera_auth_and_404(tmp_path: Path) -> None:
     def run() -> None:
         with TestClient(app) as c:
             _register(c)
+            assert c.get(f"/api/v1/printers/{SERIAL}/camera/snapshot.jpg").status_code == 401
             assert (
-                c.get(f"/api/v1/printers/{SERIAL}/camera/snapshot.jpg").status_code
-                == 401
-            )
-            assert (
-                c.get(
-                    "/api/v1/printers/none/camera/snapshot.jpg", headers=_AUTH
-                ).status_code
-                == 404
+                c.get("/api/v1/printers/none/camera/snapshot.jpg", headers=_AUTH).status_code == 404
             )
 
     await asyncio.to_thread(run)
+
+
+async def test_http_camera_uses_shared_overlay_and_raw_opt_out():
+    from contextlib import asynccontextmanager
+
+    from bambu_bridge.api.camera import camera_snapshot
+
+    @asynccontextmanager
+    async def frames():
+        queue = asyncio.Queue()
+        queue.put_nowait(b"overlaid-jpeg")
+        yield queue
+
+    hud = SimpleNamespace(subscribe=frames)
+    gateway = SimpleNamespace(config={"printer_id": SERIAL}, camera_overlay=hud)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                native_gateway=gateway, settings=SimpleNamespace(bridge_native_camera_overlay=True)
+            )
+        )
+    )
+
+    class Raw:
+        async def wait_for_frame(self, timeout):
+            return b"raw-jpeg"
+
+    service = SimpleNamespace(camera=Raw())
+    registry = SimpleNamespace(get=lambda _: service)
+    response = await camera_stream(SERIAL, request, registry)
+    assert response.headers["x-camera-overlay"] == "true"
+    body = response.body_iterator
+    try:
+        assert b"overlaid-jpeg" in await anext(body)
+    finally:
+        await body.aclose()
+    response = await camera_snapshot(SERIAL, request, registry)
+    assert response.body == b"overlaid-jpeg"
+    response = await camera_snapshot(SERIAL, request, registry, overlay=False)
+    assert response.body == b"raw-jpeg" and response.headers["x-camera-overlay"] == "false"
+    response = await camera_snapshot("another-printer", request, registry)
+    assert response.body == b"raw-jpeg"

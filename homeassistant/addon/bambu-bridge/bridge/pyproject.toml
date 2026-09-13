@@ -38,10 +38,13 @@ dependencies = [
     "python-multipart~=0.0.12",
     "cryptography~=48.0",
     "qrcode~=8.2",
+    "pillow>=12.1,<13",
+    "tzdata>=2025.2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "jinja2~=3.1",           # render Home Assistant blueprint templates in tests
     "pytest~=8.3.0",
     "pytest-asyncio~=0.24.0",
     "ruff~=0.7.0",

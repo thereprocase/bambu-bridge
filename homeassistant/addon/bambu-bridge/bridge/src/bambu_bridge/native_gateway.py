@@ -23,10 +23,16 @@ import string
 import struct
 import time
 from collections import defaultdict, deque
-from typing import Any
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any, cast
 
+from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
 from bambu_bridge.pairing import PairingStore, identity
+from bambu_bridge.service.events import Event, EventBus
+
+if TYPE_CHECKING:
+    from bambu_bridge.native_inbox import NativeInbox
 
 
 def field(value: bytes) -> bytes:
@@ -145,10 +151,28 @@ class NativeGateway:
         self.writers: set[asyncio.StreamWriter] = set()
         self.failed: dict[str, deque[float]] = defaultdict(deque)
         self.transfer_lock = asyncio.Semaphore(2)
+        self.inbox: NativeInbox | None = None
+        self.inbox_service: Any = None
+        self.inbox_task: asyncio.Task[None] | None = None
+        self.inbox_wake = asyncio.Event()
+        self.inbox_dispatch_lock = asyncio.Lock()
+        self.inbox_owner = contextvars.ContextVar[str | None]("inbox_dispatch_owner", default=None)
+        self.inbox_cancel = contextvars.ContextVar[asyncio.Event | None](
+            "inbox_managed_cancel", default=None
+        )
+        self.inbox_expiry: set[asyncio.TimerHandle] = set()
+        self.inbox_status: list[dict[str, Any]] = []
+        self.camera_overlay = OverlayStream(
+            self.service,
+            lambda: self.inbox_status,
+            lambda: self.app.state.settings.bridge_camera_timezone,
+        )
+        self.inbox_reports = EventBus()
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None
         self.serial: str | None = None
         self.context: ssl.SSLContext | None = None
+        self.data_context: ssl.SSLContext | None = None
         self.last_error: str | None = None
         self.diagnostics: dict[str, dict[str, Any]] = {}
         self.sessions: dict[asyncio.StreamWriter, dict[str, Any]] = {}
@@ -186,6 +210,7 @@ class NativeGateway:
             "model": "P1S",
             "error": self.last_error,
             "connections": self.diagnostics,
+            "uploads": self.inbox_status,
             "ports": {
                 "mqtt": self.ports[0],
                 "ftps": self.ports[1],
@@ -227,6 +252,20 @@ class NativeGateway:
     async def start(self) -> None:
         if not self.config:
             return
+        if self.app.state.settings.bridge_native_durable_inbox:
+            from bambu_bridge.native_inbox import NativeInbox
+
+            self.inbox = await asyncio.to_thread(NativeInbox, self.store.directory)
+            await asyncio.to_thread(self.inbox.acquire)
+            await asyncio.to_thread(self.inbox.recover)
+            service = self.service()
+            self.inbox_service = service
+            service.command_guard = self.guard_inbox_command
+            service.job_guard = self.guard_managed_job
+            service.native_observer = self.observe_inbox
+            self.inbox_task = asyncio.create_task(self.deliver_inbox())
+            self.inbox_task.add_done_callback(self.inbox_worker_done)
+            self.inbox_wake.set()
         self.serial = self.identity_serial()
         # Native TLS clients may offer RSA-authenticated cipher suites only.
         # Keep this identity separate from pinned phones and the old EC leaf.
@@ -236,6 +275,15 @@ class NativeGateway:
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(cert), str(key))
         self.context = context
+        # Upload-only TLS connections do not benefit from post-handshake
+        # resumption tickets. Older one-way-shutdown clients may close without
+        # draining them, resetting an otherwise fully written data connection.
+        # Keep TLS1.3, the certificate and the phone/control contexts unchanged.
+        data_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        data_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        cast(Any, data_context).num_tickets = 0
+        data_context.load_cert_chain(str(cert), str(key))
+        self.data_context = data_context
         from bambu_bridge.native_ftps import serve_ftps
 
         try:
@@ -275,8 +323,296 @@ class NativeGateway:
         for task in list(self.tasks):
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
+        if self.inbox_task:
+            self.inbox_task.cancel()
+            await asyncio.gather(self.inbox_task, return_exceptions=True)
+            self.inbox_task = None
+        if self.inbox:
+            if self.inbox_service:
+                self.inbox_service.command_guard = None
+                self.inbox_service.job_guard = None
+                self.inbox_service.native_observer = None
+            await asyncio.to_thread(self.inbox.close)
+            self.inbox = None
+            self.inbox_service = None
+        for handle in self.inbox_expiry:
+            handle.cancel()
+        self.inbox_expiry.clear()
         await asyncio.gather(*(s.wait_closed() for s in self.servers))
         self.servers.clear()
+
+    def require_idle(self) -> None:
+        service = self.service()
+        state = service.native_snapshot().get("print", {}).get("gcode_state")
+        if not service.connected or state not in ("IDLE", "FINISH", "FAILED"):
+            raise ValueError("BBSTART_NOT_IDLE")
+        if hasattr(service, "snapshot"):
+            from datetime import UTC, datetime
+
+            stamp = service.snapshot().get("session", {}).get("last_telemetry_at")
+            age = (
+                (
+                    (
+                        datetime.now(UTC) - datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                    ).total_seconds()
+                )
+                if stamp
+                else 999
+            )
+            if not 0 <= age <= 15:
+                raise ValueError("BBSTART_STALE_TELEMETRY")
+
+    async def ensure_idle(self, *, timeout: float = 10, force_refresh: bool = False) -> None:
+        """Refresh an idle printer's quiet telemetry before rejecting a new start."""
+        try:
+            self.require_idle()
+            if not force_refresh:
+                return
+        except ValueError as exc:
+            if str(exc) != "BBSTART_STALE_TELEMETRY":
+                raise
+        from bambu_bridge.protocol.models import pushall_request
+
+        service = self.service()
+        try:
+            async with service.raw_bus.subscribe() as reports:
+                async with asyncio.timeout(timeout):
+                    try:
+                        await service.send_raw(pushall_request())
+                    except Exception as exc:
+                        raise ValueError("BBSTART_STATUS_REFRESH_FAILED") from exc
+                    async for event in reports:
+                        incoming = event.data.get("print", {})
+                        if isinstance(incoming, dict) and "gcode_state" in incoming:
+                            # The report handler publishes before finishing its
+                            # summary timestamp update. Let that handler finish.
+                            await asyncio.sleep(0)
+                            self.require_idle()
+                            return
+        except TimeoutError as exc:
+            raise ValueError("BBSTART_STATUS_REFRESH_TIMEOUT") from exc
+
+    def arm_inbox_expiry(self) -> None:
+        def expired() -> None:
+            self.inbox_expiry.discard(handle)
+            self.inbox_wake.set()
+
+        handle = asyncio.get_running_loop().call_later(121, expired)
+        self.inbox_expiry.add(handle)
+
+    def inbox_worker_done(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            self.last_error = (
+                "Upload delivery worker stopped; saved files retained. Review and restart."
+            )
+
+    @contextlib.asynccontextmanager
+    async def guard_managed_job(self, cancelled: asyncio.Event) -> AsyncIterator[None]:
+        inbox = self.inbox
+        if inbox is None:
+            yield
+            return
+        async with self.inbox_dispatch_lock:
+            await self.ensure_idle()
+            identifier = await asyncio.to_thread(
+                inbox.claim_external,
+                cast(dict[str, str], self.config)["printer_id"],
+                {"print": {"command": "project_file", "url": ""}},
+                reserved=True,
+            )
+        token = self.inbox_owner.set(identifier)
+        cancel_token = self.inbox_cancel.set(cancelled)
+        try:
+            yield
+        finally:
+            self.inbox_owner.reset(token)
+            self.inbox_cancel.reset(cancel_token)
+            await asyncio.to_thread(inbox.abandon_reserved, identifier)
+            self.inbox_wake.set()
+
+    @contextlib.asynccontextmanager
+    async def guard_inbox_command(self, payload: dict[str, Any]) -> AsyncIterator[None]:
+        """One wire-level gate for app, HTTP, and native commands for this printer."""
+        if self.inbox is None:
+            yield
+            return
+        command = payload.get("print", {}).get("command")
+        owner = self.inbox_owner.get()
+        if owner is not None:
+            row = await asyncio.to_thread(self.inbox.get, owner)
+            if row["kind"] == "upload":
+                yield  # native worker already owns the dispatch lock and claim
+                return
+            if command in ("stop", "pause") and row["start_state"] != "running":
+                raise ValueError("BBSTOP_START_NOT_CONFIRMED")
+            if command in ("project_file", "gcode_file"):
+                async with self.inbox_dispatch_lock:
+                    await self.ensure_idle()
+                    cancelled = self.inbox_cancel.get()
+                    if cancelled is not None and cancelled.is_set():
+                        raise ValueError("BBSTART_CANCELLED")
+                    await asyncio.to_thread(self.inbox.activate_reserved, owner, payload)
+                    self.arm_inbox_expiry()
+                    try:
+                        yield
+                    except BaseException:
+                        await asyncio.to_thread(self.inbox.dispatched, owner, "unknown")
+                        raise
+                    else:
+                        await asyncio.to_thread(self.inbox.dispatched, owner, "sent")
+                return
+        if command == "gcode_line" and re.search(
+            r"\bM(?:23|24|32|98)\b", str(payload["print"].get("param", "")), re.IGNORECASE
+        ):
+            raise ValueError("BBSTART_USE_FILE_COMMAND")
+        if command not in ("project_file", "gcode_file", "stop", "pause"):
+            yield
+            return
+        async with self.inbox_dispatch_lock:
+            inbox = self.inbox
+            printer = cast(dict[str, str], self.config)["printer_id"]
+            if command in ("stop", "pause"):
+                if owner is not None:
+                    row = await asyncio.to_thread(inbox.get, owner)
+                    live = self.service().native_snapshot().get("print", {})
+                    filename = str(live.get("gcode_file", "")).rsplit("/", 1)[-1]
+                    if (
+                        row["start_state"] != "running"
+                        or not self.service().connected
+                        or filename != row["remote"].rsplit("/", 1)[-1]
+                        or live.get("gcode_state") not in ("PREPARE", "RUNNING", "PAUSE")
+                    ):
+                        raise ValueError("BBSTOP_START_NOT_CONFIRMED")
+                await asyncio.to_thread(inbox.cancel_queued, printer)
+                yield
+                self.inbox_wake.set()
+                return
+            await self.ensure_idle()
+            identifier = await asyncio.to_thread(inbox.claim_external, printer, payload)
+            self.arm_inbox_expiry()
+            try:
+                yield
+            except BaseException:
+                await asyncio.to_thread(inbox.dispatched, identifier, "unknown")
+                raise
+            else:
+                await asyncio.to_thread(inbox.dispatched, identifier, "sent")
+            finally:
+                self.inbox_wake.set()
+
+    async def observe_inbox(self, report: dict[str, Any]) -> None:
+        inbox = self.inbox
+        if inbox is None:
+            return
+        changed = await asyncio.to_thread(
+            inbox.observe,
+            cast(dict[str, str], self.config)["printer_id"],
+            report,
+            self.service().native_snapshot(),
+        )
+        if changed:
+            self.inbox_status = await asyncio.to_thread(inbox.status)
+
+    async def deliver_inbox(self) -> None:
+        """One ordered worker, independent of Orca socket lifetime; never replay a start."""
+        from bambu_bridge.protocol.ftps import FtpsTransfer
+
+        assert self.inbox is not None and self.config is not None
+        inbox = self.inbox
+        printer_id = self.config["printer_id"]
+        while True:
+            await self.inbox_wake.wait()
+            self.inbox_wake.clear()
+            for expired in await asyncio.to_thread(inbox.expire_dispatch):
+                self.inbox_failure(expired, "BBSTART_UNKNOWN")
+            await asyncio.to_thread(inbox.prune)
+            for row in await asyncio.to_thread(inbox.pending, printer_id):
+                identifier = row["id"]
+                if row["state"] == "stored" and await asyncio.to_thread(
+                    inbox.transition, identifier, "stored", "delivering", "BBDELIVERY_PENDING"
+                ):
+                    self.inbox_status = await asyncio.to_thread(inbox.status)
+
+                    def upload(row: dict[str, Any] = row) -> None:
+                        service = self.service()
+                        with inbox.open_verified(row["id"]) as source:
+                            backend = FtpsTransfer(
+                                service.ip, service.access_code, port=self.app.state.ftps_port
+                            )._connect()
+                            try:
+                                backend.storbinary("STOR " + row["remote"], source)
+                            finally:
+                                backend.close()
+
+                    task = asyncio.create_task(asyncio.to_thread(upload))
+                    try:
+                        await asyncio.shield(task)
+                        await asyncio.to_thread(
+                            inbox.transition, identifier, "delivering", "delivered", "BBDELIVERY_OK"
+                        )
+                    except asyncio.CancelledError:
+                        # A cancelled to_thread does not stop the FTP write. Join it
+                        # before allowing a replacement gateway/worker to start.
+                        await asyncio.gather(task, return_exceptions=True)
+                        await asyncio.to_thread(inbox.fail, identifier, "BBDELIVERY_INTERRUPTED")
+                        raise
+                    except Exception:
+                        await asyncio.to_thread(inbox.fail, identifier, "BBDELIVERY_FAILED")
+                        current = await asyncio.to_thread(inbox.get, identifier)
+                        if current["command"]:
+                            self.inbox_failure(current, "BBDELIVERY_FAILED")
+                async with self.inbox_dispatch_lock:
+                    service = self.service()
+                    current = await asyncio.to_thread(inbox.get, identifier)
+                    if current["state"] != "delivered" or current["start_state"] != "queued":
+                        continue
+                    await asyncio.to_thread(inbox.mark_readiness, identifier)
+                    try:
+                        await self.ensure_idle()
+                    except ValueError as exc:
+                        reason = str(exc)
+                        await asyncio.to_thread(inbox.block_start, identifier, reason)
+                        current = await asyncio.to_thread(inbox.get, identifier)
+                        if current["start_state"] == "blocked":
+                            self.inbox_failure(current, reason)
+                    else:
+                        await asyncio.to_thread(inbox.mark_readiness, identifier, ready=True)
+                    payload = await asyncio.to_thread(inbox.claim_start, identifier)
+                    if payload is not None:
+                        token = self.inbox_owner.set(identifier)
+                        self.arm_inbox_expiry()
+                        try:
+                            await service.send_raw(payload)
+                        except asyncio.CancelledError:
+                            await asyncio.to_thread(inbox.dispatched, identifier, "unknown")
+                            raise
+                        except Exception:
+                            await asyncio.to_thread(inbox.dispatched, identifier, "unknown")
+                            self.inbox_failure(
+                                await asyncio.to_thread(inbox.get, identifier), "BBSTART_UNKNOWN"
+                            )
+                        else:
+                            await asyncio.to_thread(inbox.dispatched, identifier, "sent")
+                        finally:
+                            self.inbox_owner.reset(token)
+                self.inbox_status = await asyncio.to_thread(inbox.status)
+            self.inbox_status = await asyncio.to_thread(inbox.status)
+
+    def inbox_failure(self, row: dict[str, Any], code: str) -> None:
+        command = json.loads(row["command"])["print"]
+        self.inbox_reports.publish(
+            Event(
+                "event",
+                {
+                    "print": {
+                        "command": command.get("command", "project_file"),
+                        "sequence_id": command.get("sequence_id", "0"),
+                        "result": "FAIL",
+                        "reason": code,
+                    }
+                },
+            )
+        )
 
     async def announce(self, target: str) -> None:
         """Unicast discovery to the authenticated owner's current computer.
@@ -313,6 +649,10 @@ class NativeGateway:
 
     async def enable(self, printer_id: str) -> dict[str, Any]:
         async with self.change_lock:
+            if self.inbox is not None and await asyncio.to_thread(
+                self.inbox.unresolved, cast(dict[str, str], self.config)["printer_id"]
+            ):
+                raise ValueError("BBSTART_UNRESOLVED; resolve pending jobs before reconfiguring")
             code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
             salt = secrets.token_hex(16)
             hashed = hashlib.scrypt(
@@ -351,6 +691,10 @@ class NativeGateway:
 
     async def disable(self) -> None:
         async with self.change_lock:
+            if self.inbox is not None and await asyncio.to_thread(
+                self.inbox.unresolved, cast(dict[str, str], self.config)["printer_id"]
+            ):
+                raise ValueError("BBSTART_UNRESOLVED; resolve pending jobs before disabling")
             await self.close()
             self.config = None
             with self.store.connect() as db:
@@ -447,6 +791,9 @@ class NativeGateway:
             "tls_connections": previous.get("tls_connections", 0) + (phase == "tls_connected"),
             "tcp_connections": previous.get("tcp_connections", 0) + (phase == "tcp_connected"),
             "auth_failures": previous.get("auth_failures", 0) + (phase == "access_code_rejected"),
+            "history": [*previous.get("history", []), {"phase": phase, "at": int(time.time())}][
+                -16:
+            ],
         }
 
     def setup_status(self, peer: str) -> dict[str, bool]:
@@ -519,10 +866,17 @@ class NativeGateway:
             self.note("camera", "access_code_rejected")
             return
         self.note("camera", "authenticated")
-        async with self.service().camera.subscribe() as queue:
+        source = (
+            self.camera_overlay
+            if self.app.state.settings.bridge_native_camera_overlay
+            else self.service().camera
+        )
+        async with source.subscribe() as queue:
             while True:
                 self.service()  # fence changed printer certificate / deleted printer
                 jpeg = await asyncio.wait_for(queue.get(), 45)
+                if jpeg is None:
+                    return
                 # P1S JPEG frames are independently decodable. Orca's camera
                 # player waits for the keyframe flag in the third header word;
                 # a zero here delivers bytes but never starts live view.
@@ -533,8 +887,12 @@ class NativeGateway:
     async def mqtt(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head, data = await asyncio.wait_for(read_packet(reader), 10)
         protocol, pos = take(data, 0)
-        if head != 0x10 or protocol != b"MQTT" or data[pos] != 4:
-            self.note("mqtt", "unsupported_mqtt_version")
+        version = data[pos] if pos < len(data) else -1
+        # Orca's networking plugin also opens MQTT 3.1 connections. Its
+        # CONNECT payload uses MQIsdp/3; the supported packet flow is shared.
+        if head != 0x10 or (protocol, version) not in ((b"MQTT", 4), (b"MQIsdp", 3)):
+            name = "MQIsdp" if protocol == b"MQIsdp" else "MQTT" if protocol == b"MQTT" else "other"
+            self.note("mqtt", f"unsupported_{name}_version_{version}")
             writer.write(packet(0x20, b"\x00\x01"))
             await writer.drain()
             return
@@ -561,6 +919,8 @@ class NativeGateway:
         report_topic = f"device/{serial}/report".encode()
         request_topic = f"device/{serial}/request".encode()
         subscribed = False
+        peer = writer.get_extra_info("peername")[0]
+        seen_publishes: dict[bytes, bytes] = {}
         lock = asyncio.Lock()
 
         async def send(kind: int, body: bytes = b"") -> None:
@@ -569,6 +929,12 @@ class NativeGateway:
                 await asyncio.wait_for(writer.drain(), 10)
 
         async def report(payload: dict[str, Any]) -> None:
+            if self.inbox is not None:
+                payload = await asyncio.to_thread(
+                    self.inbox.translated_report,
+                    cast(dict[str, str], self.config)["printer_id"],
+                    payload,
+                )
             value = native_report(payload, service.ip, self.host)
             value = transpose_identity(value, service.serial, serial)
             system = value.get("system")
@@ -588,6 +954,14 @@ class NativeGateway:
                         await report(event.data)
 
             forwarding = asyncio.create_task(forward())
+
+            async def forward_inbox() -> None:
+                async with self.inbox_reports.subscribe() as subscription:
+                    async for event in subscription:
+                        if subscribed:
+                            await report(event.data)
+
+            inbox_forwarding = asyncio.create_task(forward_inbox())
             try:
                 await send(0x20, b"\x00\x00")
                 while True:
@@ -599,6 +973,7 @@ class NativeGateway:
                         while pos < len(data):
                             topic, pos = take(data, pos)
                             allowed = topic == report_topic and data[pos] <= 1
+                            self.note("mqtt", "subscribed" if allowed else "subscription_rejected")
                             pos += 1
                             grants.append(0 if allowed else 128)
                             subscribed |= allowed
@@ -611,10 +986,33 @@ class NativeGateway:
                         mid = data[pos : pos + 2] if qos else b""
                         pos += 2 if qos else 0
                         if topic != request_topic or qos > 1 or head & 1:
+                            self.note(
+                                "mqtt",
+                                "publish_topic_rejected"
+                                if topic != request_topic
+                                else "publish_qos_rejected"
+                                if qos > 1
+                                else "publish_retained_rejected",
+                            )
                             return
+                        fingerprint = hashlib.sha256(data[pos:]).digest()
+                        if qos and head & 8 and seen_publishes.get(mid) == fingerprint:
+                            await send(0x40, mid)
+                            continue
+                        if qos:
+                            seen_publishes[mid] = fingerprint
+                            if len(seen_publishes) > 256:
+                                del seen_publishes[next(iter(seen_publishes))]
                         payload = json.loads(data[pos:])
                         if not isinstance(payload, dict):
                             return
+                        self.note(
+                            "mqtt",
+                            "start_received"
+                            if isinstance(payload.get("print"), dict)
+                            and payload["print"].get("command") in ("project_file", "gcode_file")
+                            else "command_received",
+                        )
                         system = payload.get("system")
                         if isinstance(system, dict) and system.get("command") == "get_access_code":
                             sequence = system.get("sequence_id", "0")
@@ -630,9 +1028,56 @@ class NativeGateway:
                                 }
                             )
                         else:
-                            await service.send_raw(
-                                transpose_identity(payload, serial, service.serial)
-                            )
+                            translated = transpose_identity(payload, serial, service.serial)
+                            held = None
+                            if self.inbox is not None:
+                                try:
+                                    held = await asyncio.to_thread(
+                                        self.inbox.hold_start,
+                                        cast(dict[str, str], self.config)["printer_id"],
+                                        translated,
+                                        peer=peer,
+                                    )
+                                except ValueError as exc:
+                                    await report(
+                                        {
+                                            "print": {
+                                                "command": "project_file",
+                                                "sequence_id": payload.get("print", {}).get(
+                                                    "sequence_id", "0"
+                                                ),
+                                                "result": "FAIL",
+                                                "reason": str(exc)
+                                                if str(exc).startswith("BB")
+                                                else "BBSTART_UPLOAD_NOT_READY",
+                                            }
+                                        }
+                                    )
+                                    if qos:
+                                        await send(0x40, mid)
+                                    continue
+                            if held is None:
+                                try:
+                                    await service.send_raw(translated)
+                                except ValueError as exc:
+                                    await report(
+                                        {
+                                            "print": {
+                                                "command": payload.get("print", {}).get(
+                                                    "command", "project_file"
+                                                ),
+                                                "sequence_id": payload.get("print", {}).get(
+                                                    "sequence_id", "0"
+                                                ),
+                                                "result": "FAIL",
+                                                "reason": str(exc)
+                                                if str(exc).startswith("BB")
+                                                else "BBSTART_REJECTED",
+                                            }
+                                        }
+                                    )
+                            else:
+                                self.inbox_wake.set()
                         if qos:
                             await send(0x40, mid)
                     elif kind == 10:
@@ -646,4 +1091,5 @@ class NativeGateway:
                         return
             finally:
                 forwarding.cancel()
-                await asyncio.gather(forwarding, return_exceptions=True)
+                inbox_forwarding.cancel()
+                await asyncio.gather(forwarding, inbox_forwarding, return_exceptions=True)
