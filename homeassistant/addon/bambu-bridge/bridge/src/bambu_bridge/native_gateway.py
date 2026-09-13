@@ -24,13 +24,15 @@ import struct
 import time
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
-from bambu_bridge.native_inbox import NativeInbox
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.service.events import Event, EventBus
+
+if TYPE_CHECKING:
+    from bambu_bridge.native_inbox import NativeInbox
 
 
 def field(value: bytes) -> bytes:
@@ -251,6 +253,8 @@ class NativeGateway:
         if not self.config:
             return
         if self.app.state.settings.bridge_native_durable_inbox:
+            from bambu_bridge.native_inbox import NativeInbox
+
             self.inbox = await asyncio.to_thread(NativeInbox, self.store.directory)
             await asyncio.to_thread(self.inbox.acquire)
             await asyncio.to_thread(self.inbox.recover)
