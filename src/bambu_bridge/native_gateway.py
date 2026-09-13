@@ -858,7 +858,9 @@ class NativeGateway:
         head, data = await asyncio.wait_for(read_packet(reader), 10)
         protocol, pos = take(data, 0)
         if head != 0x10 or protocol != b"MQTT" or data[pos] != 4:
-            self.note("mqtt", "unsupported_mqtt_version")
+            version = data[pos] if pos < len(data) else -1
+            name = "MQIsdp" if protocol == b"MQIsdp" else "MQTT" if protocol == b"MQTT" else "other"
+            self.note("mqtt", f"unsupported_{name}_version_{version}")
             writer.write(packet(0x20, b"\x00\x01"))
             await writer.drain()
             return
