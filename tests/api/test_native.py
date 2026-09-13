@@ -645,11 +645,13 @@ async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gat
     service._mqtt.publish.assert_awaited_once()
 
 
-async def test_mqtt_qos_duplicate_does_not_repeat_a_start(gateway):
+@pytest.mark.parametrize("protocol,version", [(b"MQTT", 4), (b"MQIsdp", 3)])
+async def test_mqtt_qos_duplicate_does_not_repeat_a_start(gateway, protocol, version):
     reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 0), ssl=tls())
     connect = (
-        field(b"MQTT")
-        + b"\x04\xc2\x00\x3c"
+        field(protocol)
+        + bytes([version])
+        + b"\xc2\x00\x3c"
         + field(b"fixture-client")
         + field(b"bblp")
         + field(gateway.test_code.encode())

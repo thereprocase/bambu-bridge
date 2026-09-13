@@ -857,8 +857,10 @@ class NativeGateway:
     async def mqtt(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head, data = await asyncio.wait_for(read_packet(reader), 10)
         protocol, pos = take(data, 0)
-        if head != 0x10 or protocol != b"MQTT" or data[pos] != 4:
-            version = data[pos] if pos < len(data) else -1
+        version = data[pos] if pos < len(data) else -1
+        # Orca's networking plugin also opens MQTT 3.1 connections. Its
+        # CONNECT payload uses MQIsdp/3; the supported packet flow is shared.
+        if head != 0x10 or (protocol, version) not in ((b"MQTT", 4), (b"MQIsdp", 3)):
             name = "MQIsdp" if protocol == b"MQIsdp" else "MQTT" if protocol == b"MQTT" else "other"
             self.note("mqtt", f"unsupported_{name}_version_{version}")
             writer.write(packet(0x20, b"\x00\x01"))
@@ -976,8 +978,7 @@ class NativeGateway:
                             "mqtt",
                             "start_received"
                             if isinstance(payload.get("print"), dict)
-                            and payload["print"].get("command")
-                            in ("project_file", "gcode_file")
+                            and payload["print"].get("command") in ("project_file", "gcode_file")
                             else "command_received",
                         )
                         system = payload.get("system")
