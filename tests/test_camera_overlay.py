@@ -175,3 +175,49 @@ def test_hms_and_unknown_fields_stay_visible():
     lines, warning = status_lines({}, [], time.time(), None)
     assert warning and "DISCONNECTED" in lines[0]
     assert "--/-- C" in lines[1] and "Telemetry age --s" in lines[-1]
+
+
+async def test_camera_rate_is_not_capped_by_status_refresh(monkeypatch):
+    from bambu_bridge import camera_overlay
+
+    raw = asyncio.Queue()
+
+    @asynccontextmanager
+    async def subscribe():
+        yield raw
+
+    calls = 0
+
+    def state():
+        nonlocal calls
+        calls += 1
+        return snapshot()
+
+    service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=state)
+    stream = OverlayStream(lambda: service, lambda: [])
+    monkeypatch.setattr(camera_overlay, "render_frame", lambda frame, lines, warning: frame)
+    async with stream.subscribe() as queue:
+        for i in range(5):
+            frame = str(i).encode()
+            raw.put_nowait(frame)
+            assert await asyncio.wait_for(queue.get(), 0.5) == frame
+        assert calls == 1
+
+
+async def test_no_duplicate_live_frames_between_camera_arrivals(monkeypatch):
+    from bambu_bridge import camera_overlay
+
+    raw = asyncio.Queue()
+
+    @asynccontextmanager
+    async def subscribe():
+        yield raw
+
+    service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=snapshot)
+    monkeypatch.setattr(camera_overlay, "render_frame", lambda frame, lines, warning: frame)
+    stream = OverlayStream(lambda: service, lambda: [])
+    async with stream.subscribe() as queue:
+        raw.put_nowait(b"live")
+        assert await asyncio.wait_for(queue.get(), 0.5) == b"live"
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(queue.get(), 1.2)
