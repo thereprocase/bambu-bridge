@@ -350,6 +350,35 @@ class NativeGateway:
             if not 0 <= age <= 15:
                 raise ValueError("BBSTART_STALE_TELEMETRY")
 
+    async def ensure_idle(self, *, timeout: float = 10) -> None:
+        """Refresh an idle printer's quiet telemetry before rejecting a new start."""
+        try:
+            self.require_idle()
+            return
+        except ValueError as exc:
+            if str(exc) != "BBSTART_STALE_TELEMETRY":
+                raise
+        from bambu_bridge.protocol.models import pushall_request
+
+        service = self.service()
+        try:
+            async with service.raw_bus.subscribe() as reports:
+                async with asyncio.timeout(timeout):
+                    try:
+                        await service.send_raw(pushall_request())
+                    except Exception as exc:
+                        raise ValueError("BBSTART_STATUS_REFRESH_FAILED") from exc
+                    async for event in reports:
+                        incoming = event.data.get("print", {})
+                        if isinstance(incoming, dict) and "gcode_state" in incoming:
+                            # The report handler publishes before finishing its
+                            # summary timestamp update. Let that handler finish.
+                            await asyncio.sleep(0)
+                            self.require_idle()
+                            return
+        except TimeoutError as exc:
+            raise ValueError("BBSTART_STATUS_REFRESH_TIMEOUT") from exc
+
     def arm_inbox_expiry(self) -> None:
         def expired():
             self.inbox_expiry.discard(handle)
@@ -371,7 +400,7 @@ class NativeGateway:
             yield
             return
         async with self.inbox_dispatch_lock:
-            self.require_idle()
+            await self.ensure_idle()
             identifier = await asyncio.to_thread(
                 inbox.claim_external,
                 self.config["printer_id"],
@@ -405,7 +434,7 @@ class NativeGateway:
                 raise ValueError("BBSTOP_START_NOT_CONFIRMED")
             if command in ("project_file", "gcode_file"):
                 async with self.inbox_dispatch_lock:
-                    self.require_idle()
+                    await self.ensure_idle()
                     cancelled = self.inbox_cancel.get()
                     if cancelled is not None and cancelled.is_set():
                         raise ValueError("BBSTART_CANCELLED")
@@ -445,7 +474,7 @@ class NativeGateway:
                 yield
                 self.inbox_wake.set()
                 return
-            self.require_idle()
+            await self.ensure_idle()
             identifier = await asyncio.to_thread(inbox.claim_external, printer, payload)
             self.arm_inbox_expiry()
             try:
@@ -518,12 +547,13 @@ class NativeGateway:
                 async with self.inbox_dispatch_lock:
                     service = self.service()
                     try:
-                        self.require_idle()
-                    except ValueError:
-                        await asyncio.to_thread(inbox.block_start, identifier)
+                        await self.ensure_idle()
+                    except ValueError as exc:
+                        reason = str(exc)
+                        await asyncio.to_thread(inbox.block_start, identifier, reason)
                         current = await asyncio.to_thread(inbox.get, identifier)
                         if current["start_state"] == "blocked":
-                            self.inbox_failure(current, "BBSTART_NOT_IDLE")
+                            self.inbox_failure(current, reason)
                     payload = await asyncio.to_thread(inbox.claim_start, identifier)
                     if payload is not None:
                         token = self.inbox_owner.set(identifier)

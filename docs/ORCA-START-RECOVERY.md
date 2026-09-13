@@ -1,5 +1,16 @@
 # Orca start recovery
 
+## Finished printer readiness
+
+IDLE, FINISH and FAILED are ready states; pressing Stop after FINISH is not
+required. Quiet P1S status reports may be about 30 seconds apart. If the existing
+15-second freshness check rejects an otherwise ready printer, the start path
+sends a read-only pushall request, waits up to 10 seconds for a fresh print-state
+report, and checks readiness again. A busy printer is still rejected. Failed
+refreshes and timeouts retain distinct receipt/error codes instead of being
+misreported as BBSTART_NOT_IDLE. Previously blocked jobs are not replayed;
+submit a new intentional print after correcting the cause.
+
 Orca can send a printer-local archive as `ftp://name.gcode.3mf`. Treat the
 authority component as the filename when this URI has no path. It must match
 the staged upload; an empty parsed path must never reserve the printer as `/`.
