@@ -1,5 +1,14 @@
 # Orca start recovery
 
+## Orca -4030 / MQTT 3.1
+
+Orca defines -4030 as failure publishing the local print's MQTT message. Live
+reconnect traces showed `MQIsdp` protocol level 3 rejected by the old gateway,
+which accepted only `MQTT` level 4. The gateway now accepts both MQTT 3.1 and
+3.1.1, with the same authentication, topic restrictions and duplicate-start
+suppression. Connection diagnostics retain bounded protocol-stage history,
+including subscription and publish rejection reasons, without payloads/secrets.
+
 ## Finished printer readiness
 
 IDLE, FINISH and FAILED are ready states; pressing Stop after FINISH is not
