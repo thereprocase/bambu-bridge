@@ -6,6 +6,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+- Add durable Orca upload receipts, ordered delivery, guarded starts and recovery
+  that never automatically replays an uncertain physical start.
+- Fix Orca archive URL parsing, MQTT 3.1 compatibility, quiet finished-printer
+  readiness and telemetry freshness races. Preserve specific failure reasons.
+- Record upload/start milestone timings and distinguish delivery, acknowledgement
+  and confirmed printing in diagnostics.
+- Add a compact translucent camera HUD to native and HTTP feeds at the camera's
+  source rate, with printer status, temperatures, local completion estimates and
+  actionable warnings. Share rendering across viewers and retain raw HTTP opt-out.
+- Add Home Assistant phone-alert routing and warm viewer pause/resume.
+- Synchronize the Home Assistant add-on's bundled server source and dependencies.
+
 ## [0.6.0] - 2026-09-11
 
 - Add approximate browser-hosted 3D toolhead tracking that follows sliced

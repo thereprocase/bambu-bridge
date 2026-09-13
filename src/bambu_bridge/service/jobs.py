@@ -453,8 +453,9 @@ class JobRun:
         async with service.bus.subscribe() as sub:
             reader = asyncio.create_task(self._read_bus(sub))
             try:
-                if getattr(service, "job_guard", None) is not None:
-                    async with service.job_guard(self._cancel):
+                guard = getattr(service, "job_guard", None)
+                if guard is not None:
+                    async with guard(self._cancel):
                         await self._lifecycle(service)
                 else:
                     await self._lifecycle(service)

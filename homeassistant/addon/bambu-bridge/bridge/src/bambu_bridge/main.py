@@ -69,8 +69,11 @@ def create_app(
     camera_port: int = 6000,
 ) -> FastAPI:
     settings = settings or Settings()
-    configure_logging(settings.bridge_log_level, settings.bridge_log_format,
-                      secrets=(settings.bridge_api_key, settings.bridge_viz_token))
+    configure_logging(
+        settings.bridge_log_level,
+        settings.bridge_log_format,
+        secrets=(settings.bridge_api_key, settings.bridge_viz_token),
+    )
 
     # Warn loudly when the API key is set but suspiciously short — empty is
     # handled by auth.py (fail-closed 503); a short key is a misconfiguration
@@ -147,8 +150,9 @@ def create_app(
                     )
 
         app.state.settings = settings
-        app.state.pairing = (PairingStore(settings.bridge_pairing_dir)
-                             if settings.bridge_pairing_dir else None)
+        app.state.pairing = (
+            PairingStore(settings.bridge_pairing_dir) if settings.bridge_pairing_dir else None
+        )
         app.state.orca = OrcaStore(app.state.pairing) if app.state.pairing else None
         app.state.orca_submit_lock = asyncio.Lock()
         app.state.db = db
@@ -159,13 +163,24 @@ def create_app(
         app.state.ftps_port = ftps_port
         app.state.native_gateway = (
             NativeGateway(app, app.state.pairing, settings.bridge_native_host)
-            if app.state.pairing and settings.bridge_native_host else None
+            if app.state.pairing and settings.bridge_native_host
+            else None
         )
         if app.state.native_gateway:
             try:
                 await app.state.native_gateway.start()
             except Exception:
                 log.error("native.listener_unavailable")
+                if settings.bridge_native_durable_inbox:
+                    # Do not run an unfenced HTTP writer alongside another
+                    # process that owns the durable native queue.
+                    await job_manager.shutdown()
+                    await app.state.native_gateway.close()
+                    await persister.shutdown()
+                    await notifier.shutdown()
+                    await registry.shutdown()
+                    await db.close()
+                    raise
         # The shared VizCache is on app.state so the HTTP endpoints can find it
         # via _get_viz_cache(request); JobManager already holds the same object.
         app.state.viz_cache_obj = viz_cache
@@ -177,9 +192,9 @@ def create_app(
         try:
             yield
         finally:
+            await job_manager.shutdown()
             if app.state.native_gateway:
                 await app.state.native_gateway.close()
-            await job_manager.shutdown()
             await persister.shutdown()
             await notifier.shutdown()
             await registry.shutdown()

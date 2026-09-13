@@ -210,9 +210,13 @@ class PrinterService:
 
         self.bus = EventBus()
         self.raw_bus = EventBus()  # native P1S clients need every ack, even unchanged reports
-        self.command_guard = None  # optional durable native-custody admission hook
-        self.job_guard = None  # reserves managed jobs before any printer file upload
-        self.native_observer = None  # awaited: lifecycle evidence must not depend on lossy UI buses
+        self.command_guard: (
+            Callable[[dict[str, Any]], contextlib.AbstractAsyncContextManager[None]] | None
+        ) = None
+        self.job_guard: (
+            Callable[[asyncio.Event], contextlib.AbstractAsyncContextManager[None]] | None
+        ) = None
+        self.native_observer: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._native_categories: dict[str, dict[str, Any]] = {}
         self._on_seen = on_seen
         self._state: dict[str, Any] = {}

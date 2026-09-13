@@ -13,7 +13,8 @@ import ftplib
 import io
 import ssl
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import structlog
 
@@ -39,7 +40,7 @@ class UploadReader(asyncio.StreamReader):
         self.protocol_eof = True
         super().feed_eof()
 
-    def set_exception(self, exc) -> None:
+    def set_exception(self, exc: Exception) -> None:
         if self.protocol_eof and isinstance(exc, ConnectionResetError | BrokenPipeError):
             return
         super().set_exception(exc)
@@ -155,7 +156,7 @@ async def serve_ftps(
                 if verb in ("SIZE", "RETR", "DELE", "MDTM", "RNFR"):
                     local_entry = await asyncio.to_thread(
                         gateway.inbox.lookup,
-                        gateway.config["printer_id"],
+                        cast(dict[str, str], gateway.config)["printer_id"],
                         logical_path(argument, upstream_directory),
                     )
                     if local_entry:
@@ -224,7 +225,10 @@ async def serve_ftps(
 
                 loop = asyncio.get_running_loop()
 
-                def data_protocol(accept=accept, loop=loop):
+                def data_protocol(
+                    accept: Callable[[asyncio.StreamReader, asyncio.StreamWriter], None] = accept,
+                    loop: asyncio.AbstractEventLoop = loop,
+                ) -> asyncio.StreamReaderProtocol:
                     return asyncio.StreamReaderProtocol(
                         UploadReader(limit=256 * 1024), accept, loop=loop
                     )
@@ -234,8 +238,9 @@ async def serve_ftps(
                     gateway.host,
                     0,
                     ssl=gateway.data_context if private else None,
-                    **({"ssl_handshake_timeout": 15} if private else {}),
+                    ssl_handshake_timeout=15 if private else None,
                 )
+                assert passive is not None
                 port = passive.sockets[0].getsockname()[1]
                 if verb == "EPSV":
                     await reply(f"229 Entering Extended Passive Mode (|||{port}|)")
@@ -249,7 +254,11 @@ async def serve_ftps(
                 if channel is None:
                     await reply("425 Use PASV or EPSV first")
                     continue
-                if verb == "STOR" and gateway.inbox is not None and gateway.inbox_task.done():
+                if (
+                    verb == "STOR"
+                    and gateway.inbox is not None
+                    and (gateway.inbox_task is None or gateway.inbox_task.done())
+                ):
                     await reply("451 BBFTP_DELIVERY_WORKER_UNAVAILABLE; upload not accepted")
                     await clear_passive()
                     continue
@@ -266,6 +275,7 @@ async def serve_ftps(
                     async with gateway.transfer_lock:
                         phase = "waiting_for_client_data"
                         data_reader, data_writer = await asyncio.wait_for(channel, 20)
+                        assert data_writer is not None
                         tls = data_writer.get_extra_info("ssl_object")
                         data_tls_version = tls.version() if tls else None
                         if verb == "STOR":
@@ -274,7 +284,7 @@ async def serve_ftps(
                                 phase = "reserving_server_storage"
                                 row = await asyncio.to_thread(
                                     gateway.inbox.reserve,
-                                    gateway.config["printer_id"],
+                                    cast(dict[str, str], gateway.config)["printer_id"],
                                     logical_path(argument, upstream_directory),
                                     limit,
                                     peer=peer,
@@ -303,6 +313,7 @@ async def serve_ftps(
                             # reuse a printer control session that sat idle
                             # throughout it. Refresh BEFORE any STOR, never
                             # replay a write whose outcome is uncertain.
+                            assert backend is not None
                             await asyncio.to_thread(backend.close)
                             backend = await asyncio.to_thread(
                                 FtpsTransfer(
@@ -353,6 +364,7 @@ async def serve_ftps(
                                     raise ValueError("Transfer limit exceeded")
                                 result.append(chunk)
 
+                            assert backend is not None
                             await asyncio.to_thread(backend.retrbinary, command, receive)
                             phase = "sending_client_data"
                             assert data_writer is not None
@@ -411,6 +423,7 @@ async def serve_ftps(
                 "REST",
             }:
                 try:
+                    assert backend is not None
                     response = await asyncio.to_thread(backend.sendcmd, command)
                     if verb in ("CWD", "CDUP"):
                         upstream_directory = await asyncio.to_thread(backend.pwd)
