@@ -46,6 +46,12 @@ async def test_fresh_finish_needs_no_extra_command():
     assert sent == []
 
 
+async def test_diagnostic_forces_status_refresh_even_when_fresh():
+    gateway, sent = fixture(stale=False)
+    await NativeGateway.ensure_idle(gateway, force_refresh=True)
+    assert sent == [{"pushing": {"command": "pushall", "version": 1, "push_target": 1}}]
+
+
 async def test_fresh_running_during_refresh_blocks_start():
     gateway, sent = fixture(reply="RUNNING")
     with pytest.raises(ValueError, match="BBSTART_NOT_IDLE"):

@@ -11,6 +11,12 @@ including subscription and publish rejection reasons, without payloads/secrets.
 
 ## Finished printer readiness
 
+Telemetry receipt time must be updated before awaiting native observers or
+on-seen database persistence and before raw-bus fanout. Otherwise a fresh
+pushall reply wakes the start guard while its timestamp still looks stale.
+POST /api/v1/native/readiness (owner-authenticated HTTPS) forces a status-only
+refresh through the same guard; it sends no print command and enqueues nothing.
+
 IDLE, FINISH and FAILED are ready states; pressing Stop after FINISH is not
 required. Quiet P1S status reports may be about 30 seconds apart. If the existing
 15-second freshness check rejects an otherwise ready printer, the start path

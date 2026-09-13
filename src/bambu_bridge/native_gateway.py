@@ -350,11 +350,12 @@ class NativeGateway:
             if not 0 <= age <= 15:
                 raise ValueError("BBSTART_STALE_TELEMETRY")
 
-    async def ensure_idle(self, *, timeout: float = 10) -> None:
+    async def ensure_idle(self, *, timeout: float = 10, force_refresh: bool = False) -> None:
         """Refresh an idle printer's quiet telemetry before rejecting a new start."""
         try:
             self.require_idle()
-            return
+            if not force_refresh:
+                return
         except ValueError as exc:
             if str(exc) != "BBSTART_STALE_TELEMETRY":
                 raise

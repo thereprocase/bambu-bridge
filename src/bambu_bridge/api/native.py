@@ -39,6 +39,19 @@ class UploadAction(BaseModel):
     confirm: Literal["I checked the printer and this action"]
 
 
+@router.post("/readiness")
+async def readiness(request: Request) -> dict[str, Any]:
+    """Exercise the start guard with status traffic only; never enqueue a print."""
+    instance = gateway(request)
+    async with instance.inbox_dispatch_lock:
+        try:
+            await instance.ensure_idle(force_refresh=True)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        state = instance.service().native_snapshot().get("print", {}).get("gcode_state")
+    return {"ready": True, "gcode_state": state, "print_commands_sent": 0}
+
+
 @router.post("/uploads/{identifier}")
 async def upload_action(identifier: str, body: UploadAction, request: Request) -> dict[str, Any]:
     instance = gateway(request)
