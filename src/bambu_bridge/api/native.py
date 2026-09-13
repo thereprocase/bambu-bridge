@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -62,7 +62,7 @@ async def upload_action(identifier: str, body: UploadAction, request: Request) -
     async with instance.inbox_dispatch_lock:
         try:
             row = await asyncio.to_thread(instance.inbox.get, identifier)
-            if row["printer"] != instance.config["printer_id"]:
+            if row["printer"] != cast(dict[str, str], instance.config)["printer_id"]:
                 raise HTTPException(404, "Upload not found")
             if body.action != "cancel":
                 instance.require_idle()

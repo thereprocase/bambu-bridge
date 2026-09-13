@@ -62,7 +62,8 @@ class Settings(BaseSettings):
     # request reuses the live stream instead of opening a new TCP+TLS
     # connection. 0 = immediate teardown (original behaviour). Default 10 s.
     bridge_camera_linger_s: float = 10.0
-    bridge_native_camera_overlay: bool = True  # shared native/HTTP HUD; HTTP ?overlay=false opts out
+    # Shared native/HTTP HUD; HTTP ?overlay=false opts out.
+    bridge_native_camera_overlay: bool = True
     bridge_camera_timezone: str = "UTC"  # IANA zone for the shared camera's completion estimate
 
     @field_validator("bridge_camera_timezone")

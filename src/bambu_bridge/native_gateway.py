@@ -23,10 +23,12 @@ import string
 import struct
 import time
 from collections import defaultdict, deque
-from typing import Any
+from collections.abc import AsyncIterator
+from typing import Any, cast
 
 from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
+from bambu_bridge.native_inbox import NativeInbox
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.service.events import Event, EventBus
 
@@ -147,13 +149,15 @@ class NativeGateway:
         self.writers: set[asyncio.StreamWriter] = set()
         self.failed: dict[str, deque[float]] = defaultdict(deque)
         self.transfer_lock = asyncio.Semaphore(2)
-        self.inbox = None
-        self.inbox_service = None
-        self.inbox_task = None
+        self.inbox: NativeInbox | None = None
+        self.inbox_service: Any = None
+        self.inbox_task: asyncio.Task[None] | None = None
         self.inbox_wake = asyncio.Event()
         self.inbox_dispatch_lock = asyncio.Lock()
-        self.inbox_owner = contextvars.ContextVar("inbox_dispatch_owner", default=None)
-        self.inbox_cancel = contextvars.ContextVar("inbox_managed_cancel", default=None)
+        self.inbox_owner = contextvars.ContextVar[str | None]("inbox_dispatch_owner", default=None)
+        self.inbox_cancel = contextvars.ContextVar[asyncio.Event | None](
+            "inbox_managed_cancel", default=None
+        )
         self.inbox_expiry: set[asyncio.TimerHandle] = set()
         self.inbox_status: list[dict[str, Any]] = []
         self.camera_overlay = OverlayStream(
@@ -247,8 +251,6 @@ class NativeGateway:
         if not self.config:
             return
         if self.app.state.settings.bridge_native_durable_inbox:
-            from bambu_bridge.native_inbox import NativeInbox
-
             self.inbox = await asyncio.to_thread(NativeInbox, self.store.directory)
             await asyncio.to_thread(self.inbox.acquire)
             await asyncio.to_thread(self.inbox.recover)
@@ -275,7 +277,7 @@ class NativeGateway:
         # Keep TLS1.3, the certificate and the phone/control contexts unchanged.
         data_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         data_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        data_context.num_tickets = 0
+        cast(Any, data_context).num_tickets = 0
         data_context.load_cert_chain(str(cert), str(key))
         self.data_context = data_context
         from bambu_bridge.native_ftps import serve_ftps
@@ -387,21 +389,21 @@ class NativeGateway:
             raise ValueError("BBSTART_STATUS_REFRESH_TIMEOUT") from exc
 
     def arm_inbox_expiry(self) -> None:
-        def expired():
+        def expired() -> None:
             self.inbox_expiry.discard(handle)
             self.inbox_wake.set()
 
         handle = asyncio.get_running_loop().call_later(121, expired)
         self.inbox_expiry.add(handle)
 
-    def inbox_worker_done(self, task: asyncio.Task) -> None:
+    def inbox_worker_done(self, task: asyncio.Task[None]) -> None:
         if not task.cancelled() and task.exception() is not None:
             self.last_error = (
                 "Upload delivery worker stopped; saved files retained. Review and restart."
             )
 
     @contextlib.asynccontextmanager
-    async def guard_managed_job(self, cancelled: asyncio.Event):
+    async def guard_managed_job(self, cancelled: asyncio.Event) -> AsyncIterator[None]:
         inbox = self.inbox
         if inbox is None:
             yield
@@ -410,7 +412,7 @@ class NativeGateway:
             await self.ensure_idle()
             identifier = await asyncio.to_thread(
                 inbox.claim_external,
-                self.config["printer_id"],
+                cast(dict[str, str], self.config)["printer_id"],
                 {"print": {"command": "project_file", "url": ""}},
                 reserved=True,
             )
@@ -425,7 +427,7 @@ class NativeGateway:
             self.inbox_wake.set()
 
     @contextlib.asynccontextmanager
-    async def guard_inbox_command(self, payload: dict[str, Any]):
+    async def guard_inbox_command(self, payload: dict[str, Any]) -> AsyncIterator[None]:
         """One wire-level gate for app, HTTP, and native commands for this printer."""
         if self.inbox is None:
             yield
@@ -464,7 +466,7 @@ class NativeGateway:
             return
         async with self.inbox_dispatch_lock:
             inbox = self.inbox
-            printer = self.config["printer_id"]
+            printer = cast(dict[str, str], self.config)["printer_id"]
             if command in ("stop", "pause"):
                 if owner is not None:
                     row = await asyncio.to_thread(inbox.get, owner)
@@ -499,7 +501,10 @@ class NativeGateway:
         if inbox is None:
             return
         changed = await asyncio.to_thread(
-            inbox.observe, self.config["printer_id"], report, self.service().native_snapshot()
+            inbox.observe,
+            cast(dict[str, str], self.config)["printer_id"],
+            report,
+            self.service().native_snapshot(),
         )
         if changed:
             self.inbox_status = await asyncio.to_thread(inbox.status)
@@ -524,7 +529,7 @@ class NativeGateway:
                 ):
                     self.inbox_status = await asyncio.to_thread(inbox.status)
 
-                    def upload(row=row):
+                    def upload(row: dict[str, Any] = row) -> None:
                         service = self.service()
                         with inbox.open_verified(row["id"]) as source:
                             backend = FtpsTransfer(
@@ -640,8 +645,8 @@ class NativeGateway:
 
     async def enable(self, printer_id: str) -> dict[str, Any]:
         async with self.change_lock:
-            if self.inbox and await asyncio.to_thread(
-                self.inbox.unresolved, self.config["printer_id"]
+            if self.inbox is not None and await asyncio.to_thread(
+                self.inbox.unresolved, cast(dict[str, str], self.config)["printer_id"]
             ):
                 raise ValueError("BBSTART_UNRESOLVED; resolve pending jobs before reconfiguring")
             code = "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
@@ -682,8 +687,8 @@ class NativeGateway:
 
     async def disable(self) -> None:
         async with self.change_lock:
-            if self.inbox and await asyncio.to_thread(
-                self.inbox.unresolved, self.config["printer_id"]
+            if self.inbox is not None and await asyncio.to_thread(
+                self.inbox.unresolved, cast(dict[str, str], self.config)["printer_id"]
             ):
                 raise ValueError("BBSTART_UNRESOLVED; resolve pending jobs before disabling")
             await self.close()
@@ -922,7 +927,9 @@ class NativeGateway:
         async def report(payload: dict[str, Any]) -> None:
             if self.inbox is not None:
                 payload = await asyncio.to_thread(
-                    self.inbox.translated_report, self.config["printer_id"], payload
+                    self.inbox.translated_report,
+                    cast(dict[str, str], self.config)["printer_id"],
+                    payload,
                 )
             value = native_report(payload, service.ip, self.host)
             value = transpose_identity(value, service.serial, serial)
@@ -1023,7 +1030,7 @@ class NativeGateway:
                                 try:
                                     held = await asyncio.to_thread(
                                         self.inbox.hold_start,
-                                        self.config["printer_id"],
+                                        cast(dict[str, str], self.config)["printer_id"],
                                         translated,
                                         peer=peer,
                                     )
