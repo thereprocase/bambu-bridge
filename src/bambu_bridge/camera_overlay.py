@@ -136,34 +136,55 @@ def render_frame(jpeg: bytes | None, lines: list[str], warning: bool) -> bytes:
     if canvas is None:
         canvas = Image.new("RGB", (1280, 720), "#111923")
     width, height = canvas.size
-    size = max(12, round(width / 53))
+    size = max(12, round(width / 64))
     font = ImageFont.load_default(size=size)
-    draw = ImageDraw.Draw(canvas)
-    padding, pitch = max(6, size // 2), size + 7
-    top = height - len(lines) * pitch - 2 * padding
-    draw.rectangle((0, top, width, height), fill="#101820")
-    color = "#ffba69" if warning else "#77edc3"
-    draw.rectangle((0, top, width, top + 3), fill=color)
-    if missing:
-        draw.text((padding * 2, height // 3), "CAMERA UNAVAILABLE", font=font, fill="#ffba69")
-        draw.text(
-            (padding * 2, height // 3 + pitch),
-            "Printer status continues below",
-            font=font,
-            fill="white",
-        )
-    for index, line in enumerate(lines):
-        # Bound externally supplied diagnostic strings; fit without wrapping into the image.
-        line = " ".join(str(line).split())[:240]
-        if draw.textlength(line, font=font) > width - 2 * padding:
-            while line and draw.textlength(line + "...", font=font) > width - 2 * padding:
+    margin, padding, pitch = max(10, size), max(8, size // 2), size + 7
+    shown = list(lines[:2])
+    quiet_bridge = {
+        "Bridge: active print confirmed",
+        "Bridge: waiting for next job",
+        "Bridge: print completion recorded",
+    }
+    if len(lines) > 2 and lines[2] not in quiet_bridge:
+        shown.append(lines[2])
+    if warning and len(lines) > 3:
+        shown.append(lines[3])
+    measure = ImageDraw.Draw(canvas)
+    fitted = []
+    for line in shown:
+        line = " ".join(str(line).split()).replace(" | ", "  ·  ")[:240]
+        if measure.textlength(line, font=font) > width - 2 * (margin + padding):
+            while line and measure.textlength(line + "…", font=font) > width - 2 * (
+                margin + padding
+            ):
                 line = line[:-1]
-            line += "..."
+            line += "…"
+        fitted.append(line)
+    panel_width = min(
+        width - 2 * margin,
+        int(max(measure.textlength(s, font=font) for s in fitted)) + 2 * padding + 6,
+    )
+    panel_height = len(fitted) * pitch + 2 * padding
+    panel = Image.new("RGBA", (panel_width, panel_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(panel)
+    color = "#ffc27c" if warning else "#9ee8cf"
+    draw.rounded_rectangle(
+        (0, 0, panel_width - 1, panel_height - 1), radius=10, fill=(12, 19, 26, 175)
+    )
+    draw.rounded_rectangle((0, 9, 3, panel_height - 10), radius=2, fill=color)
+    for index, line in enumerate(fitted):
         draw.text(
-            (padding, top + padding + index * pitch),
+            (padding + 3, padding + index * pitch),
             line,
             font=font,
             fill=color if index == 0 else "#eef3fa",
+        )
+    canvas.paste(panel, (margin, height - panel_height - margin), panel)
+    if missing:
+        draw = ImageDraw.Draw(canvas)
+        draw.text((margin, height // 3), "Camera unavailable", font=font, fill="#ffc27c")
+        draw.text(
+            (margin, height // 3 + pitch), "Printer status continues below", font=font, fill="white"
         )
     output = io.BytesIO()
     canvas.save(output, format="JPEG", quality=85)
@@ -171,7 +192,7 @@ def render_frame(jpeg: bytes | None, lines: list[str], warning: bool) -> bytes:
 
 
 class OverlayStream:
-    """One subscriber/renderer for all Orca viewers, latest-only fanout at <=1 Hz."""
+    """Shared latest-only renderer at camera rate; status refresh/idle heartbeat at 1 Hz."""
 
     def __init__(self, service: Callable[[], Any], receipts: Callable[[], list[dict[str, Any]]]):
         self.service, self.receipts = service, receipts
@@ -208,17 +229,31 @@ class OverlayStream:
             async with service.camera.subscribe() as raw:
                 frame: bytes | None = None
                 last_frame: float | None = None
+                snapshot: dict[str, Any] = {}
+                receipts: list[dict[str, Any]] = []
+                status_at = float("-inf")
                 while True:
+                    got_frame = False
+                    try:
+                        frame = await asyncio.wait_for(raw.get(), 1)
+                        last_frame = time.monotonic()
+                        got_frame = True
+                    except TimeoutError:
+                        pass
                     tick = time.monotonic()
                     if self.service() is not service:
                         return  # replaced/deleted printer: never leak the old camera
                     while not raw.empty():
                         frame = raw.get_nowait()
                         last_frame = tick
+                        got_frame = True
                     age = tick - last_frame if last_frame is not None else None
-                    lines, warning = status_lines(
-                        service.snapshot(), self.receipts(), time.time(), age
-                    )
+                    if not got_frame and age is not None and age <= STALE_FRAME_S:
+                        continue  # do not manufacture duplicate "live" frames between arrivals
+                    if tick - status_at >= 1:
+                        snapshot, receipts = service.snapshot(), self.receipts()
+                        status_at = tick
+                    lines, warning = status_lines(snapshot, receipts, time.time(), age)
                     task = asyncio.create_task(
                         asyncio.to_thread(
                             render_frame,
@@ -233,7 +268,6 @@ class OverlayStream:
                         await asyncio.gather(task, return_exceptions=True)
                         raise
                     self._publish(result)
-                    await asyncio.sleep(max(0, 1 - (time.monotonic() - tick)))
         except Exception as exc:
             structlog.get_logger().warning("camera.overlay_failed", error=type(exc).__name__)
         finally:
