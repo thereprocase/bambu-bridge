@@ -627,6 +627,10 @@ class PrinterService:
 
     async def _handle_report(self, report: ReportMessage) -> None:
         raw = report.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+        # Publish receipt time before any awaited observer/persistence work.
+        # A raw-bus consumer must never see new state with an old watermark.
+        if raw:
+            self._last_telemetry_at = time.time()
         for category, payload in raw.items():
             if isinstance(payload, dict):
                 self._native_categories[category] = _deep_merge(
@@ -654,11 +658,7 @@ class PrinterService:
         if self._on_seen is not None:
             await self._on_seen()
 
-        # Bump telemetry watermark — every report counts, even ones that
-        # produce an empty delta. The APK's "Last update Ns ago" subtitle
-        # reads this to render the disconnect headline (contract §6.2).
-        self._last_telemetry_at = time.time()
-
+        # Receipt watermark was already published above, before async work.
         prev_state = self._state
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
