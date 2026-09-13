@@ -705,7 +705,9 @@ async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
         await client.subscribe(f"device/{gateway.serial}/report")
         message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
         assert "print" in json.loads(message.payload)
-        assert gateway.status()["connections"]["mqtt"]["phase"] == "authenticated"
+        diagnostics = gateway.status()["connections"]["mqtt"]
+        assert diagnostics["phase"] == "subscribed"
+        assert any(item["phase"] == "authenticated" for item in diagnostics["history"])
     assert identity(directory)[2] == phone_pin and phone_key.read_bytes() == before
 
 

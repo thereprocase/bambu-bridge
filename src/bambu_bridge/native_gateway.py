@@ -768,6 +768,9 @@ class NativeGateway:
             "tls_connections": previous.get("tls_connections", 0) + (phase == "tls_connected"),
             "tcp_connections": previous.get("tcp_connections", 0) + (phase == "tcp_connected"),
             "auth_failures": previous.get("auth_failures", 0) + (phase == "access_code_rejected"),
+            "history": [*previous.get("history", []), {"phase": phase, "at": int(time.time())}][
+                -16:
+            ],
         }
 
     def setup_status(self, peer: str) -> dict[str, bool]:
@@ -934,6 +937,7 @@ class NativeGateway:
                         while pos < len(data):
                             topic, pos = take(data, pos)
                             allowed = topic == report_topic and data[pos] <= 1
+                            self.note("mqtt", "subscribed" if allowed else "subscription_rejected")
                             pos += 1
                             grants.append(0 if allowed else 128)
                             subscribed |= allowed
@@ -946,6 +950,14 @@ class NativeGateway:
                         mid = data[pos : pos + 2] if qos else b""
                         pos += 2 if qos else 0
                         if topic != request_topic or qos > 1 or head & 1:
+                            self.note(
+                                "mqtt",
+                                "publish_topic_rejected"
+                                if topic != request_topic
+                                else "publish_qos_rejected"
+                                if qos > 1
+                                else "publish_retained_rejected",
+                            )
                             return
                         fingerprint = hashlib.sha256(data[pos:]).digest()
                         if qos and head & 8 and seen_publishes.get(mid) == fingerprint:
@@ -958,6 +970,14 @@ class NativeGateway:
                         payload = json.loads(data[pos:])
                         if not isinstance(payload, dict):
                             return
+                        self.note(
+                            "mqtt",
+                            "start_received"
+                            if isinstance(payload.get("print"), dict)
+                            and payload["print"].get("command")
+                            in ("project_file", "gcode_file")
+                            else "command_received",
+                        )
                         system = payload.get("system")
                         if isinstance(system, dict) and system.get("command") == "get_access_code":
                             sequence = system.get("sequence_id", "0")
