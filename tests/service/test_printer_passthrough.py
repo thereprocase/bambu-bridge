@@ -7,19 +7,55 @@ silently discarded. A phone/web client needs the whole surface.
 
 from __future__ import annotations
 
+import asyncio
+import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from bambu_bridge.native_gateway import NativeGateway
 from bambu_bridge.protocol.models import ReportMessage
 from bambu_bridge.service.printer import PrinterService
 from tests.conftest import ACCESS_CODE, SERIAL
 
 
 def _service() -> PrinterService:
-    return PrinterService(
-        SERIAL, "127.0.0.1", ACCESS_CODE, friendly_name="P1S", mqtt_port=1
-    )
+    return PrinterService(SERIAL, "127.0.0.1", ACCESS_CODE, friendly_name="P1S", mqtt_port=1)
+
+
+async def test_ready_refresh_does_not_race_slow_seen_persistence(monkeypatch):
+    service = _service()
+    service._connected = True
+    service._native_categories = {"print": {"gcode_state": "FINISH"}}
+    service._last_telemetry_at = time.time() - 60
+    entered, release = asyncio.Event(), asyncio.Event()
+    tasks = []
+
+    async def seen():
+        entered.set()
+        await release.wait()
+
+    async def send(payload):
+        assert payload["pushing"]["command"] == "pushall"
+        tasks.append(
+            asyncio.create_task(
+                service._handle_report(ReportMessage.parse({"print": {"gcode_state": "FINISH"}}))
+            )
+        )
+        await entered.wait()
+
+    service._on_seen = seen
+    monkeypatch.setattr(service, "send_raw", send)
+    gateway = SimpleNamespace(service=lambda: service)
+    gateway.require_idle = lambda: NativeGateway.require_idle(gateway)
+    try:
+        await NativeGateway.ensure_idle(gateway, timeout=1)
+        assert entered.is_set() and not tasks[0].done()
+        assert time.time() - service._last_telemetry_at < 2
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
 
 
 class _RecordingMqtt:
@@ -28,6 +64,33 @@ class _RecordingMqtt:
 
     async def publish(self, payload: dict[str, Any]) -> None:
         self.published.append(payload)
+
+
+async def test_native_lifecycle_observer_is_awaited_before_report_fanout():
+    service = _service()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def observe(raw):
+        assert raw["print"]["gcode_state"] == "RUNNING"
+        entered.set()
+        await release.wait()
+
+    service.native_observer = observe
+    async with service.raw_bus.subscribe() as subscription:
+        task = asyncio.create_task(
+            service._handle_report(
+                ReportMessage.parse(
+                    {"print": {"gcode_state": "RUNNING", "gcode_file": "fixture.3mf"}}
+                )
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 1)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(subscription.get(), 0.01)
+        release.set()
+        await task
+        event = await asyncio.wait_for(subscription.get(), 1)
+        assert event.data["print"]["gcode_state"] == "RUNNING"
 
 
 @pytest.mark.asyncio
@@ -70,8 +133,7 @@ async def test_get_version_requested_on_connect() -> None:
     svc._mqtt = rec  # type: ignore[assignment]
     await svc._handle_connected()
     assert any(
-        env.get("info", {}).get("command") == "get_version"
-        for env in rec.published
+        env.get("info", {}).get("command") == "get_version" for env in rec.published
     ), rec.published
 
 

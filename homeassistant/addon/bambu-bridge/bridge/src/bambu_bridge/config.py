@@ -13,9 +13,10 @@ from __future__ import annotations
 import logging
 import sys
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from bambu_bridge.log_redaction import install, redact_event
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     bridge_pairing_remote_url: str | None = None  # optional direct HTTPS over Tailscale
     bridge_trusted_proxies: str = ""  # opt in exact trusted reverse proxy source IPs
     bridge_native_host: str | None = None  # explicit private IPv4; no listeners until enabled
+    bridge_native_durable_inbox: bool = False  # staged rollout; native command ordering changes
     bridge_api_key: str = ""  # empty => fail closed (see api/auth.py)
 
     # Optional read-only viewer token (env BRIDGE_VIZ_TOKEN).
@@ -60,6 +62,18 @@ class Settings(BaseSettings):
     # request reuses the live stream instead of opening a new TCP+TLS
     # connection. 0 = immediate teardown (original behaviour). Default 10 s.
     bridge_camera_linger_s: float = 10.0
+    # Shared native/HTTP HUD; HTTP ?overlay=false opts out.
+    bridge_native_camera_overlay: bool = True
+    bridge_camera_timezone: str = "UTC"  # IANA zone for the shared camera's completion estimate
+
+    @field_validator("bridge_camera_timezone")
+    @classmethod
+    def validate_camera_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("Use an installed IANA time zone, e.g. America/New_York") from exc
+        return value
 
     # Print-failure detection. Phase 1 spaghetti detection is a coarse,
     # zero-dependency heuristic (vision/) — default OFF until validated

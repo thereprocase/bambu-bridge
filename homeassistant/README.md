@@ -71,6 +71,10 @@ controls (pause/resume/stop/home, chamber light, target temps, fans, print
 speed) and connectivity/problem binary sensors. Bridge `event` frames are
 re-fired on the HA event bus as `bambu_bridge_event` for automations.
 
+For phone notifications without keeping Beluga's Android monitor running, use
+the [Home Assistant alert blueprint](integration/blueprints/README.md).
+Configure and test it before selecting Home Assistant alerts in the phone app.
+
 ## Future bridge-side niceties (not required, not blocking)
 
 - `GET /api/v1/server` — would feed HA device firmware/hostname (today the
