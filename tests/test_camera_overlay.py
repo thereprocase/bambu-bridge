@@ -52,7 +52,7 @@ def test_measured_printer_status_and_separate_delivery():
     now = time.time()
     lines, warning = status_lines(snapshot(), [{"created": now, "state": "delivered"}], now, 0.2)
     assert "PRINTING" in lines[0] and "42/275" in lines[0] and "15%" in lines[0]
-    assert "259/260 C" in lines[1] and "100/100 C" in lines[1] and "420 min" in lines[1]
+    assert "259/260 C" in lines[1] and "100/100 C" in lines[1] and "Finishes ~" in lines[1]
     assert "no start requested" in lines[2]
     assert not warning
     preparing, _ = status_lines(snapshot(layer=0), [], now, 0)
@@ -221,3 +221,20 @@ async def test_no_duplicate_live_frames_between_camera_arrivals(monkeypatch):
         assert await asyncio.wait_for(queue.get(), 0.5) == b"live"
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(queue.get(), 1.2)
+
+
+@pytest.mark.parametrize(
+    "stamp, remaining, expected",
+    [
+        ("2026-09-13T12:00:00+00:00", 420, "Finishes ~3:00 PM"),
+        ("2026-01-13T12:00:00+00:00", 420, "Finishes ~2:00 PM"),
+        ("2026-09-14T02:00:00+00:00", 420, "Finishes ~Mon 5:00 AM"),
+    ],
+)
+def test_completion_estimate_uses_local_timezone(stamp, remaining, expected):
+    now = datetime.fromisoformat(stamp).timestamp()
+    state = snapshot(stamp=stamp)
+    state["job"]["remaining_min"] = remaining
+    lines, _ = status_lines(state, [], now, 0, "America/New_York")
+    assert expected in lines[1]
+    assert "min left" not in lines[1]

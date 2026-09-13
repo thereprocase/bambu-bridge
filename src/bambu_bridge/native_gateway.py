@@ -156,7 +156,11 @@ class NativeGateway:
         self.inbox_cancel = contextvars.ContextVar("inbox_managed_cancel", default=None)
         self.inbox_expiry: set[asyncio.TimerHandle] = set()
         self.inbox_status: list[dict[str, Any]] = []
-        self.camera_overlay = OverlayStream(self.service, lambda: self.inbox_status)
+        self.camera_overlay = OverlayStream(
+            self.service,
+            lambda: self.inbox_status,
+            lambda: self.app.state.settings.bridge_camera_timezone,
+        )
         self.inbox_reports = EventBus()
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None

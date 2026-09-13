@@ -10,6 +10,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 from PIL import Image, ImageDraw, ImageFont
@@ -62,7 +63,11 @@ def bridge_line(receipts: list[dict[str, Any]], now: float) -> str:
 
 
 def status_lines(
-    snapshot: dict[str, Any], receipts: list[dict[str, Any]], now: float, frame_age: float | None
+    snapshot: dict[str, Any],
+    receipts: list[dict[str, Any]],
+    now: float,
+    frame_age: float | None,
+    timezone: str = "UTC",
 ) -> tuple[list[str], bool]:
     session = snapshot.get("session", {})
     age = None
@@ -85,11 +90,25 @@ def status_lines(
     if phase == "printing":
         title += f" | {number(job.get('percent'))}%"
     remaining = job.get("remaining_min") if phase in {"printing", "preparing", "paused"} else None
+    completion = "Finish time --"
+    if (
+        phase in {"printing", "preparing"}
+        and not stale
+        and not disconnected
+        and type(remaining) in (int, float)
+        and math.isfinite(remaining)
+        and 0 <= remaining <= 525600
+    ):
+        zone = ZoneInfo(timezone)
+        finish = datetime.fromtimestamp(now - (age or 0) + remaining * 60, zone)
+        today = datetime.fromtimestamp(now, zone).date()
+        day = "" if finish.date() == today else finish.strftime("%a ")
+        completion = "Finishes ~" + day + finish.strftime("%I:%M %p").lstrip("0")
     nozzle, bed = temps.get("nozzle", {}), temps.get("bed", {})
     thermal = (
         f"Nozzle {number(nozzle.get('current_c'))}/{number(nozzle.get('target_c'))} C"
         f" | Bed {number(bed.get('current_c'))}/{number(bed.get('target_c'))} C"
-        f" | ~{number(remaining)} min left"
+        f" | {completion}"
     )
     health = f"Telemetry age {number(age)}s | Camera age {number(frame_age)}s"
     error = snapshot.get("print_error") or {}
@@ -194,8 +213,14 @@ def render_frame(jpeg: bytes | None, lines: list[str], warning: bool) -> bytes:
 class OverlayStream:
     """Shared latest-only renderer at camera rate; status refresh/idle heartbeat at 1 Hz."""
 
-    def __init__(self, service: Callable[[], Any], receipts: Callable[[], list[dict[str, Any]]]):
+    def __init__(
+        self,
+        service: Callable[[], Any],
+        receipts: Callable[[], list[dict[str, Any]]],
+        timezone: Callable[[], str] = lambda: "UTC",
+    ):
         self.service, self.receipts = service, receipts
+        self.timezone = timezone
         self._subscribers: set[asyncio.Queue[bytes | None]] = set()
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -253,7 +278,9 @@ class OverlayStream:
                     if tick - status_at >= 1:
                         snapshot, receipts = service.snapshot(), self.receipts()
                         status_at = tick
-                    lines, warning = status_lines(snapshot, receipts, time.time(), age)
+                    lines, warning = status_lines(
+                        snapshot, receipts, time.time(), age, self.timezone()
+                    )
                     task = asyncio.create_task(
                         asyncio.to_thread(
                             render_frame,

@@ -29,3 +29,8 @@ frame-rate measurements are recorded in the operator MONITOR.md runbook.
 The previous 74795b0 release capped the native feed at one FPS and left HTTP raw.
 This follow-up removes those limitations and reduces normal overlay coverage from
 about 20% of the image to about 4% at 1280x720. Retain the prior release for rollback.
+
+Completion estimates use BRIDGE_CAMERA_TIMEZONE (IANA name; default UTC). The
+local deployment uses America/New_York. The panel shows Finishes ~3:30 PM, adding
+the weekday for a different local date. Paused/stale/disconnected or missing
+estimates show Finish time -- instead of a moving, unsupported ETA.
