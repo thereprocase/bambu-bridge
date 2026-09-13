@@ -38,6 +38,23 @@ def logical_path(value: str, cwd: str = "/") -> str:
     return "/" + path.lstrip("/")
 
 
+def command_path(command: dict[str, Any]) -> str:
+    """Decode Bambu's ftp://filename form as a printer-local path, not a host."""
+    value = command.get("param") if command.get("command") == "gcode_file" else command.get("url")
+    if not isinstance(value, str) or not value:
+        raise ValueError("BBSTART_INVALID_PATH")
+    parsed = urlsplit(value)
+    if parsed.scheme not in ("", "file", "ftp", "ftps"):
+        raise ValueError("BBSTART_INVALID_PATH")
+    path = parsed.path
+    if parsed.scheme in ("ftp", "ftps") and parsed.netloc and not path:
+        path = parsed.netloc
+    result = logical_path(unquote(path))
+    if result == "/":
+        raise ValueError("BBSTART_INVALID_PATH")
+    return result
+
+
 class NativeInbox:
     def __init__(self, directory: Path, *, budget: int = 512 * 1024 * 1024):
         self.directory = directory / "native-inbox"
@@ -268,7 +285,7 @@ class NativeInbox:
         parsed = urlsplit(url)
         if parsed.scheme not in ("", "file", "ftp", "ftps"):
             return None
-        logical = logical_path(unquote(parsed.path))
+        logical = command_path(command)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -329,7 +346,13 @@ class NativeInbox:
         row = self.get(identifier)
         payload = json.loads(row["command"])
         if payload["print"]["command"] == "project_file":
-            payload["print"]["url"] = "file:///sdcard" + row["remote"]
+            original = urlsplit(payload["print"]["url"])
+            if original.scheme in ("ftp", "ftps") and original.netloc and not original.path:
+                payload["print"]["url"] = original.scheme + "://" + row["remote"].lstrip("/")
+            else:
+                payload["print"]["url"] = "file:///sdcard" + row["remote"]
+            if "file" in payload["print"]:
+                payload["print"]["file"] = posixpath.basename(row["remote"])
         else:
             prefix = "/sdcard" if payload["print"]["param"].startswith("/sdcard/") else ""
             payload["print"]["param"] = prefix + row["remote"]
@@ -351,9 +374,7 @@ class NativeInbox:
         sequence = uuid.uuid4().hex
         command = payload["print"]
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        path = logical_path(
-            unquote(urlsplit(str(command.get("url", command.get("param", "")))).path)
-        )
+        path = "/" if reserved else command_path(command)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             owner = db.execute(
@@ -384,7 +405,7 @@ class NativeInbox:
     def activate_reserved(self, identifier: str, payload: dict[str, Any]) -> None:
         command = payload["print"]
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        remote = logical_path(unquote(urlsplit(str(command.get("url", ""))).path))
+        remote = command_path(command)
         sequence = uuid.uuid4().hex
         with self.connect() as db:
             changed = db.execute(
@@ -439,6 +460,13 @@ class NativeInbox:
                     logical_path(filename) == row["remote"]
                     or posixpath.basename(filename) == posixpath.basename(row["remote"])
                 )
+                # P1S reports can name the archive through subtask_name while
+                # gcode_file names the inner Metadata/plate_N.gcode member.
+                # Require the exact dispatch ACK before using a reusable name.
+                command = json.loads(row["command"] or "{}").get("print", {})
+                task_name = command.get("subtask_name")
+                if acknowledged and task_name and current.get("subtask_name") == task_name:
+                    matches = True
                 if matches and state in ("PREPARE", "RUNNING", "PAUSE"):
                     active = 1
                     if row["kind"] == "upload":
