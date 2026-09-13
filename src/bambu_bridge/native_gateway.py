@@ -492,10 +492,11 @@ class NativeGateway:
         inbox = self.inbox
         if inbox is None:
             return
-        await asyncio.to_thread(
+        changed = await asyncio.to_thread(
             inbox.observe, self.config["printer_id"], report, self.service().native_snapshot()
         )
-        self.inbox_status = await asyncio.to_thread(inbox.status)
+        if changed:
+            self.inbox_status = await asyncio.to_thread(inbox.status)
 
     async def deliver_inbox(self) -> None:
         """One ordered worker, independent of Orca socket lifetime; never replay a start."""
@@ -547,6 +548,10 @@ class NativeGateway:
                             self.inbox_failure(current, "BBDELIVERY_FAILED")
                 async with self.inbox_dispatch_lock:
                     service = self.service()
+                    current = await asyncio.to_thread(inbox.get, identifier)
+                    if current["state"] != "delivered" or current["start_state"] != "queued":
+                        continue
+                    await asyncio.to_thread(inbox.mark_readiness, identifier)
                     try:
                         await self.ensure_idle()
                     except ValueError as exc:
@@ -555,6 +560,8 @@ class NativeGateway:
                         current = await asyncio.to_thread(inbox.get, identifier)
                         if current["start_state"] == "blocked":
                             self.inbox_failure(current, reason)
+                    else:
+                        await asyncio.to_thread(inbox.mark_readiness, identifier, ready=True)
                     payload = await asyncio.to_thread(inbox.claim_start, identifier)
                     if payload is not None:
                         token = self.inbox_owner.set(identifier)

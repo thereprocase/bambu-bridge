@@ -22,6 +22,18 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+TIMING_FIELDS = (
+    "received_at",
+    "delivery_started_at",
+    "delivered_at",
+    "start_requested_at",
+    "readiness_started_at",
+    "ready_at",
+    "acknowledged_at",
+    "running_at",
+    "terminal_at",
+)
+
 
 class InboxError(Exception):
     def __init__(self, code: str):
@@ -78,9 +90,40 @@ class NativeInbox:
                 "retained": "INTEGER NOT NULL DEFAULT 1",
                 "kind": "TEXT NOT NULL DEFAULT 'upload'",
                 "client_peer": "TEXT",
+                **{name: "REAL" for name in TIMING_FIELDS},
             }.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE uploads ADD COLUMN {name} {definition}")
+            # Capture milestones atomically with state changes, not on every
+            # telemetry packet. Existing receipts retain NULL for unobserved times.
+            rules = {
+                "received_at": "NEW.state='stored' AND OLD.state IS NOT NEW.state",
+                "delivery_started_at": "NEW.state='delivering' AND OLD.state IS NOT NEW.state",
+                "delivered_at": "NEW.state='delivered' AND OLD.state IS NOT NEW.state",
+                "start_requested_at": (
+                    "NEW.start_state='queued' " "AND OLD.start_state IS NOT NEW.start_state"
+                ),
+                "acknowledged_at": (
+                    "NEW.acknowledged=1 " "AND OLD.acknowledged IS NOT NEW.acknowledged"
+                ),
+                "running_at": (
+                    "NEW.start_state='running' " "AND OLD.start_state IS NOT NEW.start_state"
+                ),
+                "terminal_at": (
+                    "NEW.start_state IN ('completed','resolved','rejected','cancelled','blocked') "
+                    "AND OLD.start_state IS NOT NEW.start_state"
+                ),
+            }
+            now = "ROUND((julianday('now')-2440587.5)*86400.0,3)"
+            assignments = ",".join(
+                f"{name}=CASE WHEN {condition} THEN COALESCE({name},{now}) ELSE {name} END"
+                for name, condition in rules.items()
+            )
+            db.execute(
+                "CREATE TRIGGER IF NOT EXISTS upload_timing_update "
+                "AFTER UPDATE OF state,start_state,acknowledged,seen_active ON uploads BEGIN "
+                f"UPDATE uploads SET {assignments} WHERE id=NEW.id; END"
+            )
         self.database.chmod(0o600)
 
     def acquire(self) -> None:
@@ -425,11 +468,12 @@ class NativeInbox:
                 (identifier,),
             )
 
-    def observe(self, printer: str, report: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    def observe(self, printer: str, report: dict[str, Any], snapshot: dict[str, Any]) -> bool:
         """Only fresh report edges advance lifecycle; snapshots alone never prove a start."""
         incoming = report.get("print", {})
         if not isinstance(incoming, dict):
-            return
+            return False
+        changed = False
         current = snapshot.get("print", {})
         filename = str(current.get("gcode_file", ""))
         state = incoming.get("gcode_state")
@@ -489,6 +533,8 @@ class NativeInbox:
                         "WHERE id=?",
                         (start_state, code, acknowledged, active, row["id"]),
                     )
+                    changed = True
+        return changed
 
     def translated_report(self, printer: str, report: dict[str, Any]) -> dict[str, Any]:
         incoming = report.get("print", {})
@@ -627,13 +673,23 @@ class NativeInbox:
                 (code, identifier),
             )
 
+    def mark_readiness(self, identifier: str, *, ready: bool = False) -> None:
+        column = "ready_at" if ready else "readiness_started_at"
+        with self.connect() as db:
+            db.execute(
+                f"UPDATE uploads SET {column}=? WHERE id=? AND start_state='queued'",
+                (time.time(), identifier),
+            )
+
     def status(self) -> list[dict[str, Any]]:
         with self.connect() as db:
             return [
                 dict(row)
                 for row in db.execute(
                     "SELECT id,CASE WHEN state='receiving' THEN 0 ELSE bytes END AS bytes,"
-                    "state,code,start_state FROM uploads ORDER BY "
+                    "state,code,start_state,created,dispatched_at,"
+                    + ",".join(TIMING_FIELDS)
+                    + " FROM uploads ORDER BY "
                     "COALESCE(start_state IN "
                     "('reserved','queued','dispatching','sent','accepted','running','unknown'),0) "
                     "DESC,"
