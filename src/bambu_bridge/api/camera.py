@@ -11,9 +11,11 @@ viewers share one printer-side connection and it closes when they all leave.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from typing import cast
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
@@ -30,6 +32,61 @@ router = APIRouter(prefix="/printers", tags=["camera"], dependencies=[Depends(re
 
 _BOUNDARY = "frame"
 _SNAPSHOT_WAIT_S = 10.0
+
+
+def hls_resource(resource: str, query: dict[str, str]) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+\.(?:m3u8|mp4|m4s|ts)", resource)) and all(
+        (
+            key in {"_HLS_msn", "_HLS_part"}
+            and value.isascii()
+            and value.isdigit()
+            and len(value) <= 12
+        )
+        or (key == "_HLS_skip" and value in {"YES", "v2"})
+        for key, value in query.items()
+    )
+
+
+@router.get("/{printer_id}/camera/hls/{resource}")
+async def camera_hls(printer_id: str, resource: str, request: Request) -> Response:
+    """Authenticated HTTPS facade for the shared H.264 encoder's LL-HLS output."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    query = dict(request.query_params)
+    # Each playlist/part request must carry its own header/cookie authentication.
+    if (
+        request.url.scheme != "https"
+        or not hls_resource(resource, query)
+        or not gateway
+        or not gateway.config
+        or gateway.config.get("printer_id") != printer_id
+        or not gateway.video.ready
+    ):
+        raise HTTPException(404, "Video unavailable")
+    code = await asyncio.to_thread(gateway.saved_code)
+    if not code:
+        raise HTTPException(503, "Video unavailable")
+    url = f"http://127.0.0.1:18888/streaming/live/1/{resource}"
+    try:
+        async with (
+            httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client,
+            client.stream("GET", url, params=query, auth=("bblp", code)) as upstream,
+        ):
+            if upstream.status_code != 200:
+                raise HTTPException(
+                    404 if upstream.status_code == 404 else 503, "Video unavailable"
+                )
+            chunks = bytearray()
+            async for chunk in upstream.aiter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > 9 * 1024 * 1024:
+                    raise HTTPException(502, "Video segment too large")
+            return Response(
+                bytes(chunks),
+                media_type=upstream.headers.get("content-type"),
+                headers={"Cache-Control": "no-store"},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "Video unavailable") from exc
 
 
 def _overlay(request: Request, printer_id: str, enabled: bool) -> OverlayStream | None:
@@ -73,9 +130,14 @@ def _service(registry: Registry, printer_id: str) -> PrinterService:
 async def camera_video(printer_id: str, request: Request) -> StreamingResponse:
     """Private, fixed-size RGB feed for the single local on-demand encoder."""
     gateway = getattr(request.app.state, "native_gateway", None)
-    if (not request.client or request.client.host != "127.0.0.1" or not gateway
-            or not gateway.config or gateway.config.get("printer_id") != printer_id
-            or not request.app.state.settings.bridge_native_video):
+    if (
+        not request.client
+        or request.client.host != "127.0.0.1"
+        or not gateway
+        or not gateway.config
+        or gateway.config.get("printer_id") != printer_id
+        or not request.app.state.settings.bridge_native_video
+    ):
         raise HTTPException(404, "Video encoder unavailable")
 
     async def frames() -> AsyncIterator[bytes]:
@@ -83,8 +145,9 @@ async def camera_video(printer_id: str, request: Request) -> StreamingResponse:
             while (frame := await queue.get()) is not None:
                 yield frame
 
-    return StreamingResponse(frames(), media_type="application/octet-stream",
-                             headers={"Cache-Control": "no-store"})
+    return StreamingResponse(
+        frames(), media_type="application/octet-stream", headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.get("/{printer_id}/camera/stream.mjpeg")

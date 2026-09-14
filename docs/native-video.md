@@ -21,7 +21,9 @@ The bridge terminates TLS on its configured native host, port322, using the
 existing RSA camera certificate. It relays to MediaMTX on **127.0.0.1:18554**.
 Do not expose the backend outside loopback. Read authentication uses `bblp`
 and the bridge's native access code. Publishing is restricted to loopback and
-the single camera path. Other MediaMTX services are disabled. The runtime
+the single camera path. LL-HLS listens only on127.0.0.1:18888 and is proxied
+through the authenticated HTTPS camera API for Android. It remuxes the same
+H.264 stream without a second encoder. Other MediaMTX services are disabled. The runtime
 configuration is mode0600 in a mode0700 directory and is removed on shutdown.
 Native code changes restart this configuration with the native gateway.
 
@@ -46,3 +48,10 @@ Acceptance: use the installed Orca plugin to authenticate and decode frames,
 verify wrong-code rejection, count decoded frames (not individual NAL samples),
 check reconnect and two simultaneous readers, observe encoder shutdown after
 disconnect, and recheck native JPEG/MJPEG/snapshot routes and job continuity.
+
+Android uses `/api/v1/printers/{id}/camera/hls/index.m3u8`; every playlist and
+segment request needs authentication. Only allowlisted resource names and LL-HLS
+query fields are accepted; HTTP and query-token access are rejected. The app
+uses its existing scoped/pinned HTTPS client and falls back to JPEG when HLS
+is unavailable. The HLS muxer closes ten seconds after its final request,
+followed by the shared encoder's five-second idle delay when no Orca viewers remain.
