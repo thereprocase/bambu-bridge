@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import unquote, urlsplit
 
+from bambu_bridge.protocol.job_identity import empty_idle_report
+
 TIMING_FIELDS = (
     "received_at",
     "delivery_started_at",
@@ -97,6 +99,7 @@ class NativeInbox:
                     db.execute(f"ALTER TABLE uploads ADD COLUMN {name} {definition}")
             # Capture milestones atomically with state changes, not on every
             # telemetry packet. Existing receipts retain NULL for unobserved times.
+            db.execute("DROP TRIGGER IF EXISTS upload_timing_update")
             rules = {
                 "received_at": "NEW.state='stored' AND OLD.state IS NOT NEW.state",
                 "delivery_started_at": "NEW.state='delivering' AND OLD.state IS NOT NEW.state",
@@ -111,7 +114,8 @@ class NativeInbox:
                     "NEW.start_state='running' " "AND OLD.start_state IS NOT NEW.start_state"
                 ),
                 "terminal_at": (
-                    "NEW.start_state IN ('completed','resolved','rejected','cancelled','blocked') "
+                    "NEW.start_state IN ('completed','interrupted','resolved',"
+                    "'rejected','cancelled','blocked') "
                     "AND OLD.start_state IS NOT NEW.start_state"
                 ),
             }
@@ -351,7 +355,8 @@ class NativeInbox:
                 return None
             prior = db.execute(
                 "SELECT id FROM uploads WHERE printer=? AND command=? AND id<>? "
-                "AND start_state NOT IN ('completed','rejected','cancelled','resolved') LIMIT 1",
+                "AND start_state NOT IN ('completed','interrupted',"
+                "'rejected','cancelled','resolved') LIMIT 1",
                 (printer, encoded, row["id"]),
             ).fetchone()
             if prior is not None:
@@ -525,6 +530,8 @@ class NativeInbox:
                 if matches and active and acknowledged and state in ("FINISH", "FAILED", "IDLE"):
                     start_state = "completed" if state == "FINISH" else "resolved"
                     code = "BBSTART_COMPLETED" if state == "FINISH" else "BBSTART_ENDED"
+                if active and acknowledged and empty_idle_report(incoming, current):
+                    start_state, code = "interrupted", "BBSTART_INTERRUPTED"
                 if (start_state, code, acknowledged, active) != (
                     row["start_state"],
                     row["code"],
@@ -648,7 +655,7 @@ class NativeInbox:
             rows = db.execute(
                 "SELECT id FROM uploads WHERE retained=1 AND created<? AND "
                 "state='delivered' AND (start_state IS NULL OR start_state IN "
-                "('completed','resolved','rejected','cancelled','blocked'))",
+                "('completed','interrupted','resolved','rejected','cancelled','blocked'))",
                 (int(time.time()) - 604800,),
             ).fetchall()
             for row in rows:
@@ -657,7 +664,7 @@ class NativeInbox:
             db.execute(
                 "DELETE FROM uploads WHERE retained=0 AND created<unixepoch()-7776000 "
                 "AND (start_state IS NULL OR start_state IN "
-                "('completed','resolved','rejected','cancelled','blocked'))"
+                "('completed','interrupted','resolved','rejected','cancelled','blocked'))"
             )
 
     def cancel_queued(self, printer: str) -> None:
