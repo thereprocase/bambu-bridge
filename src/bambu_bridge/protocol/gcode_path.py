@@ -44,7 +44,8 @@ Collinear merge
 ---------------
 Consecutive segments at the same Z whose direction vectors satisfy
 ``|cross(d1, d2)| < _COLLINEAR_EPS`` (unit-normalised cross product) are
-merged into a single segment.
+merged only when their endpoints touch and their directions agree. Disconnected
+parallel paths must never be joined across a travel gap.
 
 Budget
 ------
@@ -178,7 +179,16 @@ def _merge_collinear(segs: list[_Segment]) -> list[_Segment]:
         elif cur_dir is None and nxt_dir is None:
             collinear = True
 
-        if collinear:
+        connected = (
+            abs(current.x1 - nxt.x0) <= 1e-6
+            and abs(current.y1 - nxt.y0) <= 1e-6
+            and abs(current.z1 - nxt.z0) <= 1e-6
+        )
+        forward = bool(
+            cur_dir and nxt_dir
+            and sum(a * b for a, b in zip(cur_dir, nxt_dir, strict=True)) > 0
+        )
+        if collinear and connected and forward:
             # Extend current to cover nxt's endpoint.
             current = _Segment(
                 current.x0, current.y0, current.z0,
