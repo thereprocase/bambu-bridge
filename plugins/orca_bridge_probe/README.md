@@ -3,8 +3,8 @@
 This is a read-only Sprint 0 diagnostic, **not the archive plugin**.
 OrcaSlicer 2.4.2 cannot load it: that release predates the Python plugin system.
 The source is matched to Orca development revision
-`292cf0095e698a6e0f96041bd142fd41afd6ccfb`; execution in a compatible Orca build
-loaded successfully in the official Windows nightly dated 2026-09-14. The
+`292cf0095e698a6e0f96041bd142fd41afd6ccfb`. The package loaded successfully in
+the official Windows nightly dated 2026-09-14. The
 Bridge Compatibility page executed the read-only probe against an empty bed.
 That proves host loading and API inspection, not mesh capture on a populated
 plate, project round-trip recovery, or automatic print capture.
