@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from bambu_bridge.protocol.gcode_path import parse_gcode_toolpath
 
@@ -27,6 +27,7 @@ class Shape:
     radius: float
     height: float
     wall_count: int | None = None
+    faces: tuple[tuple[float, ...], ...] = ()
 
 
 def archive_shape(source: BinaryIO) -> Shape | None:
@@ -72,7 +73,143 @@ def archive_shape(source: BinaryIO) -> Shape | None:
         math.sqrt(2) * 128, *(math.hypot(s[i], s[i + 1]) for s in segments for i in (0, 3))
     )
     height = max(0.0, *(s[2] for s in segments), *(s[5] for s in segments))
-    return Shape(segments, radius, height, wall_count)
+    return Shape(
+        segments, radius, height, wall_count, exterior_faces(walls.positions, surfaces.positions)
+    )
+
+
+# bench-ink-v1 from peg-board50: four constant light bands and charcoal ink.
+# Keep this CPU renderer small; Blender/Freestyle is not a live-video dependency.
+INK = (5, 7, 9, 255)
+BASE = (82, 218, 193)
+BANDS = (0.22, 0.48, 0.76, 1.0)
+MAX_FACES = 6000
+
+
+def exterior_faces(walls: Any, skins: Any) -> tuple[tuple[float, ...], ...]:
+    """Extrusion ribbons, not a guessed CAD solid. Merge identical stacked walls.
+
+    Layer heights come from exterior paths. Never connect successive paths across
+    a travel, fill a hole, or bridge a missing layer. Coordinates remain on plate.
+    Each face stores four xyz vertices and a unit normal.
+    """
+    levels = sorted({round(walls[i], 4) for i in range(2, len(walls), 6)})
+    floors = {z: levels[i - 1] if i else max(0.0, z - 0.2) for i, z in enumerate(levels)}
+    merged: dict[tuple[float, ...], list[list[float]]] = {}
+    for i in range(0, len(walls), 6):
+        x, y, z, u, v, q = (round(float(n), 4) for n in walls[i : i + 6])
+        if abs(z - q) > 0.001 or z not in floors or math.hypot(u - x, v - y) < 0.001:
+            continue
+        if not all(math.isfinite(n) and abs(n) <= 1000 for n in (x, y, z, u, v, q)):
+            continue
+        key = min((x, y, u, v), (u, v, x, y))
+        spans = merged.setdefault(key, [])
+        bottom = floors[z]
+        if spans and abs(spans[-1][1] - bottom) < 0.001:
+            spans[-1][1] = z
+        elif not spans or spans[-1] != [bottom, z]:
+            spans.append([bottom, z])
+    faces = []
+    for (x, y, u, v), spans in merged.items():
+        length = math.hypot(u - x, v - y)
+        for low, high in spans:
+            faces.append(
+                (
+                    x - 128,
+                    y - 128,
+                    low,
+                    u - 128,
+                    v - 128,
+                    low,
+                    u - 128,
+                    v - 128,
+                    high,
+                    x - 128,
+                    y - 128,
+                    high,
+                    (v - y) / length,
+                    (x - u) / length,
+                    0.0,
+                )
+            )
+    # Skins are narrow extrusion ribbons; no polygon fill across cutouts.
+    for i in range(0, len(skins), 6):
+        x, y, z, u, v, q = (float(n) for n in skins[i : i + 6])
+        length = math.hypot(u - x, v - y)
+        if length < 0.001 or not all(
+            math.isfinite(n) and abs(n) <= 1000 for n in (x, y, z, u, v, q)
+        ):
+            continue
+        dx, dy = -(v - y) / length * 0.25, (u - x) / length * 0.25
+        faces.append(
+            (
+                x - 128 + dx,
+                y - 128 + dy,
+                z,
+                u - 128 + dx,
+                v - 128 + dy,
+                q,
+                u - 128 - dx,
+                v - 128 - dy,
+                q,
+                x - 128 - dx,
+                y - 128 - dy,
+                z,
+                0.0,
+                0.0,
+                1.0,
+            )
+        )
+    stride = max(1, math.ceil(len(faces) / MAX_FACES))
+    return tuple(faces[::stride])
+
+
+def cel_color(normal: tuple[float, ...], angle: float) -> tuple[int, ...]:
+    nx, ny, nz = normal
+    rx, ry = (
+        nx * math.cos(angle) - ny * math.sin(angle),
+        nx * math.sin(angle) + ny * math.cos(angle),
+    )
+    # Two-sided exterior ribbons: orient toward the camera before lighting.
+    if -ry * math.cos(PITCH) + nz * math.sin(PITCH) < 0:
+        rx, ry, nz = -rx, -ry, -nz
+    vertical = ry * math.sin(PITCH) + nz * math.cos(PITCH)
+    facing = -ry * math.cos(PITCH) + nz * math.sin(PITCH)
+    light = max(0.0, min(1.0, (-0.65 * rx + 0.85 * vertical + 1.3 * facing) / 1.683))
+    band = BANDS[sum(light >= threshold for threshold in (0.2, 0.48, 0.78))]
+    return (*(round(c * band) for c in BASE), 255)
+
+
+def paint_cel(
+    panel: Image.Image, shape: Shape, project: Callable[..., tuple[float, float]], angle: float
+) -> None:
+    layer = Image.new("RGBA", panel.size)
+    draw = ImageDraw.Draw(layer)
+    sinr, cosr = math.sin(angle), math.cos(angle)
+
+    def depth(face: tuple[float, ...]) -> float:
+        x = face[0] + face[3] + face[6] + face[9]
+        y = face[1] + face[4] + face[7] + face[10]
+        z = face[2] + face[5] + face[8] + face[11]
+        return -(x * sinr + y * cosr) * math.cos(PITCH) + z * math.sin(PITCH)
+
+    colors: dict[tuple[float, ...], tuple[int, ...]] = {}
+    for face in sorted(shape.faces, key=depth):
+        normal = face[12:]
+        if normal not in colors:
+            colors[normal] = cel_color(normal, angle)
+        points = [
+            project(face[0], face[1], face[2]),
+            project(face[3], face[4], face[5]),
+            project(face[6], face[7], face[8]),
+            project(face[9], face[10], face[11]),
+        ]
+        draw.polygon(points, fill=colors[normal])
+    # Ink only the visible silhouette: no wireframe or extrusion seam clutter.
+    mask = layer.getchannel("A")
+    ink = Image.new("RGBA", panel.size, INK)
+    panel.paste(ink, (0, 0), mask.filter(ImageFilter.MaxFilter(3)))
+    panel.alpha_composite(layer)
 
 
 def projection(
@@ -124,10 +261,13 @@ def draw_shape(
         ry = x * math.sin(angle) + y * math.cos(angle)
         return -ry * math.cos(PITCH) + z * math.sin(PITCH)
 
-    for index, segment in sorted(enumerate(shape.segments), key=depth):
-        wall = shape.wall_count is None or index < shape.wall_count
-        color = (174, 225, 216, 255) if wall else (102, 155, 161, 235)
-        draw.line([project(*segment[:3]), project(*segment[3:])], fill=color, width=1)
+    if shape.faces:
+        paint_cel(panel, shape, project, angle)
+    else:
+        for index, segment in sorted(enumerate(shape.segments), key=depth):
+            wall = shape.wall_count is None or index < shape.wall_count
+            color = (62, 193, 180, 255) if wall else (102, 218, 199, 255)
+            draw.line([project(*segment[:3]), project(*segment[3:])], fill=color, width=1)
     canvas.paste(panel, (x, max(margin, y)), panel)
 
 
