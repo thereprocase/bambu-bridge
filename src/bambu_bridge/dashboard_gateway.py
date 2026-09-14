@@ -49,7 +49,14 @@ class DashboardGateway:
             and headers.get(b"tailscale-user-login") == self.login
             and headers.get(b"x-forwarded-proto") == "https"
             and (origin is None or origin == self.origin)
-            and headers.get(b"sec-fetch-site") != "cross-site"
+            and (
+                headers.get(b"sec-fetch-site") != "cross-site"
+                or (
+                    scope.get("method") == "GET"
+                    and headers.get(b"sec-fetch-mode") == "navigate"
+                    and headers.get(b"sec-fetch-dest") == "document"
+                )
+            )
         )
         if scope["type"] == "websocket" or scope.get("method") not in ("GET", "HEAD", "OPTIONS"):
             trusted = trusted and origin == self.origin
