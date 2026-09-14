@@ -80,6 +80,9 @@ include = [
     "docs/LOCAL-PAIRING.md",
     "docs/ORCA.md",
     "docs/NATIVE-P1S.md",
+    "docs/PRINT-LIBRARY.md",
+    "docs/ORCA-ARTIFACT-HOOK-RFC.md",
+    "plugins/",
     "pyproject.toml",
 ]
 exclude = [

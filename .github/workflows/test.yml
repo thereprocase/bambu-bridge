@@ -61,7 +61,7 @@ jobs:
           fi
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests plugins
 
       - name: Type-check (mypy)
         run: uv run mypy src
