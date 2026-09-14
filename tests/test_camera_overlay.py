@@ -131,7 +131,7 @@ async def test_shared_worker_updates_during_camera_loss_and_releases(monkeypatch
     stream = OverlayStream(lambda: service, lambda: [])
     calls = []
 
-    def render(frame, lines, warning, ams=None):
+    def render(frame, lines, warning, ams=None, shape=None, rotation_seconds=0):
         calls.append(frame)
         return b"live" if frame else b"unavailable"
 
@@ -196,7 +196,7 @@ async def test_camera_rate_is_not_capped_by_status_refresh(monkeypatch):
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=state)
     stream = OverlayStream(lambda: service, lambda: [])
     monkeypatch.setattr(
-        camera_overlay, "render_frame", lambda frame, lines, warning, ams=None: frame
+        camera_overlay, "render_frame", lambda frame, *args: frame
     )
     async with stream.subscribe() as queue:
         for i in range(5):
@@ -217,7 +217,7 @@ async def test_no_duplicate_live_frames_between_camera_arrivals(monkeypatch):
 
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=snapshot)
     monkeypatch.setattr(
-        camera_overlay, "render_frame", lambda frame, lines, warning, ams=None: frame
+        camera_overlay, "render_frame", lambda frame, *args: frame
     )
     stream = OverlayStream(lambda: service, lambda: [])
     async with stream.subscribe() as queue:

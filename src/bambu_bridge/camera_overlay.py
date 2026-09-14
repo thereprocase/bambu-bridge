@@ -16,6 +16,7 @@ import structlog
 from PIL import Image, ImageDraw, ImageFont
 
 from bambu_bridge.ams_overlay import ams_panel, draw_ams
+from bambu_bridge.turntable_overlay import Shape, ShapeCache, draw_shape
 
 STALE_TELEMETRY_S = 60
 STALE_FRAME_S = 5
@@ -142,7 +143,8 @@ def status_lines(
 
 
 def render_frame(
-    jpeg: bytes | None, lines: list[str], warning: bool, ams: dict[str, Any] | None = None
+    jpeg: bytes | None, lines: list[str], warning: bool, ams: dict[str, Any] | None = None,
+    shape: Shape | None = None, rotation_seconds: float = 0.0
 ) -> bytes:
     """Render off the event loop; bound decoded dimensions before allocating RGB."""
     canvas = None
@@ -213,6 +215,8 @@ def render_frame(
         )
     if ams:
         draw_ams(canvas, ams)
+    if shape:
+        draw_shape(canvas, shape, rotation_seconds, panel_width + margin, panel_height)
     output = io.BytesIO()
     canvas.save(output, format="JPEG", quality=85)
     return output.getvalue()
@@ -226,9 +230,11 @@ class OverlayStream:
         service: Callable[[], Any],
         receipts: Callable[[], list[dict[str, Any]]],
         timezone: Callable[[], str] = lambda: "UTC",
+        shape_loader: Callable[[dict[str, Any]], Shape | None] | None = None,
     ):
         self.service, self.receipts = service, receipts
         self.timezone = timezone
+        self.shapes = ShapeCache(shape_loader) if shape_loader else None
         self._subscribers: set[asyncio.Queue[bytes | None]] = set()
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -296,6 +302,8 @@ class OverlayStream:
                             lines,
                             warning,
                             ams_panel(snapshot, time.time()),
+                            self.shapes.update(snapshot) if self.shapes else None,
+                            tick,
                         )
                     )
                     try:
