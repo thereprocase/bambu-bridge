@@ -88,6 +88,15 @@ async def serve(settings: Settings) -> None:
         )
         for config in configs
     ]
+    if settings.bridge_dashboard_port is not None:
+        from bambu_bridge.dashboard_gateway import DashboardGateway
+
+        gateway = DashboardGateway(app, settings.bridge_dashboard_origin,
+                                   settings.bridge_dashboard_login, settings.bridge_api_key)
+        servers.append(Listener(uvicorn.Config(
+            gateway, host="127.0.0.1", port=settings.bridge_dashboard_port,
+            lifespan="off", proxy_headers=False,
+        )))
     loop = asyncio.get_running_loop()
 
     def stop() -> None:

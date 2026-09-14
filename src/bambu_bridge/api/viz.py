@@ -927,8 +927,9 @@ _ANDROID_APK = Path("/var/lib/bambu-bridge/downloads/bambu-bridge.apk")
 
 
 @app_shell_router.get("/downloads/android")
-async def get_android_apk() -> Response:
+async def get_android_apk(request: Request) -> Response:
     """Download the signed app; contains no printer credentials or status."""
+    _dashboard_access(request)
     if not _ANDROID_APK.is_file():
         raise HTTPException(status_code=404, detail="Android download is not installed")
     return FileResponse(
@@ -937,6 +938,13 @@ async def get_android_apk() -> Response:
         filename="bambu-bridge.apk",
         headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"},
     )
+
+
+def _dashboard_access(request: Request) -> None:
+    settings = getattr(request.app.state, "settings", None)
+    if (settings and settings.bridge_dashboard_port is not None
+            and not request.scope.get("bambu.dashboard_authenticated")):
+        raise HTTPException(403, "Open the dashboard at its private HTTPS Tailscale DNS URL")
 
 
 def _serve_app_index() -> Response:
@@ -956,30 +964,32 @@ def _serve_app_index() -> Response:
 
 
 @app_shell_router.get("/")
-async def get_root() -> RedirectResponse:
+async def get_root(request: Request) -> RedirectResponse:
     """Redirect the bare host to the SPA shell.
 
     A 307 (temporary, method-preserving) keeps the bridge free to repurpose
     ``/`` later without baking a permanent redirect into client caches.  This
     is the only behavior change to ``/`` (previously unrouted -> 404).
     """
+    _dashboard_access(request)
     return RedirectResponse(url="/app/", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @app_shell_router.get("/app")
 @app_shell_router.get("/app/")
-async def get_app_index() -> Response:
+async def get_app_index(request: Request) -> Response:
     """Serve the SPA shell HTML at ``/app`` and ``/app/`` (no auth).
 
     Routing is hash-based client-side, so there is no SPA path-fallback to
     implement here: every real URL path maps to a real file under
     ``static/app/`` and unknown hashes never reach the server.
     """
+    _dashboard_access(request)
     return _serve_app_index()
 
 
 @app_shell_router.get("/app/{path:path}")
-async def get_app_asset(path: str) -> Response:
+async def get_app_asset(path: str, request: Request) -> Response:
     """Serve a static asset under ``static/app/`` with the correct media type.
 
     Path-traversal hardening: the requested path is resolved against the
@@ -990,6 +1000,7 @@ async def get_app_asset(path: str) -> Response:
     """
     # Empty path means a request for "/app/" with a trailing slash captured by
     # this catch-all on some clients; serve the index for parity.
+    _dashboard_access(request)
     if path in ("", "/"):
         return _serve_app_index()
 
