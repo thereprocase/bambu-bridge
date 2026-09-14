@@ -43,6 +43,7 @@ def hls_resource(resource: str, query: dict[str, str]) -> bool:
             and len(value) <= 12
         )
         or (key == "_HLS_skip" and value in {"YES", "v2"})
+        or (key == "session" and bool(re.fullmatch(r"[A-Za-z0-9-]{1,64}", value)))
         for key, value in query.items()
     )
 
@@ -69,9 +70,13 @@ async def camera_hls(printer_id: str, resource: str, request: Request) -> Respon
     try:
         async with (
             httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client,
-            client.stream("GET", url, params=query, auth=("bblp", code)) as upstream,
+            # No browser cookies cross the facade. Ask MediaMTX for its explicit
+            # playlist-session URLs instead of following its cookie-probe redirect.
+            client.stream("GET", url, params={"cookieCheck": "1", **query},
+                          auth=("bblp", code)) as upstream,
         ):
             if upstream.status_code != 200:
+                log.warning("camera.hls_upstream_status", status=upstream.status_code)
                 raise HTTPException(
                     404 if upstream.status_code == 404 else 503, "Video unavailable"
                 )
@@ -86,6 +91,7 @@ async def camera_hls(printer_id: str, resource: str, request: Request) -> Respon
                 headers={"Cache-Control": "no-store"},
             )
     except httpx.HTTPError as exc:
+        log.warning("camera.hls_upstream_failed", error=type(exc).__name__)
         raise HTTPException(503, "Video unavailable") from exc
 
 

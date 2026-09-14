@@ -11,6 +11,7 @@ from bambu_bridge.api import camera
     "resource,query,valid",
     [
         ("index.m3u8", {}, True),
+        ("video1_stream.m3u8", {"session": "45883863-8db1-4e63-8773-eb95b6906f1d"}, True),
         ("video1_part42.mp4", {"_HLS_msn": "12", "_HLS_part": "2"}, True),
         ("video1_stream.m3u8", {"_HLS_skip": "YES"}, True),
         ("../index.m3u8", {}, False),
@@ -47,7 +48,7 @@ async def test_hls_fails_closed_without_https_or_backend(scheme, ready):
 
 async def test_hls_proxies_only_fixed_local_origin_and_does_not_expose_native_code(monkeypatch):
     def handler(req):
-        assert str(req.url) == "http://127.0.0.1:18888/streaming/live/1/index.m3u8"
+        assert str(req.url) == "http://127.0.0.1:18888/streaming/live/1/index.m3u8?cookieCheck=1"
         assert req.headers["authorization"].startswith("Basic ")
         return httpx.Response(
             200,
