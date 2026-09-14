@@ -9,7 +9,7 @@ from PIL import Image
 
 from bambu_bridge.camera_overlay import OverlayStream, render_frame
 from bambu_bridge.native_video import NativeVideo, configuration
-from bambu_bridge.video_publisher import encoder_command
+from bambu_bridge.video_publisher import remux_command
 
 
 @pytest.mark.parametrize(
@@ -49,11 +49,10 @@ def test_backend_only_exposes_loopback_and_separates_publish_permission():
     assert config["paths"]["streaming/live/1"]["runOnDemandCloseAfter"] == "5s"
 
 
-def test_encoder_fixed_framerate_and_no_credentials_in_arguments():
-    args = encoder_command("ffmpeg")
-    assert args[args.index("-framerate") + 1] == "30"
-    assert args[args.index("-bf") + 1] == "0"
-    assert args[args.index("-g") + 1] == "60"
+def test_orca_remuxes_shared_high_stream_without_reencoding():
+    args = remux_command("ffmpeg", "/tmp/bridge-hls-test/high.m3u8")
+    assert args[args.index("-c:v") + 1] == "copy"
+    assert args[args.index("-i") + 1] == "/tmp/bridge-hls-test/high.m3u8"
     assert args[-1] == "rtsp://127.0.0.1:18554/streaming/live/1"
 
 
