@@ -80,6 +80,9 @@ export function mount(root, app) {
   sensorCard.appendChild(tempsBox);
   sensorCard.appendChild(fanRow);
   sensorCard.appendChild(amsLine);
+  const amsEnvironment = el('div', { class: 'stack mt-3' });
+  sensorCard.appendChild(amsEnvironment);
+  sensorCard.appendChild(el('a', { href: '/downloads/android', class: 't-caption', text: 'Install Android app' }));
   main.appendChild(sensorCard);
 
   // Recent jobs.
@@ -274,6 +277,13 @@ export function mount(root, app) {
   // ── AMS one-line (§4.3 labeling + §6.1.1 rescan hold) ────────────────────────
   function renderAms(vm) {
     clear(amsLine);
+    clear(amsEnvironment);
+    amsEnvironment.classList.toggle('is-stale', !vm.connected);
+    for (const [i, unit] of (vm.ams?.units || []).entries()) {
+      const rh = typeof unit.humidity_pct === 'number' ? `${unit.humidity_pct}% RH` : 'Humidity unavailable';
+      const temp = typeof unit.temperature_c === 'number' ? `${unit.temperature_c.toFixed(1)} °C` : 'Temperature unavailable';
+      amsEnvironment.appendChild(el('div', { class: 't-caption live-num', text: `AMS ${Number(unit.id) + 1 || i + 1} · ${rh} · ${temp}${vm.connected ? '' : ' · last known'}` }));
+    }
     const ams = vm.ams || {};
     if (!ams.present) {
       amsLine.appendChild(el('span', { class: 'dim t-caption', text: 'No AMS detected' }));
