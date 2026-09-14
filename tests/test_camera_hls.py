@@ -11,6 +11,8 @@ from bambu_bridge.api import camera
     "resource,query,valid",
     [
         ("index.m3u8", {}, True),
+        ("c40e5d2d4222_video1_init.mp4", {"cookieCheck": "1", "session": "test-session"}, True),
+        ("index.m3u8", {"cookieCheck": "2"}, False),
         ("video1_stream.m3u8", {"session": "45883863-8db1-4e63-8773-eb95b6906f1d"}, True),
         ("video1_part42.mp4", {"_HLS_msn": "12", "_HLS_part": "2"}, True),
         ("video1_stream.m3u8", {"_HLS_skip": "YES"}, True),
