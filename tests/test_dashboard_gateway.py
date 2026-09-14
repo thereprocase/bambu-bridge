@@ -44,6 +44,19 @@ def test_session_and_authorized_http_do_not_return_key() -> None:
         assert response.json() == {"connected": True, "authentication": "tailscale"}
         assert "owner-secret" not in response.text
         assert response.headers["cache-control"] == "no-store"
+        # Clicking a link from another site must open the dashboard normally.
+        assert (
+            client.get(
+                "/app/session",
+                headers={
+                    **HEADERS,
+                    "Sec-Fetch-Site": "cross-site",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Dest": "document",
+                },
+            ).status_code
+            == 200
+        )
         response = client.get("/api/test?token=tailscale-session&overlay=false", headers=HEADERS)
         assert response.json() == {"authorized": True, "scheme": "https", "query": "overlay=false"}
         assert client.post("/api/test", headers=HEADERS).status_code == 403
