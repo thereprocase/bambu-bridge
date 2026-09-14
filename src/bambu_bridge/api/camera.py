@@ -15,7 +15,6 @@ import re
 from collections.abc import AsyncIterator
 from typing import cast
 
-import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
@@ -51,7 +50,7 @@ def hls_resource(resource: str, query: dict[str, str]) -> bool:
 
 @router.get("/{printer_id}/camera/hls/{resource}")
 async def camera_hls(printer_id: str, resource: str, request: Request) -> Response:
-    """Authenticated HTTPS facade for the shared H.264 encoder's LL-HLS output."""
+    """Authenticated HTTPS facade for the shared adaptive HLS ladder."""
     gateway = getattr(request.app.state, "native_gateway", None)
     query = dict(request.query_params)
     # Each playlist/part request must carry its own header/cookie authentication.
@@ -64,36 +63,18 @@ async def camera_hls(printer_id: str, resource: str, request: Request) -> Respon
         or not gateway.video.ready
     ):
         raise HTTPException(404, "Video unavailable")
-    code = await asyncio.to_thread(gateway.saved_code)
-    if not code:
-        raise HTTPException(503, "Video unavailable")
-    url = f"http://127.0.0.1:18888/streaming/live/1/{resource}"
     try:
-        async with (
-            httpx.AsyncClient(timeout=15, trust_env=False, follow_redirects=False) as client,
-            # No browser cookies cross the facade. Ask MediaMTX for its explicit
-            # playlist-session URLs instead of following its cookie-probe redirect.
-            client.stream("GET", url, params={"cookieCheck": "1", **query},
-                          auth=("bblp", code)) as upstream,
-        ):
-            if upstream.status_code != 200:
-                log.warning("camera.hls_upstream_status", status=upstream.status_code)
-                raise HTTPException(
-                    404 if upstream.status_code == 404 else 503, "Video unavailable"
-                )
-            chunks = bytearray()
-            async for chunk in upstream.aiter_bytes():
-                chunks.extend(chunk)
-                if len(chunks) > 9 * 1024 * 1024:
-                    raise HTTPException(502, "Video segment too large")
-            return Response(
-                bytes(chunks),
-                media_type=upstream.headers.get("content-type"),
-                headers={"Cache-Control": "no-store"},
-            )
-    except httpx.HTTPError as exc:
-        log.warning("camera.hls_upstream_failed", error=type(exc).__name__)
+        data = await gateway.video.adaptive.read(resource)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Video resource unavailable") from exc
+    except (TimeoutError, RuntimeError, OSError, ValueError) as exc:
+        log.warning("camera.adaptive_failed", error=type(exc).__name__)
         raise HTTPException(503, "Video unavailable") from exc
+    return Response(
+        data,
+        media_type="application/vnd.apple.mpegurl" if resource.endswith(".m3u8") else "video/mp4",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _overlay(request: Request, printer_id: str, enabled: bool) -> OverlayStream | None:
@@ -155,6 +136,23 @@ async def camera_video(printer_id: str, request: Request) -> StreamingResponse:
     return StreamingResponse(
         frames(), media_type="application/octet-stream", headers={"Cache-Control": "no-store"}
     )
+
+
+@router.get("/{printer_id}/camera/video.lease", dependencies=[Depends(require_owner)])
+async def camera_video_lease(printer_id: str, request: Request) -> dict[str, str]:
+    """Local remux worker renews the same lease as Android's HLS requests."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    if (
+        not request.client
+        or request.client.host != "127.0.0.1"
+        or not gateway
+        or not gateway.config
+        or gateway.config.get("printer_id") != printer_id
+        or not gateway.video.ready
+    ):
+        raise HTTPException(404, "Video unavailable")
+    await gateway.video.adaptive.read("high.m3u8")
+    return {"playlist": str(gateway.video.adaptive.directory / "high.m3u8")}
 
 
 @router.get("/{printer_id}/camera/stream.mjpeg")

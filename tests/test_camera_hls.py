@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -48,19 +47,14 @@ async def test_hls_fails_closed_without_https_or_backend(scheme, ready):
     assert error.value.status_code == 404
 
 
-async def test_hls_proxies_only_fixed_local_origin_and_does_not_expose_native_code(monkeypatch):
-    def handler(req):
-        assert str(req.url) == "http://127.0.0.1:18888/streaming/live/1/index.m3u8?cookieCheck=1"
-        assert req.headers["authorization"].startswith("Basic ")
-        return httpx.Response(
-            200,
-            content=b"#EXTM3U\nvideo1_stream.m3u8\n",
-            headers={"Content-Type": "application/vnd.apple.mpegurl"},
-        )
+async def test_hls_serves_only_authenticated_printer_ladder():
+    async def read(resource):
+        assert resource == "index.m3u8"
+        return b"#EXTM3U\nlow.m3u8\n"
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(camera.httpx, "AsyncClient", lambda **kwargs: client)
-    response = await camera.camera_hls("printer", "index.m3u8", request())
-    assert response.body == b"#EXTM3U\nvideo1_stream.m3u8\n"
+    req = request()
+    req.app.state.native_gateway.video.adaptive = SimpleNamespace(read=read)
+    response = await camera.camera_hls("printer", "index.m3u8", req)
+    assert response.body == b"#EXTM3U\nlow.m3u8\n"
     assert "authorization" not in response.headers
     assert response.headers["cache-control"] == "no-store"
