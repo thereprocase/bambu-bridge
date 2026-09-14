@@ -24,6 +24,7 @@ from bambu_bridge.db.jobs import FilamentMemory
 from bambu_bridge.hms import lookup as hms_lookup
 from bambu_bridge.protocol import tls as tls_probe
 from bambu_bridge.protocol.camera import CameraStream
+from bambu_bridge.protocol.job_identity import empty_idle_report
 from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_command
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.events import Event, EventBus, diff_state
@@ -689,6 +690,12 @@ class PrinterService:
             self._last_layer_num = 0
 
         await self._maybe_invalidate_filament_memory()
+        if empty_idle_report(raw.get("print", {}), self._state):
+            self._print_started_at = None
+            self._cancel_feed_warning_watchdog()
+            self.bus.publish(
+                Event("event", {"reason": "printer_job_lost"}, name="print_interrupted")
+            )
         self._emit_named_events(prev_gcode, prev_layer_num)
 
     # ----------------------------------------------------------------- #

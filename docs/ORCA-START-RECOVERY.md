@@ -48,3 +48,6 @@ as `/`, bypassed the staged upload, then kept an acknowledged external start
 unknown indefinitely. The exact old reservation was backed up and resolved
 only after the jobs database proved that its tray print completed. The current
 left-arm print was separately confirmed running; no print commands were sent.
+
+## Printer power-cycle recovery
+A confirmed active job becomes interrupted when fresh telemetry explicitly reports IDLE with empty gcode_file and subtask_name. Split identity/state deltas are supported. Missing fields, disconnection, PAUSE, named IDLE, and unconfirmed starts do not release ownership. The receipt and job history remain terminal; no resume, stop, or replay command is sent. Start a new print after clearing the physical bed.
