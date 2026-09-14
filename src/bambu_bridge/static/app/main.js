@@ -293,8 +293,26 @@ function startTour() {
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────
-function boot() {
+async function boot() {
   applyTheme();
+
+  // The dedicated private Serve listener authenticates the user. No owner
+  // secret is sent to the browser; this marker only satisfies the UI gate.
+  try {
+    const response = await fetch('/app/session', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+    if (response.ok && (await response.json()).authentication === 'tailscale') {
+      api.setBaseUrl('');
+      api.setKey('tailscale-session');
+      const printers = await api.api('/printers');
+      if (printers.ok && Array.isArray(printers.data)) {
+        store.setPrinterList(printers.data);
+        if (!printers.data.some((p) => p.printer_id === currentPrinterId())) {
+          setCurrentPrinterId(printers.data[0]?.printer_id || null);
+        }
+      }
+      if (!location.hash || ['#/onboarding', '#/setup'].includes(location.hash)) location.hash = '#/';
+    }
+  } catch { /* Other deployments retain the existing explicit key flow. */ }
 
   // first-run detection: no stored key -> onboarding.
   if (!api.getKey()) {
