@@ -1,4 +1,4 @@
-"""Bounded finished outer-wall preview, orthographic fixed-scale platter rotation."""
+"""Bounded finished exterior-path preview, orthographic fixed-scale platter rotation."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from bambu_bridge.protocol.gcode_path import parse_gcode_toolpath
 MAX_GCODE = 120 * 1024 * 1024
 MAX_SEGMENTS = 6000
 PITCH = math.atan(1 / math.sqrt(2))
+WALL_TYPES = frozenset({"Outer wall", "Overhang wall", "External perimeter", "Overhang perimeter"})
+SURFACE_TYPES = frozenset({"Top surface", "Bottom surface", "Bridge", "Top solid infill"})
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class Shape:
     segments: tuple[tuple[float, ...], ...]
     radius: float
     height: float
+    wall_count: int | None = None
 
 
 def archive_shape(source: BinaryIO) -> Shape | None:
@@ -32,31 +35,44 @@ def archive_shape(source: BinaryIO) -> Shape | None:
         if info.file_size > MAX_GCODE:
             raise ValueError("Preview gcode exceeds size limit")
         data = archive.read(info)
-    toolpath = parse_gcode_toolpath(data, features=frozenset({"Outer wall", "External perimeter"}))
-    if not toolpath.segment_count:
-        return None
-    positions = toolpath.positions
-    # Center on the physical P1S plate, not the part: placement rotates with it.
-    stride = max(1, math.ceil(toolpath.segment_count / MAX_SEGMENTS))
-    segments = tuple(
-        (
-            positions[i] - 128,
-            positions[i + 1] - 128,
-            positions[i + 2],
-            positions[i + 3] - 128,
-            positions[i + 4] - 128,
-            positions[i + 5],
-        )
-        for i in range(0, len(positions), 6 * stride)
-        if all(math.isfinite(v) and -1000 <= v <= 1000 for v in positions[i : i + 6])
+    walls = parse_gcode_toolpath(data, features=WALL_TYPES)
+    surfaces = parse_gcode_toolpath(data, features=SURFACE_TYPES)
+    # Preserve the silhouette first; spend the remaining budget on visible skins.
+    wall_budget = (
+        min(walls.segment_count, MAX_SEGMENTS * 2 // 3) if surfaces.segment_count else MAX_SEGMENTS
     )
+    selected = []
+    wall_count = 0
+    for toolpath, budget in [
+        (walls, wall_budget),
+        (surfaces, MAX_SEGMENTS - min(walls.segment_count, wall_budget)),
+    ]:
+        if not toolpath.segment_count or not budget:
+            continue
+        positions = toolpath.positions
+        stride = max(1, math.ceil(toolpath.segment_count / budget))
+        for i in range(0, len(positions), 6 * stride):
+            if all(math.isfinite(v) and -1000 <= v <= 1000 for v in positions[i : i + 6]):
+                selected.append(
+                    (
+                        positions[i] - 128,
+                        positions[i + 1] - 128,
+                        positions[i + 2],
+                        positions[i + 3] - 128,
+                        positions[i + 4] - 128,
+                        positions[i + 5],
+                    )
+                )
+        if toolpath is walls:
+            wall_count = len(selected)
+    segments = tuple(selected)
     if not segments:
         return None
     radius = max(
         math.sqrt(2) * 128, *(math.hypot(s[i], s[i + 1]) for s in segments for i in (0, 3))
     )
     height = max(0.0, *(s[2] for s in segments), *(s[5] for s in segments))
-    return Shape(segments, radius, height)
+    return Shape(segments, radius, height, wall_count)
 
 
 def projection(
@@ -100,10 +116,18 @@ def draw_shape(
     for offset in (-64, 0, 64):
         draw.line([project(offset, -128, 0), project(offset, 128, 0)], fill=(68, 85, 94, 255))
         draw.line([project(-128, offset, 0), project(128, offset, 0)], fill=(68, 85, 94, 255))
-    for segment in shape.segments:
-        draw.line(
-            [project(*segment[:3]), project(*segment[3:])], fill=(163, 213, 211, 235), width=1
-        )
+    angle = (seconds % 60) * math.tau / 60 + math.pi / 4
+
+    def depth(item: tuple[int, tuple[float, ...]]) -> float:
+        _, segment = item
+        x, y, z = ((segment[i] + segment[i + 3]) / 2 for i in range(3))
+        ry = x * math.sin(angle) + y * math.cos(angle)
+        return -ry * math.cos(PITCH) + z * math.sin(PITCH)
+
+    for index, segment in sorted(enumerate(shape.segments), key=depth):
+        wall = shape.wall_count is None or index < shape.wall_count
+        color = (174, 225, 216, 255) if wall else (102, 155, 161, 235)
+        draw.line([project(*segment[:3]), project(*segment[3:])], fill=color, width=1)
     canvas.paste(panel, (x, max(margin, y)), panel)
 
 
