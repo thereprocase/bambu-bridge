@@ -34,3 +34,5 @@ Completion estimates use BRIDGE_CAMERA_TIMEZONE (IANA name; default UTC). The
 local deployment uses America/New_York. The panel shows Finishes ~3:30 PM, adding
 the weekday for a different local date. Paused/stale/disconnected or missing
 estimates show Finish time -- instead of a moving, unsupported ETA.
+
+The upper-right AMS panel shows reported humidity (% RH), AMS temperature, selected slot/material, and four filament-color dots with an active-slot ring. Missing measurements are omitted. Stale/disconnected telemetry dims the panel and labels it stale. Active decoded AMS warnings add an amber third line; stale HMS entries are excluded. Multiple units follow the selected AMS. No fan, camera-rate, or printer-command behavior changes.
