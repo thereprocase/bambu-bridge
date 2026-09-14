@@ -93,3 +93,44 @@ async def test_cache_discards_late_geometry_after_job_change(
     await asyncio.sleep(0)
     assert cache.update(idle) is None
     assert cache.task is None
+
+
+@pytest.mark.parametrize("relative", [True, False])
+def test_parallel_walls_remain_separate_across_travel(relative: bool) -> None:
+    mode = "M83" if relative else "M82"
+    end_e = 1 if relative else 2
+    code = (
+        f"G90\n{mode}\nG1 X0 Y0 Z1\n; FEATURE: Outer wall\nG1 X10 E1\nG1 X20 Y10\nG1 X30 E{end_e}\n"
+    )
+    path = parse_gcode_toolpath(code, features=frozenset({"Outer wall"}))
+    assert path.segment_count == 2
+    assert list(path.positions) == [0, 0, 1, 10, 0, 1, 20, 10, 1, 30, 10, 1]
+
+
+def test_retraced_wall_is_not_collapsed_into_zero_length() -> None:
+    code = "M83\nG1 X0 Y0 Z1\n; FEATURE: Outer wall\nG1 X10 E1\nG1 X0 E1\n"
+    assert parse_gcode_toolpath(code).segment_count == 2
+
+
+def test_preview_type_allowlist_includes_skins_but_not_print_helpers() -> None:
+    code = "M83\nG1 X100 Y100 Z1\n"
+    for i, feature in enumerate(
+        [
+            "Outer wall",
+            "Top surface",
+            "Bottom surface",
+            "Sparse infill",
+            "Brim",
+            "Support",
+            "Custom",
+            "Travel",
+        ]
+    ):
+        code += f"; FEATURE: {feature}\nG1 X{100+i*10} Y{100+i*10}\nG1 X{105+i*10} E1\n"
+    source = io.BytesIO()
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", code)
+    source.seek(0)
+    shape = archive_shape(source)
+    assert shape is not None and len(shape.segments) == 3
+    assert {segment[0] for segment in shape.segments} == {-28, -18, -8}
