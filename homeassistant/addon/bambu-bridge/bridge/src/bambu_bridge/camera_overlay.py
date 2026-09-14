@@ -46,6 +46,7 @@ def bridge_line(receipts: list[dict[str, Any]], now: float) -> str:
         "rejected": "start rejected",
         "completed": "print completion recorded",
         "resolved": "previous start resolved",
+        "interrupted": "print interrupted - start fresh",
         "cancelled": "queued start cancelled",
     }
     label = labels.get(start)

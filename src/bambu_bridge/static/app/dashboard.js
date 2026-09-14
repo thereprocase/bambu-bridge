@@ -448,7 +448,7 @@ export function mount(root, app) {
     return {
       queued: 'queued', uploading: 'uploading', submitted: 'submitted',
       preparing: 'preparing', printing: 'printing', paused: 'paused',
-      completed: 'done', failed: 'failed', canceled: 'stopped',
+      completed: 'done', failed: 'failed', canceled: 'stopped', interrupted: 'interrupted',
     }[state] || state;
   }
 

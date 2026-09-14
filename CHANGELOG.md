@@ -6,6 +6,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+- Recover automatically when a power-cycled printer reports empty IDLE: mark confirmed jobs interrupted, release native ownership, retain history, and require a fresh start without replay.
+
 - Add a compact upper-right AMS camera panel with raw humidity, temperature, active filament colors, and stale/fault indicators.
 
 - Add durable Orca upload receipts, ordered delivery, guarded starts and recovery

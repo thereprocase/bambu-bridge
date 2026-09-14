@@ -96,14 +96,25 @@ _FEED_DEADLINE_S = 600
 _ALLOWED: dict[JobState, set[JobState]] = {
     JobState.QUEUED: {JobState.UPLOADING, JobState.CANCELED, JobState.FAILED},
     JobState.UPLOADING: {JobState.SUBMITTED, JobState.FAILED, JobState.CANCELED},
-    JobState.SUBMITTED: {JobState.PREPARING, JobState.FAILED, JobState.CANCELED},
+    JobState.SUBMITTED: {
+        JobState.PREPARING,
+        JobState.FAILED,
+        JobState.CANCELED,
+        JobState.INTERRUPTED,
+    },
     JobState.PREPARING: {
         JobState.PRINTING,
         JobState.COMPLETED,
+        JobState.INTERRUPTED,
         JobState.FAILED,
         JobState.CANCELED,
     },
-    JobState.PRINTING: {JobState.COMPLETED, JobState.FAILED, JobState.CANCELED},
+    JobState.PRINTING: {
+        JobState.COMPLETED,
+        JobState.FAILED,
+        JobState.CANCELED,
+        JobState.INTERRUPTED,
+    },
 }
 
 
@@ -262,7 +273,7 @@ class JobManager:
                                 )
                                 warmed_job = job_name
                         await self._maybe_create_external_job(service.serial, ev, log_)
-                    elif ev.name in ("print_completed", "print_failed"):
+                    elif ev.name in ("print_completed", "print_failed", "print_interrupted"):
                         await self._maybe_close_external_job(service.serial, ev.name, log_)
                 except Exception:  # noqa: BLE001 — never let the watch task die
                     log_.exception("jobs.watch.error", ev_name=ev.name)
@@ -327,7 +338,7 @@ class JobManager:
         is still live.  Bridge-submitted jobs are closed by their own JobRun
         instance; this path must not race with it.
         """
-        live = await self._jobs.list(printer_id=printer_id, limit=10)
+        live = await self._jobs.list(printer_id=printer_id, limit=50)
         for job in live:
             if job.state not in _LIVE_STATES:
                 continue
@@ -335,7 +346,12 @@ class JobManager:
             if job.metadata_json:
                 with contextlib.suppress(ValueError, TypeError):
                     meta = json.loads(job.metadata_json)
-            if meta.get("origin") != "external":
+            recovered_active = (
+                event_name == "print_interrupted"
+                and job.state in (JobState.PREPARING, JobState.PRINTING)
+                and job.id not in self._runs
+            )
+            if meta.get("origin") != "external" and not recovered_active:
                 continue
             now = int(time.time())
             if event_name == "print_completed":
@@ -358,11 +374,12 @@ class JobManager:
                     },
                 )
             else:
+                interrupted = event_name == "print_interrupted"
                 await self._jobs.update(
                     job.id,
-                    state=JobState.FAILED,
+                    state=JobState.INTERRUPTED if interrupted else JobState.FAILED,
                     finished_at=now,
-                    error_code="printer_error",
+                    error_code="printer_job_lost" if interrupted else "printer_error",
                 )
                 await self._events.add(
                     printer_id=printer_id,
@@ -370,12 +387,13 @@ class JobManager:
                     event_type="state_change",
                     payload={
                         "from": job.state.value,
-                        "to": JobState.FAILED.value,
-                        "trigger": "printer_error",
+                        "to": JobState.INTERRUPTED.value if interrupted else JobState.FAILED.value,
+                        "trigger": "printer_job_lost" if interrupted else "printer_error",
                     },
                 )
             log_.info("jobs.external_closed", job_id=job.id, ev_name=event_name)
-            break  # only one external job expected per printer at a time
+            if event_name != "print_interrupted":
+                break  # only one external job expected per printer at a time
 
     async def shutdown(self) -> None:
         for task in self._watch_tasks.values():
@@ -477,6 +495,7 @@ class JobRun:
         - ``progress`` — AMS engaged (FED_NO_PROGRESS watchdog satisfaction)
         - ``completed`` / ``failed`` / ``stopped`` — terminal signals
         """
+        confirmed_active = self._job.state in (JobState.PREPARING, JobState.PRINTING)
         async for ev in sub:  # type: Event
             assert isinstance(ev, Event)
             if ev.name == "print_started":
@@ -485,6 +504,9 @@ class JobRun:
                 self._signals.put_nowait("layer_advanced")
             elif ev.name == "print_completed":
                 self._signals.put_nowait("completed")
+            elif ev.name == "print_interrupted":
+                if confirmed_active:
+                    self._signals.put_nowait("interrupted")
             elif ev.name in ("print_failed", "error"):
                 self._signals.put_nowait("failed")
             elif ev.type in ("delta", "snapshot"):
@@ -553,13 +575,19 @@ class JobRun:
         # check — if neither fires within the deadline, abort. In healthy
         # prints both arrive within seconds of each other.
         sig = await self._wait_signal(
-            {"layer_advanced", "progress", "completed", "failed", "cancel"},
+            {"layer_advanced", "progress", "completed", "failed", "cancel", "interrupted"},
             timeout=_FEED_DEADLINE_S,
         )
         if sig is None:
             with contextlib.suppress(Exception):
                 await service.send_command("print", "stop")
             await self._fail("FED_NO_PROGRESS")
+            return
+        if sig == "interrupted":
+            await self._jobs.update(
+                self._job.id, finished_at=int(time.time()), error_code="printer_job_lost"
+            )
+            await self._set(JobState.INTERRUPTED, "printer_job_lost")
             return
         if sig == "completed":
             await self._complete()
@@ -581,7 +609,7 @@ class JobRun:
         # healthy by construction at this point (RUNNING, tray engaged, past
         # FED_NO_PROGRESS) so a sustained chaotic-frame run means the print
         # itself failed. It feeds the same abort path as any other failure.
-        accept = {"completed", "failed", "cancel"}
+        accept = {"completed", "failed", "cancel", "interrupted"}
         spaghetti = self._start_spaghetti_monitor(service)
         if spaghetti is not None:
             accept.add("spaghetti")
@@ -592,6 +620,12 @@ class JobRun:
                 spaghetti.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await spaghetti
+        if sig == "interrupted":
+            await self._jobs.update(
+                self._job.id, finished_at=int(time.time()), error_code="printer_job_lost"
+            )
+            await self._set(JobState.INTERRUPTED, "printer_job_lost")
+            return
         if sig == "completed":
             await self._complete()
         elif sig == "cancel":

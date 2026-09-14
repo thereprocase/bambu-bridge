@@ -439,3 +439,61 @@ async def test_old_receipt_does_not_invent_past_timings(tmp_path):
     receipt = inbox.get(row["id"])
     assert receipt["terminal_at"] is not None
     assert all(receipt[key] is None for key in ("received_at", "delivered_at", "running_at"))
+
+
+@pytest.mark.parametrize("state", ["RUNNING", "PAUSE", "PREPARE"])
+async def test_power_cycle_empty_idle_interrupts_confirmed_job_and_allows_fresh_start(
+    tmp_path, state
+):
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox, "/lost.gcode.3mf")
+    inbox.hold_start("fixture-printer", start("ftp://lost.gcode.3mf"))
+    inbox.transition(row["id"], "stored", "delivered", "BBDELIVERY_OK")
+    inbox.claim_start(row["id"])
+    active = {"print": {"gcode_state": state, "gcode_file": row["remote"]}}
+    inbox.observe("fixture-printer", active, active)
+    assert inbox.get(row["id"])["seen_active"] == 1
+    # Persisted evidence must survive a bridge restart too.
+    inbox = NativeInbox(tmp_path)
+    idle = {"print": {"gcode_state": "IDLE", "gcode_file": "", "subtask_name": ""}}
+    assert inbox.observe("fixture-printer", idle, idle)
+    ended = inbox.get(row["id"])
+    assert ended["start_state"] == "interrupted"
+    assert ended["code"] == "BBSTART_INTERRUPTED" and ended["terminal_at"] is not None
+    assert not inbox.unresolved("fixture-printer")
+    assert inbox.claim_start(row["id"]) is None
+    assert not inbox.observe("fixture-printer", idle, idle)
+    fresh = await stored(inbox, "/lost.gcode.3mf")
+    assert inbox.hold_start("fixture-printer", start("ftp://lost.gcode.3mf"))["id"] == fresh["id"]
+
+
+@pytest.mark.parametrize(
+    "incoming",
+    [
+        {"gcode_state": "IDLE"},
+        {"gcode_state": "IDLE", "gcode_file": "", "subtask_name": "resumable"},
+        {"gcode_state": "PAUSE", "gcode_file": "", "subtask_name": ""},
+        {"nozzle_temper": 25},
+    ],
+)
+async def test_idle_without_explicit_lost_identity_never_releases_owner(tmp_path, incoming):
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox, "/lost.gcode.3mf")
+    inbox.hold_start("fixture-printer", start("ftp://lost.gcode.3mf"))
+    inbox.transition(row["id"], "stored", "delivered", "BBDELIVERY_OK")
+    inbox.claim_start(row["id"])
+    active = {"print": {"gcode_state": "RUNNING", "gcode_file": row["remote"]}}
+    inbox.observe("fixture-printer", active, active)
+    inbox.observe("fixture-printer", {"print": incoming}, {"print": incoming})
+    assert inbox.get(row["id"])["start_state"] == "running"
+
+
+async def test_empty_idle_does_not_release_an_unconfirmed_start(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox, "/lost.gcode.3mf")
+    inbox.hold_start("fixture-printer", start("ftp://lost.gcode.3mf"))
+    inbox.transition(row["id"], "stored", "delivered", "BBDELIVERY_OK")
+    inbox.claim_start(row["id"])
+    idle = {"print": {"gcode_state": "IDLE", "gcode_file": "", "subtask_name": ""}}
+    inbox.observe("fixture-printer", idle, idle)
+    assert inbox.get(row["id"])["start_state"] == "dispatching"
