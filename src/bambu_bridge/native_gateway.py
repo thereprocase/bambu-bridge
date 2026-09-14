@@ -30,6 +30,7 @@ from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.service.events import Event, EventBus
+from bambu_bridge.turntable_overlay import Shape, archive_shape
 
 if TYPE_CHECKING:
     from bambu_bridge.native_inbox import NativeInbox
@@ -166,6 +167,7 @@ class NativeGateway:
             self.service,
             lambda: self.inbox_status,
             lambda: self.app.state.settings.bridge_camera_timezone,
+            self.load_camera_shape,
         )
         self.inbox_reports = EventBus()
         self.change_lock = asyncio.Lock()
@@ -191,6 +193,20 @@ class NativeGateway:
             row = db.execute("SELECT * FROM native_gateway WHERE id=1 AND enabled=1").fetchone()
         if row:
             self.config = dict(row)
+
+    def load_camera_shape(self, snapshot: dict[str, Any]) -> Shape | None:
+        """Read only the immutable local archive matching the current printer job."""
+        inbox = self.inbox
+        filename = str(snapshot.get("_raw", {}).get("gcode_file") or "").rsplit("/", 1)[-1]
+        match = re.fullmatch(r"beluga-([0-9a-f]{32})\.gcode\.3mf", filename)
+        if inbox is None or match is None:
+            return None
+        row = inbox.get(match.group(1))
+        if (str(row["remote"]).rsplit("/", 1)[-1] != filename
+                or row["printer"] != snapshot.get("printer_id")):
+            return None
+        with inbox.open_verified(row["id"]) as source:
+            return archive_shape(source)
 
     def service(self) -> Any:
         if self.config is None:
