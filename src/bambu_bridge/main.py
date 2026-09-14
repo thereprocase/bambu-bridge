@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, FastAPI
@@ -26,6 +27,7 @@ from bambu_bridge.api import (
     filament,
     files,
     jobs,
+    library,
     native,
     orca,
     pairing,
@@ -46,6 +48,7 @@ from bambu_bridge.db.jobs import (
     PrinterRepo,
     SlicedDateRepo,
 )
+from bambu_bridge.library import LibraryStore
 from bambu_bridge.native_gateway import NativeGateway
 from bambu_bridge.orca import OrcaStore
 from bambu_bridge.pairing import PairingStore
@@ -154,6 +157,13 @@ def create_app(
             PairingStore(settings.bridge_pairing_dir) if settings.bridge_pairing_dir else None
         )
         app.state.orca = OrcaStore(app.state.pairing) if app.state.pairing else None
+        app.state.library = (
+            LibraryStore(
+                Path(settings.bridge_library_dir), quota=settings.bridge_library_quota_bytes
+            )
+            if settings.bridge_library_dir
+            else None
+        )
         app.state.orca_submit_lock = asyncio.Lock()
         app.state.db = db
         app.state.registry = registry
@@ -222,6 +232,7 @@ def create_app(
     v1.include_router(filament.router)
     v1.include_router(pairing.router)
     v1.include_router(orca.management)
+    v1.include_router(library.router)
     v1.include_router(native.router)
 
     @v1.get("/health", tags=["system"])  # no auth (spec 6)
@@ -234,6 +245,7 @@ def create_app(
 
     app.include_router(v1)
     app.include_router(orca.host)
+    app.include_router(library.ingest)
     # Root-level SPA shell (/, /app, /app/{path}); unauthenticated static files.
     # Included AFTER v1 so /api/v1/* always wins on any path overlap.
     app.include_router(viz.app_shell_router)
