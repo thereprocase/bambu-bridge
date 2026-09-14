@@ -685,7 +685,9 @@ async def get_viz_toolpath(
         # representation-specific (folds in fmt) so a json-cached client never
         # gets a 304 for the bin body and vice versa.
         cached_size = tp_cache_key_hit[2]
-        etag = _viz_etag(filename, cached_size, fmt, viz_cache.content_id(printer_id, filename))
+        etag = _viz_etag(
+            filename, cached_size, fmt + "-paths2", viz_cache.content_id(printer_id, filename)
+        )
         if request.headers.get("If-None-Match") == etag:
             return Response(
                 status_code=304,
@@ -750,7 +752,9 @@ async def get_viz_toolpath(
             filename=filename,
             kind="toolpath",
         )
-    etag = _viz_etag(filename, file_size, fmt, viz_cache.content_id(printer_id, filename))
+    etag = _viz_etag(
+        filename, file_size, fmt + "-paths2", viz_cache.content_id(printer_id, filename)
+    )
     return await asyncio.to_thread(
         _toolpath_response,
         tp=tp,
