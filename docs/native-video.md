@@ -55,3 +55,11 @@ query fields are accepted; HTTP and query-token access are rejected. The app
 uses its existing scoped/pinned HTTPS client and falls back to JPEG when HLS
 is unavailable. The HLS muxer closes ten seconds after its final request,
 followed by the shared encoder's five-second idle delay when no Orca viewers remain.
+
+## Shared adaptive video
+
+Android HLS and Orca RTSPS share one on-demand encoder ladder: 360p/350 kbps, 540p/800 kbps and 720p/1600 kbps, all 30 FPS. The HLS master advertises the three aligned renditions; Media3 selects automatically. Orca's on-demand worker copies the high stream into RTSP, without another encode. All overlays use the same RGB renderer.
+
+Authenticated HLS requests and the owner-only loopback Orca lease renew one 20-second idle timer. Once neither client is watching, the encoder group stops and its temporary segments are removed. The RTSP remux worker closes five seconds after the last Orca reader; its last lease can add up to 20 seconds of grace. No video encoding occurs while parked. The small bridge/MediaMTX services remain running to accept viewers.
+
+Playlist and segment URLs stay under the authenticated camera route. No credentials appear in playlists or FFmpeg arguments. Segment names use a generation-distinct epoch sequence; playlists update atomically and retained segments are bounded. This remains H.264 for the verified Orca path; HEVC/AV1 require separate client and encoder qualification.

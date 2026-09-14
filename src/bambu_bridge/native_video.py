@@ -18,6 +18,8 @@ from typing import Any
 
 import structlog
 
+from bambu_bridge.adaptive_video import AdaptiveVideo
+
 
 def configuration(code: str) -> dict[str, Any]:
     return {
@@ -68,6 +70,7 @@ class NativeVideo:
         self.server: asyncio.Server | None = None
         self.tasks: set[asyncio.Task[None]] = set()
         self.config_path: Path | None = None
+        self.adaptive = AdaptiveVideo(gateway)
 
     @property
     def ready(self) -> bool:
@@ -184,6 +187,7 @@ class NativeVideo:
                 upstream.close()
 
     async def close(self) -> None:
+        await self.adaptive.close()
         if self.server:
             self.server.close()
             await self.server.wait_closed()
