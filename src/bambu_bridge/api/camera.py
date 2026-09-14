@@ -44,6 +44,7 @@ def hls_resource(resource: str, query: dict[str, str]) -> bool:
         )
         or (key == "_HLS_skip" and value in {"YES", "v2"})
         or (key == "session" and bool(re.fullmatch(r"[A-Za-z0-9-]{1,64}", value)))
+        or (key == "cookieCheck" and value == "1")
         for key, value in query.items()
     )
 
