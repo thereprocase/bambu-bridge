@@ -258,7 +258,9 @@ def _parse_line(
     return cmd, params
 
 
-def parse_gcode_toolpath(source: bytes | str) -> GcodeToolpath:
+def parse_gcode_toolpath(
+    source: bytes | str, *, features: frozenset[str] | None = None
+) -> GcodeToolpath:
     """Parse gcode text/bytes and return extrusion-move toolpath segments.
 
     Parameters
@@ -296,7 +298,10 @@ def parse_gcode_toolpath(source: bytes | str) -> GcodeToolpath:
     # Segments grouped by Z for decimation later.
     layers: dict[float, list[_Segment]] = {}
 
+    feature = ""
     for raw_line in text_iter:
+        if raw_line.startswith("; FEATURE:") or raw_line.startswith(";TYPE:"):
+            feature = raw_line.partition(":")[2].strip()
         parsed = _parse_line(raw_line)
         if parsed is None:
             continue
@@ -373,7 +378,7 @@ def parse_gcode_toolpath(source: bytes | str) -> GcodeToolpath:
 
         is_extrusion = has_e and e_delta > 0.0 and (x_changed or y_changed)
 
-        if is_extrusion:
+        if is_extrusion and (features is None or feature in features):
             # Flat-segment convention (see module docstring): both endpoints use
             # cur_z, so a Z-changing extrusion (spiral-vase) is flattened onto
             # the layer it started on.  This keeps each segment in exactly one
