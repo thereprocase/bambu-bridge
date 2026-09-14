@@ -501,6 +501,7 @@ def _ams(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, Any]:
             "present": False,
             "engaged_slot": None,
             "slots": [],
+            "units": [],
             "external_spool": _external_default(),
         }
 
@@ -511,8 +512,35 @@ def _ams(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, Any]:
         "present": _ams_present(ams),
         "engaged_slot": engaged,
         "slots": slots,
+        "units": _ams_units(ams),
         "external_spool": external,
     }
+
+
+def _ams_units(ams: dict[str, Any]) -> list[dict[str, Any]]:
+    """Environmental readings; firmware humidity level is NOT percent RH."""
+
+    def reading(value: Any, low: float, high: float) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if math.isfinite(result) and low <= result <= high else None
+
+    units = ams.get("ams", [])
+    if not isinstance(units, list):
+        return []
+    return [
+        {
+            "id": str(unit.get("id", index)),
+            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100),
+            "temperature_c": reading(unit.get("temp"), -40, 125),
+        }
+        for index, unit in enumerate(units)
+        if isinstance(unit, dict)
+    ]
 
 
 def _ams_present(ams: dict[str, Any]) -> bool:

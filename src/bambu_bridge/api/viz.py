@@ -922,6 +922,22 @@ _APP_CACHE_CONTROL = "no-cache"
 
 app_shell_router = APIRouter(tags=["webapp"])
 
+# Fixed operator-managed artifact, never a caller-supplied filesystem path.
+_ANDROID_APK = Path("/var/lib/bambu-bridge/downloads/bambu-bridge.apk")
+
+
+@app_shell_router.get("/downloads/android")
+async def get_android_apk() -> Response:
+    """Download the signed app; contains no printer credentials or status."""
+    if not _ANDROID_APK.is_file():
+        raise HTTPException(status_code=404, detail="Android download is not installed")
+    return FileResponse(
+        _ANDROID_APK,
+        media_type="application/vnd.android.package-archive",
+        filename="bambu-bridge.apk",
+        headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"},
+    )
+
 
 def _serve_app_index() -> Response:
     """Return the SPA shell HTML, or 501 if it was not built into the wheel.

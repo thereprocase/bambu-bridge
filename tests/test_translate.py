@@ -611,3 +611,26 @@ def test_started_at_null_when_neither_raw_nor_ctx() -> None:
     raw = {"gcode_state": "RUNNING", "layer_num": 10}
     out = translate_snapshot(raw, _ctx(print_started_at=None))
     assert out["job"]["started_at"] is None
+
+
+def test_ams_environment_uses_raw_percent_not_category() -> None:
+    raw = {"ams": {"ams": [{"id": "0", "humidity": "5", "humidity_raw": "6", "temp": "36.4"}]}}
+    assert translate_snapshot(raw, _ctx())["ams"]["units"] == [
+        {"id": "0", "humidity_pct": 6.0, "temperature_c": 36.4}
+    ]
+
+
+@pytest.mark.parametrize("value", [None, True, "", "nan", "inf", -1, 101])
+def test_ams_invalid_humidity_is_unavailable(value: Any) -> None:
+    raw = {"ams": {"ams": [{"humidity": "5", "humidity_raw": value}]}}
+    unit = translate_snapshot(raw, _ctx())["ams"]["units"][0]
+    assert unit["humidity_pct"] is None
+    assert unit["temperature_c"] is None
+
+
+def test_ams_zero_and_multiple_units() -> None:
+    raw = {"ams": {"ams": [{"id": "0", "humidity_raw": "0", "temp": "0"}, {"id": "1"}]}}
+    units = translate_snapshot(raw, _ctx())["ams"]["units"]
+    assert units[0] == {"id": "0", "humidity_pct": 0.0, "temperature_c": 0.0}
+    assert units[1]["humidity_pct"] is None
+    assert translate_snapshot({}, _ctx())["ams"]["units"] == []
