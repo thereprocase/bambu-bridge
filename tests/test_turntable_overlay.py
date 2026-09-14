@@ -134,3 +134,54 @@ def test_preview_type_allowlist_includes_skins_but_not_print_helpers() -> None:
     shape = archive_shape(source)
     assert shape is not None and len(shape.segments) == 3
     assert {segment[0] for segment in shape.segments} == {-28, -18, -8}
+
+
+def test_cel_ribbons_merge_stacked_walls_without_filling_travel_gap() -> None:
+    from bambu_bridge.turntable_overlay import exterior_faces
+
+    faces = exterior_faces(
+        [
+            100,
+            100,
+            0.2,
+            110,
+            100,
+            0.2,
+            100,
+            100,
+            0.4,
+            110,
+            100,
+            0.4,
+            120,
+            100,
+            0.4,
+            130,
+            100,
+            0.4,
+        ],
+        [],
+    )
+    assert len(faces) == 2
+    assert faces[0][2] == 0
+    assert faces[0][8] == 0.4
+    assert faces[0][3] == -18
+    assert faces[1][0] == -8
+
+
+def test_cel_lighting_uses_exactly_four_bands() -> None:
+    from bambu_bridge.turntable_overlay import BANDS, BASE, cel_color
+
+    colors = {cel_color((1.0, 0.0, 0.0), math.radians(i)) for i in range(360)}
+    allowed = {(*(round(c * b) for c in BASE), 255) for b in BANDS}
+    assert colors <= allowed
+    assert len(colors) >= 3
+
+
+def test_archive_builds_colored_surfaces_without_infill() -> None:
+    source = io.BytesIO()
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", GCODE)
+    source.seek(0)
+    shape = archive_shape(source)
+    assert shape is not None and len(shape.faces) == 3
