@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 import structlog
 from PIL import Image, ImageDraw, ImageFont
 
+from bambu_bridge.ams_overlay import ams_panel, draw_ams
+
 STALE_TELEMETRY_S = 60
 STALE_FRAME_S = 5
 
@@ -138,7 +140,9 @@ def status_lines(
     return [title, thermal, bridge, health], warning
 
 
-def render_frame(jpeg: bytes | None, lines: list[str], warning: bool) -> bytes:
+def render_frame(
+    jpeg: bytes | None, lines: list[str], warning: bool, ams: dict[str, Any] | None = None
+) -> bytes:
     """Render off the event loop; bound decoded dimensions before allocating RGB."""
     canvas = None
     if jpeg:
@@ -206,6 +210,8 @@ def render_frame(jpeg: bytes | None, lines: list[str], warning: bool) -> bytes:
         draw.text(
             (margin, height // 3 + pitch), "Printer status continues below", font=font, fill="white"
         )
+    if ams:
+        draw_ams(canvas, ams)
     output = io.BytesIO()
     canvas.save(output, format="JPEG", quality=85)
     return output.getvalue()
@@ -288,6 +294,7 @@ class OverlayStream:
                             frame if age is not None and age <= STALE_FRAME_S else None,
                             lines,
                             warning,
+                            ams_panel(snapshot, time.time()),
                         )
                     )
                     try:
