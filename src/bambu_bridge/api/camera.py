@@ -18,7 +18,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 
-from bambu_bridge.api.auth import require_media_auth
+from bambu_bridge.api.auth import require_media_auth, require_owner
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.service.printer import PrinterService
@@ -67,6 +67,24 @@ def _service(registry: Registry, printer_id: str) -> PrinterService:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"printer {printer_id} not found",
         ) from exc
+
+
+@router.get("/{printer_id}/camera/video.rgb", dependencies=[Depends(require_owner)])
+async def camera_video(printer_id: str, request: Request) -> StreamingResponse:
+    """Private, fixed-size RGB feed for the single local on-demand encoder."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    if (not request.client or request.client.host != "127.0.0.1" or not gateway
+            or not gateway.config or gateway.config.get("printer_id") != printer_id
+            or not request.app.state.settings.bridge_native_video):
+        raise HTTPException(404, "Video encoder unavailable")
+
+    async def frames() -> AsyncIterator[bytes]:
+        async with gateway.video_overlay.subscribe() as queue:
+            while (frame := await queue.get()) is not None:
+                yield frame
+
+    return StreamingResponse(frames(), media_type="application/octet-stream",
+                             headers={"Cache-Control": "no-store"})
 
 
 @router.get("/{printer_id}/camera/stream.mjpeg")

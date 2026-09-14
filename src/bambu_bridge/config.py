@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     bridge_camera_linger_s: float = 10.0
     # Shared native/HTTP HUD; HTTP ?overlay=false opts out.
     bridge_native_camera_overlay: bool = True
+    bridge_native_video: bool = False
+    bridge_native_video_advertise: bool = False  # enable only after client acceptance
+    bridge_mediamtx_path: str = "/usr/local/bin/mediamtx"
+    bridge_ffmpeg_path: str = "/usr/bin/ffmpeg"
     bridge_camera_timezone: str = "UTC"  # IANA zone for the shared camera's completion estimate
 
     @field_validator("bridge_camera_timezone")
