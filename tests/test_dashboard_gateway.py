@@ -92,3 +92,18 @@ def test_websocket_identity_and_origin() -> None:
 def test_invalid_origin_fails_closed(origin: str) -> None:
     with pytest.raises(ValueError):
         DashboardGateway(FastAPI(), origin, "owner@example.com", "key")
+
+
+def test_configured_dashboard_shell_is_only_offered_through_gateway() -> None:
+    from bambu_bridge.api.viz import app_shell_router
+    from bambu_bridge.config import Settings
+
+    app = FastAPI()
+    app.state.settings = Settings(bridge_dashboard_port=8081)
+    app.include_router(app_shell_router)
+    with TestClient(app) as client:
+        for path in ("/", "/app/", "/downloads/android"):
+            assert client.get(path).status_code == 403
+    trusted = DashboardGateway(app, ORIGIN, "owner@example.com", "owner-secret")
+    with TestClient(trusted, base_url=ORIGIN, client=("127.0.0.1", 5000)) as client:
+        assert client.get("/app/", headers=HEADERS).status_code == 200

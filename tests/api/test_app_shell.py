@@ -33,7 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from bambu_bridge.api import viz as viz_mod
@@ -236,7 +236,9 @@ async def test_handler_dotdot_guard_rejects(app_dir: Path) -> None:
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        await viz_mod.get_app_asset(path="../main.py")
+        await viz_mod.get_app_asset(
+            path="../main.py", request=Request({"type": "http", "app": FastAPI()})
+        )
     assert exc.value.status_code == 404
 
 
@@ -251,7 +253,9 @@ async def test_handler_resolved_escape_rejected(app_dir: Path) -> None:
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        await viz_mod.get_app_asset(path="icons/../../conftest.py")
+        await viz_mod.get_app_asset(
+            path="icons/../../conftest.py", request=Request({"type": "http", "app": FastAPI()})
+        )
     assert exc.value.status_code == 404
 
 
