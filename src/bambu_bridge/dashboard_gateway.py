@@ -72,6 +72,7 @@ class DashboardGateway:
         # Copy scope: never put the real owner credential into a URL, response,
         # browser storage, or the original scope used by access logging.
         child = dict(scope)
+        child["bambu.dashboard_authenticated"] = True
         child["scheme"] = "wss" if scope["type"] == "websocket" else "https"
         child["headers"] = [(k, v) for k, v in scope["headers"] if k.lower() != b"authorization"]
         child["headers"].append((b"authorization", ("Bearer " + self.owner_key).encode()))
