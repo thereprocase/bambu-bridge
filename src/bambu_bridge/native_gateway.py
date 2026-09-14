@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
+from bambu_bridge.native_video import NativeVideo
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.service.events import Event, EventBus
 from bambu_bridge.turntable_overlay import Shape, archive_shape
@@ -169,6 +170,12 @@ class NativeGateway:
             lambda: self.app.state.settings.bridge_camera_timezone,
             self.load_camera_shape,
         )
+        self.video_overlay = OverlayStream(
+            self.service, lambda: self.inbox_status,
+            lambda: self.app.state.settings.bridge_camera_timezone,
+            self.load_camera_shape, video=True,
+        )
+        self.video = NativeVideo(self)
         self.inbox_reports = EventBus()
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None
@@ -326,12 +333,14 @@ class NativeGateway:
                 )
                 self.servers.append(server)
             self.last_error = None
+            await self.video.start()
         except Exception:
             await self.close()
             self.last_error = "Could not start native listeners; check the bind address and ports"
             raise
 
     async def close(self) -> None:
+        await self.video.close()
         for server in self.servers:
             server.close()
         for writer in list(self.writers):
@@ -953,6 +962,7 @@ class NativeGateway:
                 )
             value = native_report(payload, service.ip, self.host)
             value = transpose_identity(value, service.serial, serial)
+            value = self.video.advertise(value)
             system = value.get("system")
             if isinstance(system, dict) and "access_code" in system:
                 # Orca saves this reply as its next MQTT/camera password.

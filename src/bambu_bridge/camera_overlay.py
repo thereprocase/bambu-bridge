@@ -144,7 +144,7 @@ def status_lines(
 
 def render_frame(
     jpeg: bytes | None, lines: list[str], warning: bool, ams: dict[str, Any] | None = None,
-    shape: Shape | None = None, rotation_seconds: float = 0.0
+    shape: Shape | None = None, rotation_seconds: float = 0.0, rgb: bool = False
 ) -> bytes:
     """Render off the event loop; bound decoded dimensions before allocating RGB."""
     canvas = None
@@ -217,6 +217,8 @@ def render_frame(
         draw_ams(canvas, ams)
     if shape:
         draw_shape(canvas, shape, rotation_seconds, panel_width + margin, panel_height)
+    if rgb:
+        return canvas.resize((1280, 720)).tobytes()
     output = io.BytesIO()
     canvas.save(output, format="JPEG", quality=85)
     return output.getvalue()
@@ -231,9 +233,11 @@ class OverlayStream:
         receipts: Callable[[], list[dict[str, Any]]],
         timezone: Callable[[], str] = lambda: "UTC",
         shape_loader: Callable[[dict[str, Any]], Shape | None] | None = None,
+        video: bool = False,
     ):
         self.service, self.receipts = service, receipts
         self.timezone = timezone
+        self.video = video
         self.shapes = ShapeCache(shape_loader) if shape_loader else None
         self._subscribers: set[asyncio.Queue[bytes | None]] = set()
         self._task: asyncio.Task[None] | None = None
@@ -271,15 +275,21 @@ class OverlayStream:
                 snapshot: dict[str, Any] = {}
                 receipts: list[dict[str, Any]] = []
                 status_at = float("-inf")
+                next_at = time.monotonic()
                 while True:
                     got_frame = False
                     try:
-                        frame = await asyncio.wait_for(raw.get(), 1)
+                        frame = await asyncio.wait_for(
+                            raw.get(), max(0.001, next_at - time.monotonic()) if self.video else 1
+                        )
                         last_frame = time.monotonic()
                         got_frame = True
                     except TimeoutError:
                         pass
+                    if self.video:
+                        await asyncio.sleep(max(0, next_at - time.monotonic()))
                     tick = time.monotonic()
+                    next_at = tick + 1 / 30
                     if self.service() is not service:
                         return  # replaced/deleted printer: never leak the old camera
                     while not raw.empty():
@@ -287,7 +297,8 @@ class OverlayStream:
                         last_frame = tick
                         got_frame = True
                     age = tick - last_frame if last_frame is not None else None
-                    if not got_frame and age is not None and age <= STALE_FRAME_S:
+                    if (not self.video and not got_frame
+                            and age is not None and age <= STALE_FRAME_S):
                         continue  # do not manufacture duplicate "live" frames between arrivals
                     if tick - status_at >= 1:
                         snapshot, receipts = service.snapshot(), self.receipts()
@@ -304,6 +315,7 @@ class OverlayStream:
                             ams_panel(snapshot, time.time()),
                             self.shapes.update(snapshot) if self.shapes else None,
                             tick,
+                            **({"rgb": True} if self.video else {}),
                         )
                     )
                     try:
