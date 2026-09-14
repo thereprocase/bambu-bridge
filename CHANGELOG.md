@@ -6,6 +6,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+- Add a compact upper-right AMS camera panel with raw humidity, temperature, active filament colors, and stale/fault indicators.
+
 - Add durable Orca upload receipts, ordered delivery, guarded starts and recovery
   that never automatically replays an uncertain physical start.
 - Fix Orca archive URL parsing, MQTT 3.1 compatibility, quiet finished-printer
