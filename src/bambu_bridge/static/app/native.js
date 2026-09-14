@@ -57,7 +57,7 @@ export function mountNative(parent, app) {
     const startStates = { reserved: 'app job reserved; preparing file', queued: 'start held until delivery', dispatching: 'start dispatch in progress',
       sent: 'start command sent; physical start not yet confirmed', unknown: 'START OUTCOME UNKNOWN — do not retry blindly',
       accepted: 'printer accepted the start command', running: 'matching print observed', completed: 'print completed',
-      resolved: 'job ended or owner resolved it', rejected: 'printer rejected the start',
+      interrupted: 'printer discarded the job; start fresh (cannot resume)', resolved: 'job ended or owner resolved it', rejected: 'printer rejected the start',
       cancelled: 'queued start cancelled', blocked: 'start blocked; printer not ready' };
     clear(uploadList);
     for (const upload of uploads.slice(0, 20)) {
