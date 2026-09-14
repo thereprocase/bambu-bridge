@@ -195,7 +195,9 @@ async def test_camera_rate_is_not_capped_by_status_refresh(monkeypatch):
 
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=state)
     stream = OverlayStream(lambda: service, lambda: [])
-    monkeypatch.setattr(camera_overlay, "render_frame", lambda frame, lines, warning, ams=None: frame)
+    monkeypatch.setattr(
+        camera_overlay, "render_frame", lambda frame, lines, warning, ams=None: frame
+    )
     async with stream.subscribe() as queue:
         for i in range(5):
             frame = str(i).encode()
@@ -214,7 +216,9 @@ async def test_no_duplicate_live_frames_between_camera_arrivals(monkeypatch):
         yield raw
 
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=snapshot)
-    monkeypatch.setattr(camera_overlay, "render_frame", lambda frame, lines, warning, ams=None: frame)
+    monkeypatch.setattr(
+        camera_overlay, "render_frame", lambda frame, lines, warning, ams=None: frame
+    )
     stream = OverlayStream(lambda: service, lambda: [])
     async with stream.subscribe() as queue:
         raw.put_nowait(b"live")
