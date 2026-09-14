@@ -2177,11 +2177,11 @@ async def test_viz_toolpath_bin_carries_representation_specific_etag(
                 f"json and bin must carry distinct ETags, both were: {etag_json!r}"
             )
             # …but share the file-identity prefix (same filename + size).
-            assert etag_json.rstrip('"').endswith(":json"), (
-                f"json ETag must end in :json, got {etag_json!r}"
+            assert etag_json.rstrip('"').endswith(":json-paths2"), (
+                f"json ETag must identify geometry revision paths2, got {etag_json!r}"
             )
-            assert etag_bin.rstrip('"').endswith(":bin"), (
-                f"bin ETag must end in :bin, got {etag_bin!r}"
+            assert etag_bin.rstrip('"').endswith(":bin-paths2"), (
+                f"bin ETag must identify geometry revision paths2, got {etag_bin!r}"
             )
             prefix_json = etag_json.rstrip('"').rsplit(":", 1)[0]
             prefix_bin = etag_bin.rstrip('"').rsplit(":", 1)[0]
