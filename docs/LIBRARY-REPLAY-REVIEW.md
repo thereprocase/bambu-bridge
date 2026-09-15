@@ -29,9 +29,8 @@ Current support is P1S and units 0–3. AMS HT, mixed AMS Lite and dual-nozzle
 layouts use other rules and are intentionally rejected until qualified.
 
 The P1S external spool's telemetry ID is `254`. This is a **selection ID**,
-not an instruction to copy 254 into a start command. A successful observed
-Orca 2.4.2 external-spool command used `use_ams=false, ams_mapping=[-1]`.
-Its toolpath still contained `M620 S0A` / `M621 S0A`, plus unload/flush pseudo-tools.
+not an instruction to copy 254 into a start command. External-spool start
+parameters and logical toolpath selectors are separate address spaces.
 No G-code is rewritten to map spools. The eventual dispatch adapter must derive
 the correct command representation, preserve start options, and be tested
 separately from this review response.
@@ -53,12 +52,8 @@ proof of the selected printer's installed hardware.
 - Synthetic tests cover sparse logical indices, explicit reordered unit/tray
   IDs, moved spools, changed RFID identity, empty slots, partial/stale inventory,
   external-only mapping, ambiguous physical pre-binds, checksums and bounded XML.
-- The exact retained slice from the ongoing Beluga print was copied and hashed
-  privately on 2026-09-14. Selected-plate analysis identified C12/P1S, 0.4 mm,
-  Textured PEI Plate and one Panchroma PLA logical filament without analysis
-  issues. The source bytes and private profile data are not published as fixtures.
-- Live registered printer model was null despite a recorded P1S slice; it is
-  not filled in by guessing from the slice. Installed nozzle telemetry was 0.4 mm.
+- Missing printer-model records and differing nozzle diameters are checked
+  explicitly; installed hardware is never inferred from the selected slice.
 - Desktop and 390 px browser checks exercised explicit tray selection and
   confirmed that every POST was a review request, with no job submission.
 - Actual replay dispatch, profile/hardware confirmation, inventory recheck at
