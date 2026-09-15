@@ -1,5 +1,10 @@
 # Bridge Library plugin development build
 
+The [standalone desktop companion](../../companion/README.md) now owns the
+stock-compatible capture workflow. It shares this file's archive client and
+does not require an Orca plugin or fork. This page remains an optional adapter;
+the generic upstream artifact proposal is no longer a release dependency.
+
 `library_plugin.py` is a standalone PEP 723 Orca plugin. The official Windows
 nightly dated 2026-09-14 loaded its native page successfully. Stable Orca 2.4.2
 cannot load Python plugins. Use a separate official development installation

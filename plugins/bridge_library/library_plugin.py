@@ -10,9 +10,9 @@
 # ///
 """Stock-Orca page adapter and restart-safe archive queue.
 
-Automatic import/print capture awaits the upstream artifact hook. This module
-never calls a printer command. The queue accepts only explicit artifact paths
-supplied by a capture adapter; it never scans user directories or Orca backups.
+This client is shared with the desktop companion. It never calls a printer
+command. The queue accepts only explicit artifact paths supplied by a capture
+adapter; it never scans user directories or Orca backups.
 """
 
 from __future__ import annotations
@@ -118,6 +118,7 @@ class Outbox:
         plate: int,
         sources: list[tuple[str, Path]],
         originals: str = "disabled",
+        capture_id: str | None = None,
     ) -> str:
         """Freeze explicit files now; future retries need none of the source paths."""
         with self.lock:
@@ -131,7 +132,11 @@ class Outbox:
                 or used + sum(sizes) > self.quota
             ):
                 raise ValueError("Local archive queue quota exceeded")
-            cid = uuid.uuid4().hex
+            cid = capture_id or uuid.uuid4().hex
+            if not re.fullmatch(r"[a-f0-9]{32}", cid):
+                raise ValueError("Invalid capture ID")
+            if (self.root / cid).exists():
+                raise FileExistsError("Capture already exists")
             stage = self.root / (cid + ".pending")
             stage.mkdir(mode=0o700)
             artifacts = []

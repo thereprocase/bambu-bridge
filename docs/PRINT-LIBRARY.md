@@ -3,6 +3,11 @@
 Status: development foundation, disabled by default. This is not the completed
 automatic Print capture and replay feature.
 
+The [desktop companion](COMPANION.md) is now the primary delivery path. A
+standalone archive preview receives stock Orca's OctoPrint uploads and preserves
+explicitly selected inputs/projects using the shared outbox. Upstream artifact
+hooks and the Orca plugin are optional enhancements, not a shipping dependency.
+
 ## Implemented and checked
 
 - Immutable version-1 capture manifests distinguish exact slices, editable
