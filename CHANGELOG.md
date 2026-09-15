@@ -6,6 +6,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+- Add an opt-in immutable print library with resumable uploads, verified downloads,
+  native print history, explicit retention and backup/restore. Include a stock-Orca
+  plugin outbox and artifact API proposal; automatic full-project capture remains
+  dependent on upstream hooks.
+- Add current-spool replay review and separately enabled native P1S replay. Preserve
+  slice bytes, confirm hardware/materials, recheck fresh inventory before dispatch,
+  and retain one durable request across retries, navigation and lost responses.
+
 - Recover automatically when a power-cycled printer reports empty IDLE: mark confirmed jobs interrupted, release native ownership, retain history, and require a fresh start without replay.
 
 - Add a compact upper-right AMS camera panel with raw humidity, temperature, active filament colors, and stale/fault indicators.

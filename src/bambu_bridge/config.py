@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # Storage
     bridge_library_dir: str | None = None  # opt-in immutable artifact archive
     bridge_library_quota_bytes: int = Field(default=20 * 1024**3, gt=0)
+    bridge_library_replay_enabled: bool = False  # explicit rollout after replay qualification
     bridge_db_path: str = "/var/lib/bambu-bridge/jobs.db"
     bridge_files_dir: str = "/var/lib/bambu-bridge/files"
     bridge_max_transfer_bytes: int = Field(default=64 * 1024 * 1024, gt=0)

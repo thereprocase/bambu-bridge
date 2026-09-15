@@ -98,8 +98,21 @@ class Attempt(BaseModel):
     source_id: str = Field(pattern=IDENTIFIER)
     source_revision: int | None = Field(default=None, ge=0, strict=True)
     state: Literal[
-        "queued", "uploading", "submitted", "accepted", "active", "preparing", "printing", "paused",
-        "completed", "failed", "canceled", "interrupted", "unknown", "ended", "not_started",
+        "queued",
+        "uploading",
+        "submitted",
+        "accepted",
+        "active",
+        "preparing",
+        "printing",
+        "paused",
+        "completed",
+        "failed",
+        "canceled",
+        "interrupted",
+        "unknown",
+        "ended",
+        "not_started",
     ]
     source_state: str = Field(min_length=1, max_length=40)
     created_at: float = Field(ge=0, allow_inf_nan=False)
@@ -108,14 +121,13 @@ class Attempt(BaseModel):
     # Preserve the exact wire choices as history. Replay validates NEW choices.
     ams_mapping: tuple[int, ...] | None = Field(default=None, max_length=64)
     use_ams: bool | None = None
+    start_options: dict[str, bool | str] | None = Field(default=None, max_length=8)
     error_code: str | None = Field(default=None, max_length=160)
     acknowledged: bool = False
 
 
 class LibraryStore:
-    def __init__(
-        self, root: Path, *, quota: int = 20 * 1024**3, _restoring: bool = False
-    ):
+    def __init__(self, root: Path, *, quota: int = 20 * 1024**3, _restoring: bool = False):
         self.root, self.quota = root.resolve(), quota
         if (self.root / "INCOMPLETE").exists() and not _restoring:
             raise LibraryError(503, "This library is an incomplete backup or restore")
@@ -144,6 +156,9 @@ class LibraryStore:
                     id INTEGER PRIMARY KEY, attempt TEXT NOT NULL REFERENCES attempts(id),
                     observed REAL NOT NULL, state TEXT NOT NULL, document TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS attempt_event_order ON attempt_events(attempt,id);
+                CREATE TABLE IF NOT EXISTS replay_requests (
+                    id TEXT PRIMARY KEY, capture TEXT NOT NULL REFERENCES captures(id),
+                    signature TEXT NOT NULL, document TEXT NOT NULL, created REAL NOT NULL);
             """)
 
     @contextmanager
@@ -216,6 +231,70 @@ class LibraryStore:
                 return "deleted"
             return "stored" if row["finalized"] is not None else "pending"
 
+    def replay_request(self, identifier: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM replay_requests WHERE id=?", (identifier,)).fetchone()
+            return json.loads(row["document"]) if row else None
+
+    def claim_replay(self, identifier: str, cid: str, document: dict[str, Any]) -> bool:
+        """Durably claim a Start request once, before creating a native receipt.
+
+        Claims survive capture deletion. A crash before queuing is not permission
+        to repeat Start; the client must inspect the existing request's outcome.
+        """
+        signature = document["signature"]
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT signature FROM replay_requests WHERE id=?", (identifier,)
+            ).fetchone()
+            if existing:
+                if existing["signature"] != signature:
+                    raise LibraryError(409, "This replay request ID has different print choices")
+                return False
+            capture = self._capture(db, cid, None)
+            if capture["finalized"] is None:
+                raise LibraryError(409, "Capture is not finalized")
+            db.execute(
+                "INSERT INTO replay_requests VALUES(?,?,?,?,?)",
+                (identifier, cid, signature, json.dumps(document, sort_keys=True), time.time()),
+            )
+            return True
+
+    def replay_receipt_created(self, identifier: str) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT document FROM replay_requests WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise LibraryError(404, "Replay request not found")
+            document = json.loads(row["document"])
+            document["receipt_created"] = True
+            db.execute(
+                "UPDATE replay_requests SET document=? WHERE id=?",
+                (json.dumps(document, sort_keys=True), identifier),
+            )
+
+    def prepare_replay(
+        self, identifier: str, command: dict[str, Any], inventory: dict[str, Any]
+    ) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT document FROM replay_requests WHERE id=?", (identifier,)
+            ).fetchone()
+            if row is None:
+                raise LibraryError(404, "Replay request not found")
+            document = json.loads(row["document"])
+            if "command" in document:
+                raise LibraryError(409, "This replay was already prepared")
+            document.update(command=command, inventory=inventory)
+            db.execute(
+                "UPDATE replay_requests SET document=? WHERE id=?",
+                (json.dumps(document, sort_keys=True), identifier),
+            )
+
     def record_attempt(self, attempt: Attempt) -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -232,17 +311,23 @@ class LibraryStore:
             if old:
                 previous = Attempt.model_validate_json(old["document"])
                 identity = (
-                    "capture_id", "slice_sha256", "printer_id", "source", "source_id",
-                    "created_at", "ams_mapping", "use_ams",
+                    "capture_id",
+                    "slice_sha256",
+                    "printer_id",
+                    "source",
+                    "source_id",
+                    "created_at",
+                    "ams_mapping",
+                    "use_ams",
+                    "start_options",
                 )
                 if any(getattr(previous, key) != getattr(attempt, key) for key in identity):
                     raise LibraryError(
                         409, "An execution's identity and chosen mapping are immutable"
                     )
-                if (
-                    previous.source_revision is not None
-                    and (attempt.source_revision is None
-                         or attempt.source_revision <= previous.source_revision)
+                if previous.source_revision is not None and (
+                    attempt.source_revision is None
+                    or attempt.source_revision <= previous.source_revision
                 ):
                     return  # a slower observer cannot overwrite a newer durable receipt
                 if old["document"] == document:
@@ -423,7 +508,8 @@ class LibraryStore:
             db.execute("DELETE FROM artifacts WHERE capture=?", (cid,))
             db.execute(
                 "DELETE FROM attempt_events WHERE attempt IN "
-                "(SELECT id FROM attempts WHERE capture=?)", (cid,),
+                "(SELECT id FROM attempts WHERE capture=?)",
+                (cid,),
             )
             db.execute("DELETE FROM attempts WHERE capture=?", (cid,))
             db.execute("UPDATE captures SET deleted=?,manifest='{}' WHERE id=?", (time.time(), cid))

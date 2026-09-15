@@ -35,7 +35,8 @@ automatic Print capture and replay feature.
   error never repeats a printer dispatch. Only native uploads with an exact
   `project_file` plate reference are ingested. Bridge-managed/external receipts
   without those bytes are not guessed into a capture by name or timestamp.
-- The dashboard exposes print attempts and a **read-only replay mapping review**.
+- The dashboard exposes print attempts and a **read-only replay mapping review**,
+  plus an independently enabled, explicitly confirmed Start action.
   Analysis verifies the selected plate checksum, logical filament handshakes,
   nozzle, bed and filament settings with bounded ZIP/XML reads. Spool choices
   use explicit AMS IDs; unused logical filaments need no choice. Temperature
@@ -44,9 +45,17 @@ automatic Print capture and replay feature.
 
 Replay review does not submit a print or create a print attempt. `mapping_complete`
 means the proposed mapping passed software checks; physical hardware, filament
-profile and material quantity still require review. `dispatch_available` remains
-false. The authenticated review may request MQTT `pushing.pushall` to refresh
+profile and material quantity still require review. `dispatch_available` defaults
+to false. The authenticated review may request MQTT `pushing.pushall` to refresh
 status, but never sends a printer start or control command.
+
+Confirmed replay uses the existing native inbox, delivery worker and receipt
+reconciliation. It preserves the exact slice bytes and records each execution
+against the original capture. A durable request ID fixes the approved mapping,
+start options, slice hash and inventory snapshot. The dashboard retains that
+request across navigation and lost responses. Reusing its ID only retrieves its
+outcome; it cannot submit another print. Failed or interrupted staging releases
+an unsent reservation; an ambiguous dispatched start remains fenced for review.
 
 The official Windows nightly from 2026-09-14 loaded the Library and diagnostic
 page capabilities successfully. The diagnostic page executed against an empty
@@ -70,6 +79,14 @@ multi-process quota coordination remain release work.
 No deployed service configuration or active printer is changed by this commit.
 Adding the directory setting requires the normal controlled service rollout.
 
+`BRIDGE_LIBRARY_REPLAY_ENABLED=true` additionally enables confirmed native P1S
+replays. It defaults to false. Keep it disabled until qualification on the target
+printer. Starts require a fresh material report and clear-bed, hardware and
+material confirmation; inventory and readiness are checked again at the final
+native dispatch boundary. Changing the inventory, disabling the library, losing
+the original capture or changing approved options blocks that queued replay.
+The configured `BRIDGE_MAX_TRANSFER_BYTES` limit also applies to archived starts.
+
 ## API contract
 
 All archive mutations are independent of printing:
@@ -87,6 +104,8 @@ All archive mutations are independent of printing:
 | `GET /api/v1/library/history-status` | Native observer availability and last error | Owner or paired device |
 | `GET .../captures/{id}/attempts/{attempt}/events` | Durable attempt observations | Owner or paired device |
 | `POST .../captures/{id}/replay-review` | Read-only slice and current mapping analysis | Owner or paired device |
+| `POST .../captures/{id}/replay` | Explicitly confirmed, idempotent native Start | Owner or paired device |
+| `GET /api/v1/library/replays/{id}` | Inspect the saved request and native receipt | Owner or paired device |
 | `DELETE .../captures/{id}` | Explicit capture deletion | Owner |
 | `POST /api/v1/library/collect-unreferenced` | Explicit blob collection | Owner |
 | `POST /api/v1/library/verify` | Database and blob integrity scan | Owner |
@@ -127,9 +146,9 @@ and credential backups remain a separate operational task.
    without a start request are not yet catalogued as attempts.
 4. **Preview:** derive printable surfaces from the captured project; retain the
    current toolpath fallback until matching and geometry are proven.
-5. **Replay:** the readonly mapping review is implemented. Add confirmed hardware
-   and profile checks, dispatch through the existing native delivery queue, one
-   attempt per confirmed start and no automatic resend of ambiguous starts.
+5. **Replay:** review, confirmation, native dispatch and durable request recovery
+   are implemented and tested with simulated printers. Qualify physical moved-spool
+   replay, external-spool replay and power-cycle recovery in an agreed test window.
 6. **Distribution:** supported stock build, pairing UI, queue/retention controls,
    Android library integration and physical acceptance in an agreed test window.
 
