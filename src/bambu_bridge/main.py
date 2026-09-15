@@ -57,6 +57,7 @@ from bambu_bridge.push.ntfy import NotificationService, NtfyDispatcher
 from bambu_bridge.service.event_persister import EventPersister
 from bambu_bridge.service.jobs import JobManager
 from bambu_bridge.service.library_history import LibraryHistory
+from bambu_bridge.service.library_replay import LibraryReplay
 from bambu_bridge.service.registry import Registry
 from bambu_bridge.service.viz_cache import VizCache
 
@@ -172,6 +173,16 @@ def create_app(
         app.state.notifier = notifier
         app.state.event_persister = persister
         app.state.ftps_port = ftps_port
+        # A recovered replay must have its gate before the native worker starts.
+        app.state.library_replay = (
+            LibraryReplay(
+                app.state.library,
+                lambda: getattr(app.state, "native_gateway", None),
+                enabled=settings.bridge_library_replay_enabled,
+            )
+            if app.state.library
+            else None
+        )
         app.state.native_gateway = (
             NativeGateway(app, app.state.pairing, settings.bridge_native_host)
             if app.state.pairing and settings.bridge_native_host

@@ -25,12 +25,20 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 OWNER = "bridge-native-archive"
 STATES = {
-    "reserved": "queued", "queued": "queued", "dispatching": "submitted",
+    "reserved": "queued",
+    "queued": "queued",
+    "dispatching": "submitted",
     # Native custody receipts collapse PREPARE/RUNNING/PAUSE. Preserve that
     # uncertainty instead of claiming filament has started depositing.
-    "sent": "submitted", "accepted": "accepted", "running": "active",
-    "completed": "completed", "interrupted": "interrupted", "unknown": "unknown",
-    "cancelled": "canceled", "rejected": "failed", "blocked": "not_started",
+    "sent": "submitted",
+    "accepted": "accepted",
+    "running": "active",
+    "completed": "completed",
+    "interrupted": "interrupted",
+    "unknown": "unknown",
+    "cancelled": "canceled",
+    "rejected": "failed",
+    "blocked": "not_started",
     "resolved": "ended",
 }
 
@@ -45,31 +53,66 @@ def native_attempt(row: dict[str, Any], capture_id: str) -> Attempt:
     state = STATES.get(source_state, "unknown")
     if row["state"] == "failed" and source_state in ("queued", "reserved"):
         state = "not_started"
-    return Attempt.model_validate({
-        "id": identity("native-attempt", row["id"]),
-        "capture_id": capture_id,
-        "slice_sha256": row["sha256"],
-        "printer_id": row["printer"],
-        "source": "native",
-        "source_id": row["id"],
-        "source_revision": row.get("revision"),
-        "state": state,
-        "source_state": source_state,
-        "created_at": row.get("start_requested_at") or row["created"],
-        "started_at": row.get("running_at"),
-        "finished_at": row.get("terminal_at"),
-        "ams_mapping": command.get("ams_mapping"),
-        "use_ams": command.get("use_ams"),
-        "error_code": row.get("code") if state in ("failed", "unknown", "not_started") else None,
-        "acknowledged": bool(row.get("acknowledged")),
-    })
+    if row.get("code") == "BBSTART_NOT_DISPATCHED":
+        state = "not_started"
+    return Attempt.model_validate(
+        {
+            "id": identity("native-attempt", row["id"]),
+            "capture_id": capture_id,
+            "slice_sha256": row["sha256"],
+            "printer_id": row["printer"],
+            "source": "replay" if row.get("replay_request_id") else "native",
+            "source_id": row["id"],
+            "source_revision": row.get("revision"),
+            "state": state,
+            "source_state": source_state,
+            "created_at": row["created"]
+            if row.get("replay_request_id")
+            else row.get("start_requested_at") or row["created"],
+            "started_at": row.get("running_at"),
+            "finished_at": row.get("terminal_at"),
+            "ams_mapping": command.get("ams_mapping"),
+            "use_ams": command.get("use_ams"),
+            "start_options": {
+                key: command[key]
+                for key in (
+                    "bed_type",
+                    "bed_leveling",
+                    "flow_cali",
+                    "vibration_cali",
+                    "layer_inspect",
+                    "timelapse",
+                )
+                if key in command
+                and (
+                    type(command[key]) is bool
+                    or (
+                        key == "bed_type"
+                        and isinstance(command[key], str)
+                        and len(command[key]) <= 64
+                    )
+                )
+            },
+            "error_code": row.get("code")
+            if state in ("failed", "unknown", "not_started")
+            else None,
+            "acknowledged": bool(row.get("acknowledged")),
+        }
+    )
 
 
 def archive_native(store: LibraryStore, inbox: NativeInbox, row: dict[str, Any]) -> bool:
-    cid = identity("native-capture", row["id"])
+    replay = (
+        store.replay_request(row["replay_request_id"]) if row.get("replay_request_id") else None
+    )
+    if row.get("replay_request_id") and replay is None:
+        raise LibraryError(409, "Replay receipt has no library request")
+    cid = replay["capture_id"] if replay else identity("native-capture", row["id"])
     state = store.capture_state(cid)
     if state == "deleted":
         return False  # explicit owner deletion must survive reconciliation
+    if replay and state != "stored":
+        raise LibraryError(409, "Replay capture is unavailable")
     if state != "stored":
         if not row.get("retained"):
             return False  # an expired historical cache is not a recoverable slice
@@ -79,14 +122,20 @@ def archive_native(store: LibraryStore, inbox: NativeInbox, row: dict[str, Any])
             raise LibraryError(422, "Native print receipt does not identify a sliced 3MF plate")
         number = int(plate[1])
         artifact = Artifact(
-            name=f"plate-{number}.gcode.3mf", role="slice",
-            sha256=row["sha256"], size=row["bytes"],
+            name=f"plate-{number}.gcode.3mf",
+            role="slice",
+            sha256=row["sha256"],
+            size=row["bytes"],
         )
         title = str(row["logical"]).rsplit("/", 1)[-1]
         title = "".join(c for c in title if ord(c) >= 32 and ord(c) != 127)[:160] or "Native print"
         capture = Capture(
-            id=cid, title=title, slicer_version="Not recorded", plate=number,
-            originals="unavailable", artifacts=(artifact,),
+            id=cid,
+            title=title,
+            slicer_version="Not recorded",
+            plate=number,
+            originals="unavailable",
+            artifacts=(artifact,),
         )
         with inbox.open_verified(row["id"]) as source:
             status = store.create(OWNER, capture)

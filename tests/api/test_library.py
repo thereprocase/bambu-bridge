@@ -168,3 +168,39 @@ def test_replay_review_refreshes_only_status_and_never_submits(client: TestClien
     assert (
         client.post(path, headers=OWNER, json={**body, "choices": {"0": True}}).status_code == 422
     )
+
+
+def test_replay_start_requires_device_auth_confirmation_and_enabled_native_queue(
+    client: TestClient, monkeypatch, tmp_path
+):
+    from tests.test_library_replay_dispatch import approval, setup
+
+    fixture = setup(tmp_path / "replay")
+    monkeypatch.setattr(client.app.state, "library", fixture.store)
+    monkeypatch.setattr(client.app.state, "library_replay", fixture.manager)
+    body = approval(fixture).model_dump(mode="json")
+    path = f"/api/v1/library/captures/{fixture.cid}/replay"
+    receipt_path = f"/api/v1/library/replays/{body['id']}"
+    _, slicer = key(client)
+    assert client.post(path, json=body).status_code == 401
+    assert client.post(path, headers=slicer, json=body).status_code == 401
+    assert client.get(receipt_path, headers=slicer).status_code == 401
+    assert (
+        client.post(path, headers=OWNER, json={**body, "ready_confirmed": False}).status_code == 422
+    )
+    assert fixture.store.replay_request(body["id"]) is None
+    fixture.manager.enabled = False
+    assert client.post(path, headers=OWNER, json=body).status_code == 503
+    assert client.get(receipt_path, headers=OWNER).json()["state"] == "not_started"
+    fixture.manager.enabled = True
+    # Enabling starts cannot turn a previously rejected request into a new job.
+    assert client.post(path, headers=OWNER, json=body).json()["state"] == "not_started"
+    assert fixture.inbox.status() == []
+    body["id"] = "b" * 32
+    first = client.post(path, headers=OWNER, json=body)
+    assert first.status_code == 202, first.text
+    assert first.json()["state"] == "queued"
+    assert client.post(path, headers=OWNER, json=body).json() == first.json()
+    assert len(fixture.inbox.status()) == 1
+    assert fixture.store.replay_request(body["id"])["approval"] == body
+    fixture.service.send_raw.assert_not_awaited()

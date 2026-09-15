@@ -94,6 +94,7 @@ class NativeInbox:
                 "kind": "TEXT NOT NULL DEFAULT 'upload'",
                 "client_peer": "TEXT",
                 "revision": "INTEGER NOT NULL DEFAULT 0",
+                "replay_request_id": "TEXT",
                 **{name: "REAL" for name in TIMING_FIELDS},
             }.items():
                 if name not in columns:
@@ -167,11 +168,25 @@ class NativeInbox:
                 "UPDATE uploads SET start_state='cancelled',code='BBSTART_NOT_DISPATCHED' "
                 "WHERE start_state='reserved'"
             )
+            db.execute(
+                "UPDATE uploads SET start_state='blocked' WHERE replay_request_id IS NOT NULL "
+                "AND state='failed' AND start_state='queued'"
+            )
 
     def reserve(
-        self, printer: str, name: str, maximum: int, *, peer: str | None = None
+        self,
+        printer: str,
+        name: str,
+        maximum: int,
+        *,
+        peer: str | None = None,
+        replay_request_id: str | None = None,
+        replay_command: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        identifier = uuid.uuid4().hex
+        identifier = replay_request_id or uuid.uuid4().hex
+        if bool(replay_request_id) != bool(replay_command):
+            raise ValueError("A replay reservation requires its immutable start command")
+        self.payload(identifier)  # validate identity before it participates in a remote path
         logical = logical_path(name)
         suffix = ".gcode.3mf" if logical.endswith(".3mf") else posixpath.splitext(logical)[1]
         if not suffix or len(suffix) > 16:
@@ -185,11 +200,42 @@ class NativeInbox:
             if used + maximum > self.budget or count >= 128:
                 raise OSError("Inbox capacity exhausted")
             db.execute(
-                "INSERT INTO uploads (id,printer,logical,remote,bytes,state,created,client_peer) "
-                "VALUES (?,?,?,?,?,'receiving',unixepoch(),?)",
-                (identifier, printer, logical, remote, maximum, peer),
+                "INSERT INTO uploads (id,printer,logical,remote,bytes,state,created,client_peer,"
+                "replay_request_id,command,start_state) "
+                "VALUES (?,?,?,?,?,'receiving',unixepoch(),?,?,?,?)",
+                (
+                    identifier,
+                    printer,
+                    logical,
+                    remote,
+                    maximum,
+                    peer,
+                    replay_request_id,
+                    json.dumps(replay_command, sort_keys=True) if replay_command else None,
+                    "reserved" if replay_request_id else None,
+                ),
             )
         return self.get(identifier)
+
+    def queue_replay(self, identifier: str) -> None:
+        with self.connect() as db:
+            changed = db.execute(
+                "UPDATE uploads SET start_state='queued' WHERE id=? AND replay_request_id=? "
+                "AND state IN ('stored','delivered') AND start_state='reserved'",
+                (identifier, identifier),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("BBREPLAY_NOT_READY")
+
+    def abandon_replay(self, identifier: str) -> None:
+        """Release an unsubmitted replay after transfer failure; never touch a sent start."""
+        with self.connect() as db:
+            db.execute(
+                "UPDATE uploads SET state='failed',start_state='cancelled',"
+                "code='BBSTART_NOT_DISPATCHED' "
+                "WHERE id=? AND replay_request_id=? AND start_state IN ('reserved','queued')",
+                (identifier, identifier),
+            )
 
     def get(self, identifier: str) -> dict[str, Any]:
         with self.connect() as db:
@@ -221,7 +267,8 @@ class NativeInbox:
                 for row in db.execute(
                     "SELECT rowid AS archive_cursor,* FROM uploads WHERE rowid>? "
                     "AND kind='upload' AND sha256 IS NOT NULL AND command IS NOT NULL "
-                    "ORDER BY rowid LIMIT ?", (after, min(max(limit, 1), 100)),
+                    "ORDER BY rowid LIMIT ?",
+                    (after, min(max(limit, 1), 100)),
                 )
             ]
 
@@ -282,6 +329,8 @@ class NativeInbox:
         with self.connect() as db:
             db.execute(
                 "UPDATE uploads SET state='failed',code=?,"
+                "start_state=CASE WHEN replay_request_id IS NOT NULL AND start_state IN "
+                "('reserved','queued') THEN 'blocked' ELSE start_state END,"
                 "bytes=CASE WHEN sha256 IS NULL THEN ? ELSE bytes END WHERE id=?",
                 (code, size, identifier),
             )

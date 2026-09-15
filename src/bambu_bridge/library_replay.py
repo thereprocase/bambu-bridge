@@ -16,6 +16,8 @@ import zipfile
 import zlib
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+
 from bambu_bridge.library import LibraryError, LibraryStore
 from bambu_bridge.service.material_inventory import inventory_view
 from bambu_bridge.slicedoc.gcode import MAX_BED_C, MAX_NOZZLE_C, scan_gcode
@@ -25,6 +27,35 @@ _GCODE_LIMIT = 128 * 1024**2
 _EXPANDED_LIMIT = 512 * 1024**2
 _SELECT = re.compile(rb"^[ \t]*(M620|M621)[ \t]+S(\d+)(A?)\b", re.MULTILINE)
 _TOOL = re.compile(rb"^[ \t]*T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
+
+
+class ReplayOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    bed_leveling: StrictBool = True
+    flow_cali: StrictBool = False
+    vibration_cali: StrictBool = False
+    layer_inspect: StrictBool = True
+    timelapse: StrictBool = False
+
+
+class ReplayStart(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    printer_id: str = Field(min_length=1, max_length=64)
+    choices: dict[int, StrictInt] = Field(min_length=1, max_length=64)
+    inventory_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    nozzle_diameter: float = Field(gt=0, le=1, allow_inf_nan=False)
+    bed_type: str = Field(min_length=1, max_length=64)
+    ready_confirmed: StrictBool
+    options: ReplayOptions = Field(default_factory=ReplayOptions)
+
+    @model_validator(mode="after")
+    def explicit_review(self) -> ReplayStart:
+        if not self.ready_confirmed:
+            raise ValueError(
+                "Confirm the P1S hardware, clear bed and selected materials before Start"
+            )
+        return self
 
 
 def _text(value: Any, maximum: int = 160) -> str:
@@ -127,6 +158,10 @@ def requirements(data: bytes, plate: int) -> dict[str, Any]:
             )
         if not filaments:
             raise ValueError("Slice has no logical filament records")
+        preset_types = settings.get("filament_type", profiles)
+        logical_arity = len(preset_types) if isinstance(preset_types, list) else 0
+        if not max(indices) < logical_arity <= 64:
+            raise ValueError("The slice does not record a consistent logical filament count")
 
         # P1S uses logical indices with the A mapping flag. Physical pre-binds
         # outside the metadata's logical index space must never be remapped by
@@ -180,6 +215,7 @@ def requirements(data: bytes, plate: int) -> dict[str, Any]:
             "nozzle_diameter": nozzle,
             "bed_type": _text(bed),
             "filaments": sorted(filaments, key=lambda f: f["index"]),
+            "logical_arity": logical_arity,
             "max_nozzle_c": scan.max_nozzle_c,
             "max_bed_c": scan.max_bed_c,
             "issues": list(dict.fromkeys(issues)),
@@ -223,8 +259,9 @@ def review(
         issues.append("Printer is disconnected.")
     if printer.get("cert_status") == "changed":
         issues.append("The printer certificate changed; verify the printer connection first.")
+    model_missing = "The bridge has not recorded this printer's model; verify it is a P1S."
     if not printer.get("model"):
-        issues.append("The bridge has not recorded this printer's model; verify it is a P1S.")
+        issues.append(model_missing)
     elif printer.get("model") != "P1S":
         issues.append("The selected printer must be a P1S.")
     reported_nozzle = _number(printer.get("nozzle_diameter"))
@@ -290,6 +327,8 @@ def review(
         "inventory": inventory,
         "mapping": rows,
         "mapping_complete": not issues,
+        "ready_for_confirmation": not [issue for issue in issues if issue != model_missing],
+        "printer_state": printer.get("gcode_state"),
         "issues": list(dict.fromkeys(issues)),
         "review_notes": notes,
         "dispatch_available": False,

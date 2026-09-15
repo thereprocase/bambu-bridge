@@ -594,6 +594,14 @@ class NativeGateway:
                     await asyncio.to_thread(inbox.mark_readiness, identifier)
                     try:
                         await self.ensure_idle()
+                        if current.get("replay_request_id"):
+                            replay = getattr(self.app.state, "library_replay", None)
+                            if replay is None:
+                                raise ValueError("BBREPLAY_DISABLED")
+                            await replay.before_dispatch(current)
+                            # The inventory round trip can reveal a newly active
+                            # printer. Recheck readiness against that fresh state.
+                            await self.ensure_idle()
                     except ValueError as exc:
                         reason = str(exc)
                         await asyncio.to_thread(inbox.block_start, identifier, reason)

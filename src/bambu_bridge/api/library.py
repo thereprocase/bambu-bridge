@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from bambu_bridge.api.auth import require_auth, require_owner
 from bambu_bridge.api.orca import require_slicer
 from bambu_bridge.library import CHUNK_LIMIT, IDENTIFIER, Capture, LibraryError, LibraryStore
-from bambu_bridge.library_replay import review
+from bambu_bridge.library_replay import ReplayStart, review
+from bambu_bridge.service.library_replay import LibraryReplay, refresh_materials
 from bambu_bridge.service.registry import PrinterNotFoundError
 
 router = APIRouter(prefix="/library", tags=["library"], dependencies=[Depends(require_auth)])
@@ -49,22 +51,15 @@ async def replay_review(cid: str, body: ReplayReview, request: Request) -> Any:
     except PrinterNotFoundError as exc:
         raise HTTPException(404, "Printer not found") from exc
     if body.refresh and service.connected:
-        revision = service.material_inventory.revision
-        # Subscribe before requesting status, so a fast reply cannot be missed.
-        async with service.raw_bus.subscribe() as subscription:
-            try:
-                async with asyncio.timeout(5):
-                    await service.send_command("pushing", "pushall", version=1, push_target=1)
-                    while service.material_inventory.revision == revision:
-                        await subscription.get()
-            except (TimeoutError, ConnectionError):
-                pass  # review reports missing/stale material data explicitly
+        # Missing/stale material data is reported in the review result.
+        with contextlib.suppress(TimeoutError, ConnectionError):
+            await refresh_materials(service)
     printer = {
         **service.summary(),
         "cert_status": service.cert_status,
         "nozzle_diameter": service.native_snapshot().get("print", {}).get("nozzle_diameter"),
     }
-    return await asyncio.to_thread(
+    result = await asyncio.to_thread(
         invoke,
         review,
         archive,
@@ -74,6 +69,42 @@ async def replay_review(cid: str, body: ReplayReview, request: Request) -> Any:
         choices=body.choices,
         expected_inventory=body.expected_inventory,
     )
+    manager = getattr(request.app.state, "library_replay", None)
+    result["dispatch_available"] = bool(manager and manager.enabled)
+    if result["dispatch_available"]:
+        result["dispatch_note"] = (
+            "Start requires a clear bed and confirmation of hardware and materials."
+        )
+    return result
+
+
+def replay_manager(request: Request) -> LibraryReplay:
+    manager: LibraryReplay | None = getattr(request.app.state, "library_replay", None)
+    if manager is None:
+        raise HTTPException(503, "The bridge library is not enabled")
+    return manager
+
+
+@router.post("/captures/{cid}/replay", status_code=202)
+async def replay_start(cid: str, body: ReplayStart, request: Request) -> Any:
+    try:
+        return await replay_manager(request).submit(cid, body)
+    except LibraryError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            409, "Printer readiness changed; check the printer and review again"
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            507, "The replay could not be staged. "
+            "Check its saved request before starting another print."
+        ) from exc
+
+
+@router.get("/replays/{identifier}")
+def replay_status(identifier: str, request: Request) -> Any:
+    return invoke(replay_manager(request).status, identifier)
 
 
 @router.get("/captures")
