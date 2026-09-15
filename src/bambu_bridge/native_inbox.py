@@ -93,6 +93,7 @@ class NativeInbox:
                 "retained": "INTEGER NOT NULL DEFAULT 1",
                 "kind": "TEXT NOT NULL DEFAULT 'upload'",
                 "client_peer": "TEXT",
+                "revision": "INTEGER NOT NULL DEFAULT 0",
                 **{name: "REAL" for name in TIMING_FIELDS},
             }.items():
                 if name not in columns:
@@ -127,7 +128,7 @@ class NativeInbox:
             db.execute(
                 "CREATE TRIGGER IF NOT EXISTS upload_timing_update "
                 "AFTER UPDATE OF state,start_state,acknowledged,seen_active ON uploads BEGIN "
-                f"UPDATE uploads SET {assignments} WHERE id=NEW.id; END"
+                f"UPDATE uploads SET {assignments},revision=revision+1 WHERE id=NEW.id; END"
             )
         self.database.chmod(0o600)
 
@@ -211,6 +212,18 @@ class NativeInbox:
         if len(identifier) != 32 or any(c not in "0123456789abcdef" for c in identifier):
             raise ValueError("Invalid upload identity")
         return self.directory / (identifier + ".payload")
+
+    def archive_page(self, after: int = 0, limit: int = 100) -> list[dict[str, Any]]:
+        """Read-only, stable receipt enumeration for the independent print library."""
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT rowid AS archive_cursor,* FROM uploads WHERE rowid>? "
+                    "AND kind='upload' AND sha256 IS NOT NULL AND command IS NOT NULL "
+                    "ORDER BY rowid LIMIT ?", (after, min(max(limit, 1), 100)),
+                )
+            ]
 
     async def receive(
         self, reader: asyncio.StreamReader, row: dict[str, Any], maximum: int

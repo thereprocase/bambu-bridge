@@ -110,3 +110,61 @@ def test_owner_maintenance_and_pending_download_gate(client: TestClient) -> None
     assert client.delete(f"/api/v1/library/captures/{capture.id}", headers=auth).status_code == 401
     assert client.delete(f"/api/v1/library/captures/{capture.id}", headers=OWNER).status_code == 204
     assert client.get(f"/api/v1/library/captures/{capture.id}", headers=OWNER).status_code == 404
+
+
+def test_attempt_events_and_worker_health_require_authenticated_device(client: TestClient):
+    from tests.test_library_history import attempt, capture_slice
+
+    store = client.app.state.library
+    capture = capture_slice(store)
+    entry = attempt(capture)
+    store.record_attempt(entry)
+    path = f"/api/v1/library/captures/{capture.id}/attempts/{entry.id}/events"
+    _, auth = key(client)
+    assert client.get(path).status_code == 401
+    assert client.get(path, headers=auth).status_code == 401
+    assert client.get(path, headers=OWNER).json()[0]["attempt"]["ams_mapping"] == [3, 1]
+    assert client.get("/api/v1/library/history-status").status_code == 401
+    health = client.get("/api/v1/library/history-status", headers=OWNER).json()
+    assert health["enabled"] is True and health["native_available"] is False
+
+
+def test_replay_review_refreshes_only_status_and_never_submits(client: TestClient, monkeypatch):
+    from bambu_bridge.service.events import Event, EventBus
+    from bambu_bridge.service.material_inventory import MaterialInventory
+    from tests.test_library_replay import PRINTER, archive_slice, materials, sliced
+
+    service = SimpleNamespace(
+        connected=True,
+        cert_status="trusted",
+        material_inventory=MaterialInventory(),
+        raw_bus=EventBus(),
+        summary=lambda: PRINTER,
+        native_snapshot=lambda: {"print": {"nozzle_diameter": "0.4"}},
+    )
+
+    async def status_only(category, command, **fields):
+        assert (category, command, fields) == (
+            "pushing",
+            "pushall",
+            {"version": 1, "push_target": 1},
+        )
+        service.material_inventory.observe(materials())
+        service.raw_bus.publish(Event("snapshot", {"print": materials()}))
+
+    service.send_command = AsyncMock(side_effect=status_only)
+    monkeypatch.setattr(client.app.state.registry, "get", lambda _: service)
+    cid = archive_slice(client.app.state.library, sliced())
+    path = f"/api/v1/library/captures/{cid}/replay-review"
+    body = {"printer_id": "FIXTURE", "choices": {"0": 3, "1": 1}, "refresh": True}
+    assert client.post(path, json=body).status_code == 401
+    service.send_command.assert_not_called()
+    response = client.post(path, headers=OWNER, json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["mapping_complete"] is True
+    assert response.json()["dispatch_available"] is False
+    service.send_command.assert_awaited_once()
+    assert client.app.state.library.get(cid)["attempts"] == []
+    assert (
+        client.post(path, headers=OWNER, json={**body, "choices": {"0": True}}).status_code == 422
+    )

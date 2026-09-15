@@ -86,6 +86,32 @@ class LibraryError(Exception):
         super().__init__(detail)
 
 
+class Attempt(BaseModel):
+    """One execution of immutable slice bytes, independent of physical slot choices."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str = Field(pattern=IDENTIFIER)
+    capture_id: str = Field(pattern=IDENTIFIER)
+    slice_sha256: str = Field(pattern=DIGEST)
+    printer_id: str = Field(min_length=1, max_length=64)
+    source: Literal["native", "bridge", "replay"]
+    source_id: str = Field(pattern=IDENTIFIER)
+    source_revision: int | None = Field(default=None, ge=0, strict=True)
+    state: Literal[
+        "queued", "uploading", "submitted", "accepted", "active", "preparing", "printing", "paused",
+        "completed", "failed", "canceled", "interrupted", "unknown", "ended", "not_started",
+    ]
+    source_state: str = Field(min_length=1, max_length=40)
+    created_at: float = Field(ge=0, allow_inf_nan=False)
+    started_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    finished_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # Preserve the exact wire choices as history. Replay validates NEW choices.
+    ams_mapping: tuple[int, ...] | None = Field(default=None, max_length=64)
+    use_ams: bool | None = None
+    error_code: str | None = Field(default=None, max_length=160)
+    acknowledged: bool = False
+
+
 class LibraryStore:
     def __init__(
         self, root: Path, *, quota: int = 20 * 1024**3, _restoring: bool = False
@@ -108,6 +134,16 @@ class LibraryStore:
                 CREATE TABLE IF NOT EXISTS blobs (
                     hash TEXT PRIMARY KEY, size INTEGER NOT NULL);
                 CREATE INDEX IF NOT EXISTS artifact_hash ON artifacts(hash);
+                CREATE TABLE IF NOT EXISTS attempts (
+                    id TEXT PRIMARY KEY, capture TEXT NOT NULL REFERENCES captures(id),
+                    source TEXT NOT NULL, source_id TEXT NOT NULL,
+                    document TEXT NOT NULL, observed REAL NOT NULL,
+                    UNIQUE(source, source_id));
+                CREATE INDEX IF NOT EXISTS attempt_capture ON attempts(capture);
+                CREATE TABLE IF NOT EXISTS attempt_events (
+                    id INTEGER PRIMARY KEY, attempt TEXT NOT NULL REFERENCES attempts(id),
+                    observed REAL NOT NULL, state TEXT NOT NULL, document TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS attempt_event_order ON attempt_events(attempt,id);
             """)
 
     @contextmanager
@@ -164,7 +200,86 @@ class LibraryStore:
             result["uploads"] = status
             result["state"] = "stored" if row["finalized"] else "pending"
             result["project_roundtrip_verified"] = False
+            result["attempts"] = [
+                json.loads(a["document"])
+                for a in db.execute("SELECT document FROM attempts WHERE capture=?", (cid,))
+            ]
             return result
+
+    def capture_state(self, cid: str) -> str:
+        """Internal reconciliation helper: tombstones prevent automatic resurrection."""
+        with self.connect() as db:
+            row = db.execute("SELECT deleted,finalized FROM captures WHERE id=?", (cid,)).fetchone()
+            if row is None:
+                return "missing"
+            if row["deleted"] is not None:
+                return "deleted"
+            return "stored" if row["finalized"] is not None else "pending"
+
+    def record_attempt(self, attempt: Attempt) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            capture = self._capture(db, attempt.capture_id, None)
+            if capture["finalized"] is None:
+                raise LibraryError(409, "Finalize the slice before attaching a print attempt")
+            manifest = Capture.model_validate_json(capture["manifest"])
+            if not any(
+                a.role == "slice" and a.sha256 == attempt.slice_sha256 for a in manifest.artifacts
+            ):
+                raise LibraryError(409, "Attempt bytes do not match this capture's slice")
+            old = db.execute("SELECT document FROM attempts WHERE id=?", (attempt.id,)).fetchone()
+            document = attempt.model_dump_json()
+            if old:
+                previous = Attempt.model_validate_json(old["document"])
+                identity = (
+                    "capture_id", "slice_sha256", "printer_id", "source", "source_id",
+                    "created_at", "ams_mapping", "use_ams",
+                )
+                if any(getattr(previous, key) != getattr(attempt, key) for key in identity):
+                    raise LibraryError(
+                        409, "An execution's identity and chosen mapping are immutable"
+                    )
+                if (
+                    previous.source_revision is not None
+                    and (attempt.source_revision is None
+                         or attempt.source_revision <= previous.source_revision)
+                ):
+                    return  # a slower observer cannot overwrite a newer durable receipt
+                if old["document"] == document:
+                    return
+            else:
+                existing = db.execute(
+                    "SELECT id FROM attempts WHERE source=? AND source_id=?",
+                    (attempt.source, attempt.source_id),
+                ).fetchone()
+                if existing:
+                    raise LibraryError(409, "This source execution is already recorded")
+            now = time.time()
+            db.execute(
+                "INSERT INTO attempts VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "document=excluded.document,observed=excluded.observed",
+                (attempt.id, attempt.capture_id, attempt.source, attempt.source_id, document, now),
+            )
+            db.execute(
+                "INSERT INTO attempt_events(attempt,observed,state,document) VALUES(?,?,?,?)",
+                (attempt.id, now, attempt.state, document),
+            )
+
+    def attempt_events(self, cid: str, attempt_id: str) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            self._capture(db, cid, None)
+            row = db.execute(
+                "SELECT id FROM attempts WHERE id=? AND capture=?", (attempt_id, cid)
+            ).fetchone()
+            if row is None:
+                raise LibraryError(404, "Print attempt not found")
+            return [
+                {"observed_at": e["observed"], "attempt": json.loads(e["document"])}
+                for e in db.execute(
+                    "SELECT observed,document FROM attempt_events WHERE attempt=? ORDER BY id",
+                    (attempt_id,),
+                )
+            ]
 
     def append(self, cid: str, name: str, offset: int, data: bytes, owner: str) -> dict[str, Any]:
         if not data or len(data) > CHUNK_LIMIT or offset < 0:
@@ -306,6 +421,11 @@ class LibraryStore:
                 row[0] for row in db.execute("SELECT name FROM artifacts WHERE capture=?", (cid,))
             ]
             db.execute("DELETE FROM artifacts WHERE capture=?", (cid,))
+            db.execute(
+                "DELETE FROM attempt_events WHERE attempt IN "
+                "(SELECT id FROM attempts WHERE capture=?)", (cid,),
+            )
+            db.execute("DELETE FROM attempts WHERE capture=?", (cid,))
             db.execute("UPDATE captures SET deleted=?,manifest='{}' WHERE id=?", (time.time(), cid))
         for name in names:
             (

@@ -12,7 +12,8 @@ automatic Print capture and replay feature.
   Files are deduplicated by SHA-256. Finalization verifies every declared file;
   downloads require authentication and verify bytes again.
 - The archive has no printer-command dependency. Retrying an archive transfer
-  cannot submit a print. Printer execution records will be a separate layer.
+  cannot submit a print. Execution records are a separate layer, linked by
+  receipt UUID and slice hash, with immutable original mapping choices.
 - Explicit deletion retains a capture-ID tombstone. Garbage collection removes
   only blobs without remaining references. Quotas reserve pending uploads too.
 - A library-only backup preserves SQLite, committed blobs and partial-upload
@@ -23,6 +24,29 @@ automatic Print capture and replay feature.
 - A standalone Orca plugin contains a durable local outbox and a native Library
   page. The plugin uses HTTPS Tailscale DNS names, scoped slicer credentials and
   refuses redirects. It receives only explicitly supplied artifact paths.
+- When enabled, an independent worker copies retained native Orca print uploads
+  into the permanent library and observes their durable execution receipts.
+  Native receipts supply queued, submitted, accepted, active and terminal
+  outcomes. `active` does not prove extrusion: native custody combines
+  preparation, running and paused states. Historical polling records observations,
+  not a claim that every intermediate transition was seen.
+- Receipt revisions prevent a slower observer from replacing a newer outcome.
+  Restarted scans are idempotent, deleted capture IDs stay deleted, and an archive
+  error never repeats a printer dispatch. Only native uploads with an exact
+  `project_file` plate reference are ingested. Bridge-managed/external receipts
+  without those bytes are not guessed into a capture by name or timestamp.
+- The dashboard exposes print attempts and a **read-only replay mapping review**.
+  Analysis verifies the selected plate checksum, logical filament handshakes,
+  nozzle, bed and filament settings with bounded ZIP/XML reads. Spool choices
+  use explicit AMS IDs; unused logical filaments need no choice. Temperature
+  heartbeats cannot refresh old inventory. Partial identity updates invalidate
+  the inventory until a complete report arrives, and reconnect clears it.
+
+Replay review does not submit a print or create a print attempt. `mapping_complete`
+means the proposed mapping passed software checks; physical hardware, filament
+profile and material quantity still require review. `dispatch_available` remains
+false. The authenticated review may request MQTT `pushing.pushall` to refresh
+status, but never sends a printer start or control command.
 
 The official Windows nightly from 2026-09-14 loaded the Library and diagnostic
 page capabilities successfully. The diagnostic page executed against an empty
@@ -60,6 +84,9 @@ All archive mutations are independent of printing:
 | `GET /api/v1/library/captures` | Browse, with `limit`, `before`, `before_id` | Owner or paired device |
 | `GET .../captures/{id}/files/{name}` | Download verified bytes | Owner or paired device |
 | `GET /api/v1/library/usage` | Reserved and stored bytes | Owner or paired device |
+| `GET /api/v1/library/history-status` | Native observer availability and last error | Owner or paired device |
+| `GET .../captures/{id}/attempts/{attempt}/events` | Durable attempt observations | Owner or paired device |
+| `POST .../captures/{id}/replay-review` | Read-only slice and current mapping analysis | Owner or paired device |
 | `DELETE .../captures/{id}` | Explicit capture deletion | Owner |
 | `POST /api/v1/library/collect-unreferenced` | Explicit blob collection | Owner |
 | `POST /api/v1/library/verify` | Database and blob integrity scan | Owner |
@@ -95,13 +122,14 @@ and credential backups remain a separate operational task.
 2. **Capture qualification:** populated plates, unsaved projects, painting,
    modifiers, selected plates, canceled sends, concurrent windows and upgrade
    compatibility. A mesh export must not masquerade as an editable project.
-3. **Execution linkage:** bind capture IDs and content hashes to concrete print
-   attempts, including uploads canceled before dispatch. Do not join by name or
-   approximate timestamps.
+3. **Execution linkage:** native upload receipts are linked by UUID/hash. Extend
+   that explicit link to plugin captures and managed API jobs; native uploads
+   without a start request are not yet catalogued as attempts.
 4. **Preview:** derive printable surfaces from the captured project; retain the
    current toolpath fallback until matching and geometry are proven.
-5. **Replay:** fresh logical-filament-to-AMS mapping, hardware/material preflight,
-   one attempt per confirmed start and no automatic resend of ambiguous starts.
+5. **Replay:** the readonly mapping review is implemented. Add confirmed hardware
+   and profile checks, dispatch through the existing native delivery queue, one
+   attempt per confirmed start and no automatic resend of ambiguous starts.
 6. **Distribution:** supported stock build, pairing UI, queue/retention controls,
    Android library integration and physical acceptance in an agreed test window.
 

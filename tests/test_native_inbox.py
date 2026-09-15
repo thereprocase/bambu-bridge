@@ -110,6 +110,50 @@ def start(url="file:///sdcard/cache/test.3mf", sequence="17"):
     return {"print": {"command": "project_file", "url": url, "sequence_id": sequence}}
 
 
+async def test_library_receipt_paging_requires_exact_stored_bytes_and_native_start(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    first = await stored(inbox)
+    command = start()
+    command["print"].update(param="Metadata/plate_1.gcode", ams_mapping=[3], use_ams=True)
+    assert inbox.archive_page() == []  # file upload is not a print attempt
+    inbox.hold_start("fixture-printer", command)
+    inbox.cancel_queued("fixture-printer")
+    second = await stored(inbox, "/second.3mf")
+    inbox.hold_start("fixture-printer", start("file:///sdcard/second.3mf"))
+    inbox.cancel_queued("fixture-printer")
+    inbox.claim_external("other-printer", start())
+    page = inbox.archive_page(limit=1)
+    assert [row["id"] for row in page] == [first["id"]]
+    assert page[0]["start_requested_at"] is not None
+    assert page[0]["revision"] > 0
+    tail = inbox.archive_page(after=page[0]["archive_cursor"])
+    assert [row["id"] for row in tail] == [second["id"]]
+
+
+async def test_library_keeps_uncertain_attempt_after_native_recovery(tmp_path):
+    from bambu_bridge.library import LibraryStore
+    from bambu_bridge.service.library_history import LibraryHistory
+
+    inbox = NativeInbox(tmp_path / "pairing")
+    row = await stored(inbox)
+    command = start()
+    command["print"].update(param="Metadata/plate_1.gcode", ams_mapping=[3], use_ams=True)
+    inbox.hold_start("fixture-printer", command)
+    store = LibraryStore(tmp_path / "library")
+    worker = LibraryHistory(store, lambda: inbox)
+    await worker.scan()
+    capture = store.list()[0]
+    inbox.transition(row["id"], "stored", "delivered", "BBDELIVERY_OK")
+    assert inbox.claim_start(row["id"])
+    inbox.recover()  # outcome unknown; neither history nor recovery can resend
+    await worker.scan()
+    latest = store.get(capture["id"])
+    assert latest["attempts"][0]["state"] == "unknown"
+    assert latest["attempts"][0]["created_at"] == capture["attempts"][0]["created_at"]
+    assert inbox.claim_start(row["id"]) is None
+    assert store.download(capture["id"], "plate-1.gcode.3mf")[0].read_bytes() == b"fixture"
+
+
 async def test_receipt_is_durable_and_independent_of_printer(tmp_path):
     inbox = NativeInbox(tmp_path)
     row = await stored(inbox)
