@@ -23,7 +23,7 @@ jobs:
       - uses: astral-sh/setup-uv@v3
       - run: uv python install 3.12
       - run: uv sync --frozen --extra dev --python 3.12
-      - run: uv run pytest tests/test_orca_windows_setup.py -q --junitxml=windows-results.xml
+      - run: uv run pytest tests/test_orca_windows_setup.py tests/test_library_plugin.py tests/test_library_companion.py -q --junitxml=windows-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -61,10 +61,13 @@ jobs:
           fi
 
       - name: Lint (ruff)
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests plugins companion
 
       - name: Type-check (mypy)
         run: uv run mypy src
+
+      - name: Type-check desktop companion
+        run: MYPYPATH=companion:plugins/bridge_library uv run mypy --follow-imports silent companion
 
       - name: Tests (pytest)
         run: uv run pytest -q --junitxml=test-results.xml

@@ -1,3 +1,26 @@
+# Print library and confirmed replay - development preview
+
+The focused Linux suite passes 86 replay, native receipt/dispatch, history and
+API tests. It covers immutable slice bytes, full logical-preset mapping arrays,
+external-spool encoding, concurrent requests, authentication, confirmation,
+disabled starts, transfer limits, failed transfers, canceled staging, restart
+recovery, changed inventory/options/hardware, stale receipts and backup/restore.
+Ruff and strict mypy pass for 81 source files. Full Python 3.12/3.13 and Windows
+CI results accompany the PR's exact commit; this focused run is not a substitute
+for those release gates.
+
+Headless Edge exercised the actual dashboard and authenticated API against a
+temporary native inbox and simulated printer. Changed mapping invalidated
+confirmation. A lost request, retry, lost accepted response and reload retained
+one identical approval and produced one durable receipt. No printer transport
+ran. Desktop and 390 px layouts had no horizontal overflow or JavaScript errors.
+The readonly/default-disabled review was also exercised separately.
+
+Physical replay, Android library integration, populated stock-Orca artifact
+capture and full-project round-trip recovery remain unqualified. Replay starts
+are disabled by default. The plugin loading probe proves only its documented
+page capability; see [the integration gates](docs/PRINT-LIBRARY.md).
+
 # Approximate live toolhead tracking - 0.6.0
 
 Local validation on Linux (WSL), Python 3.12.3, with the locked project

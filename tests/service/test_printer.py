@@ -37,6 +37,21 @@ def _service(port: int) -> PrinterService:
     )
 
 
+async def test_material_inventory_tracks_raw_frames_and_forgets_connection_loss():
+    from bambu_bridge.protocol.models import ReportMessage
+    from bambu_bridge.service.material_inventory import inventory_view
+    from tests.test_library_replay import materials
+
+    service = _service(1883)  # no network connection is started
+    await service._handle_report(ReportMessage.model_validate({"print": materials()}))
+    assert len(inventory_view(service.material_inventory.snapshot())["slots"]) == 4
+    observed = service.material_inventory.ams_at
+    await service._handle_report(ReportMessage.model_validate({"print": {"nozzle_temper": 220}}))
+    assert service.material_inventory.ams_at == observed
+    await service._handle_lost()
+    assert inventory_view(service.material_inventory.snapshot())["slots"] == []
+
+
 @pytest.mark.asyncio
 async def test_seed_snapshot_then_delta_then_named_events(
     mqtt_broker: int, mock_printer: MockPrinter
