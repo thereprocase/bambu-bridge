@@ -191,8 +191,7 @@ def test_prebaked_physical_tray_is_not_treated_as_a_remappable_logical_tool():
 
 
 def test_observed_orca_external_slice_with_load_finish_and_no_explicit_tool():
-    # Observed on the user's printing Orca 2.4.2 slice (exact bytes checked
-    # privately): the mapping handshake exists without an executable T0.
+    # A mapping handshake can exist without an explicit executable T0.
     data = sliced(
         indices=(0,),
         gcode=(
