@@ -56,6 +56,7 @@ from bambu_bridge.protocol.ftps import SlicedDateMemo
 from bambu_bridge.push.ntfy import NotificationService, NtfyDispatcher
 from bambu_bridge.service.event_persister import EventPersister
 from bambu_bridge.service.jobs import JobManager
+from bambu_bridge.service.library_history import LibraryHistory
 from bambu_bridge.service.registry import Registry
 from bambu_bridge.service.viz_cache import VizCache
 
@@ -191,6 +192,16 @@ def create_app(
                     await registry.shutdown()
                     await db.close()
                     raise
+        app.state.library_history = (
+            LibraryHistory(
+                app.state.library,
+                lambda: app.state.native_gateway.inbox if app.state.native_gateway else None,
+            )
+            if app.state.library
+            else None
+        )
+        if app.state.library_history:
+            app.state.library_history.start()
         # The shared VizCache is on app.state so the HTTP endpoints can find it
         # via _get_viz_cache(request); JobManager already holds the same object.
         app.state.viz_cache_obj = viz_cache
@@ -202,6 +213,8 @@ def create_app(
         try:
             yield
         finally:
+            if app.state.library_history:
+                await app.state.library_history.close()
             await job_manager.shutdown()
             if app.state.native_gateway:
                 await app.state.native_gateway.close()
