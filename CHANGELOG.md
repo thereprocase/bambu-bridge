@@ -15,6 +15,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and retain one durable request across retries, navigation and lost responses.
 
 - Recover automatically when a power-cycled printer reports empty IDLE: mark confirmed jobs interrupted, release native ownership, retain history, and require a fresh start without replay.
+- Fix a start that was acknowledged but never seen active (printer powered off before
+  PREPARE) refusing every later start as BBSTART_UNRESOLVED until resolved by hand.
+  Release it on fresh contradicting telemetry, request that telemetry when a start
+  expires and before refusing a new one, and log native start transitions and refusals.
 
 - Add a compact upper-right AMS camera panel with raw humidity, temperature, active filament colors, and stale/fault indicators.
 
