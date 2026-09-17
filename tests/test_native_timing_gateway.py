@@ -46,6 +46,7 @@ async def test_delivered_upload_without_start_skips_readiness():
         inbox_dispatch_lock=asyncio.Lock(),
         service=lambda: None,
         ensure_idle=AsyncMock(),
+        recover_lost_start=AsyncMock(),
     )
     loop = asyncio.get_running_loop()
     inbox.status = lambda: (loop.call_soon_threadsafe(completed.set), [row])[1]
@@ -57,3 +58,29 @@ async def test_delivered_upload_without_start_skips_readiness():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def recovery_gateway(*, recoverable, ensure_idle):
+    return SimpleNamespace(
+        inbox=SimpleNamespace(recoverable=Mock(return_value=recoverable)),
+        config={"printer_id": "fixture"},
+        ensure_idle=ensure_idle,
+    )
+
+
+async def test_lost_start_recovery_requests_status_only_when_a_start_is_recoverable():
+    gateway = recovery_gateway(recoverable=False, ensure_idle=AsyncMock())
+    await NativeGateway.recover_lost_start(gateway)
+    gateway.ensure_idle.assert_not_awaited()
+    gateway = recovery_gateway(recoverable=True, ensure_idle=AsyncMock())
+    await NativeGateway.recover_lost_start(gateway)
+    gateway.inbox.recoverable.assert_called_once_with("fixture")
+    gateway.ensure_idle.assert_awaited_once_with(force_refresh=True)
+
+
+async def test_lost_start_recovery_defers_when_printer_is_not_ready():
+    gateway = recovery_gateway(
+        recoverable=True, ensure_idle=AsyncMock(side_effect=ValueError("BBSTART_NOT_IDLE"))
+    )
+    await NativeGateway.recover_lost_start(gateway)
+    gateway.ensure_idle.assert_awaited_once()

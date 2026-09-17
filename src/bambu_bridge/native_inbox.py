@@ -37,6 +37,15 @@ TIMING_FIELDS = (
     "terminal_at",
 )
 
+# Seconds without an acknowledged, active report before a dispatched start is
+# marked unknown.
+DISPATCH_EXPIRY = 120
+# A P1S moves from the start ACK to PREPARE within a few seconds, but a status
+# report already in flight when the start was published can still say IDLE.
+# Evidence that a start was lost only counts after this grace period.
+LOST_START_GRACE = 30
+READY_STATES = ("IDLE", "FINISH", "FAILED")
+
 
 class InboxError(Exception):
     def __init__(self, code: str):
@@ -594,6 +603,22 @@ class NativeInbox:
                     code = "BBSTART_COMPLETED" if state == "FINISH" else "BBSTART_ENDED"
                 if active and acknowledged and empty_idle_report(incoming, current):
                     start_state, code = "interrupted", "BBSTART_INTERRUPTED"
+                # A dispatched start that was never seen active must not fence
+                # the printer forever. Starts are published at QoS 0 on a clean
+                # session and never retransmitted, so one the printer is not
+                # acting on cannot arrive later from the bridge. Release it only
+                # on a fresh report that contradicts it, never on elapsed time
+                # alone, and never replay it.
+                age = time.time() - row["dispatched_at"] if row["dispatched_at"] else 0
+                if not active and start_state in ("sent", "accepted", "unknown"):
+                    if age >= LOST_START_GRACE and empty_idle_report(incoming, current):
+                        # Explicit empty identity: the printer restarted and
+                        # holds no job, e.g. powered off right after the ACK.
+                        start_state, code = "interrupted", "BBSTART_LOST"
+                    elif age >= DISPATCH_EXPIRY and state in READY_STATES:
+                        # Still reporting a ready state well after dispatch:
+                        # the start either never began or already ended.
+                        start_state, code = "resolved", "BBSTART_AUTO_RESOLVED"
                 if (start_state, code, acknowledged, active) != (
                     row["start_state"],
                     row["code"],
@@ -634,15 +659,30 @@ class NativeInbox:
                 dict(row)
                 for row in db.execute(
                     "SELECT * FROM uploads WHERE start_state IN ('dispatching','sent','accepted') "
-                    "AND dispatched_at < unixepoch()-120"
+                    "AND dispatched_at < unixepoch()-?",
+                    (DISPATCH_EXPIRY,),
                 )
             ]
             db.execute(
                 "UPDATE uploads SET start_state='unknown',code='BBSTART_UNKNOWN' "
                 "WHERE start_state IN ('dispatching','sent','accepted') "
-                "AND dispatched_at < unixepoch()-120"
+                "AND dispatched_at < unixepoch()-?",
+                (DISPATCH_EXPIRY,),
             )
             return rows
+
+    def recoverable(self, printer: str) -> bool:
+        """True when a fresh status report could let observe() release a lost start."""
+        with self.connect() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM uploads WHERE printer=? AND seen_active=0 "
+                    "AND start_state IN ('sent','accepted','unknown') "
+                    "AND dispatched_at <= unixepoch()-? LIMIT 1",
+                    (printer, LOST_START_GRACE),
+                ).fetchone()
+                is not None
+            )
 
     def resolve(self, identifier: str) -> None:
         """Owner-confirmed non-running resolution; caller must verify fresh idle state."""
