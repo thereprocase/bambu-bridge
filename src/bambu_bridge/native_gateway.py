@@ -433,14 +433,18 @@ class NativeGateway:
         inbox = self.inbox
         if inbox is None or self.config is None:
             return
-        if not await asyncio.to_thread(inbox.recoverable, self.config["printer_id"]):
-            return
         try:
+            if not await asyncio.to_thread(inbox.recoverable, self.config["printer_id"]):
+                return
             await self.ensure_idle(force_refresh=True)
         except ValueError as exc:
             # Busy, disconnected or silent printer: keep the fence. The status
             # report sent on the next MQTT reconnect gives observe() another look.
             log.info("native.start_recovery_deferred", reason=str(exc))
+        except Exception:
+            # Recovery is best effort and runs inside the delivery worker and
+            # the start path; a failure here must not stop either of them.
+            log.warning("native.start_recovery_failed", exc_info=True)
 
     def arm_inbox_expiry(self) -> None:
         def expired() -> None:

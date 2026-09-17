@@ -84,3 +84,11 @@ async def test_lost_start_recovery_defers_when_printer_is_not_ready():
     )
     await NativeGateway.recover_lost_start(gateway)
     gateway.ensure_idle.assert_awaited_once()
+
+
+async def test_lost_start_recovery_failure_never_reaches_the_caller():
+    gateway = recovery_gateway(
+        recoverable=True, ensure_idle=AsyncMock(side_effect=RuntimeError("unexpected"))
+    )
+    await NativeGateway.recover_lost_start(gateway)
+    gateway.ensure_idle.assert_awaited_once()
