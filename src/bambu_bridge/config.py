@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     # against real chamber frames. It never weakens the telemetry air
     # watchdog; it only adds an extra debounced abort path while PRINTING.
     bridge_spaghetti_detection: bool = False
+    # FED_NO_PROGRESS watchdog: seconds after RUNNING without a layer advance or AMS
+    # engagement before the bridge stops the print. 600 aborted healthy ASA preheats.
+    bridge_feed_deadline_s: float = Field(default=1800.0, gt=0)
 
     # Logging
     bridge_log_level: str = "info"

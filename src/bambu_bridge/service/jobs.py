@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import time
 import uuid
 from datetime import UTC, datetime
@@ -79,8 +80,12 @@ _CANCEL_CONFIRM_S = 30  # bound the wait for the printer to confirm a stop
 # Post-RUNNING: the AMS must actually engage a tray (ams.tray_now set) within
 # this, else FED_NO_PROGRESS. In §6.3 *and* the 2026-05-19 recurrence tray_now
 # was never set while the printer ran 40+ layers of air. On a healthy print
-# the tray engages during the start-gcode load, well within a few minutes.
-_FEED_DEADLINE_S = 600
+# the tray engages during the start-gcode load — but only after the bed and
+# chamber are up to temperature. A 100 °C bed from cold (ASA) took more than
+# the original 600 s on 2026-09-18 and the watchdog stopped a healthy print.
+# Default 1800 s; override with BRIDGE_FEED_DEADLINE_S (or Settings via
+# JobManager(feed_deadline_s=...)). Tests monkeypatch this module value.
+_FEED_DEADLINE_S = float(os.environ.get("BRIDGE_FEED_DEADLINE_S", "1800"))
 
 # Legal transitions (contract §7.4 PR B remap). Guarded so a late MQTT
 # event can't, say, move a canceled job to completed.
@@ -129,6 +134,7 @@ class JobManager:
         *,
         ftps_port: int = 990,
         spaghetti_detection: bool = False,
+        feed_deadline_s: float | None = None,
         viz_cache: VizCache | None = None,
     ) -> None:
         self._jobs = jobs
@@ -136,6 +142,7 @@ class JobManager:
         self._registry = registry
         self._ftps_port = ftps_port
         self._spaghetti_detection = spaghetti_detection
+        self._feed_deadline_s = feed_deadline_s
         self._viz_cache = viz_cache
         self._runs: dict[str, JobRun] = {}
         # Background tasks watching each printer's bus for external prints.
@@ -175,6 +182,7 @@ class JobManager:
             ftps_port=self._ftps_port,
             ams_mapping=ams_mapping,
             spaghetti_detection=self._spaghetti_detection,
+            feed_deadline_s=self._feed_deadline_s,
         )
         self._runs[job.id] = run
         run.start()
@@ -425,6 +433,7 @@ class JobRun:
         ftps_port: int,
         ams_mapping: list[int] | None,
         spaghetti_detection: bool = False,
+        feed_deadline_s: float | None = None,
     ) -> None:
         self._job = job
         self._file_bytes = file_bytes
@@ -434,6 +443,7 @@ class JobRun:
         self._ftps_port = ftps_port
         self._ams_mapping = ams_mapping
         self._spaghetti_detection = spaghetti_detection
+        self._feed_deadline_s = feed_deadline_s
         self._signals: asyncio.Queue[str] = asyncio.Queue()
         self._cancel = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -576,7 +586,9 @@ class JobRun:
         # prints both arrive within seconds of each other.
         sig = await self._wait_signal(
             {"layer_advanced", "progress", "completed", "failed", "cancel", "interrupted"},
-            timeout=_FEED_DEADLINE_S,
+            timeout=(
+                self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S
+            ),
         )
         if sig is None:
             with contextlib.suppress(Exception):
