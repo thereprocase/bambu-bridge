@@ -6,6 +6,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+- Make the FED_NO_PROGRESS watchdog deadline configurable (`BRIDGE_FEED_DEADLINE_S`)
+  and raise its default from 600 s to 1800 s. A 100 °C bed preheat from cold (ASA)
+  takes longer than 600 s to reach filament load, and the fixed deadline was
+  stopping healthy prints and marking them failed with no printer error.
+
 - Recover automatically when a power-cycled printer reports empty IDLE: mark confirmed jobs interrupted, release native ownership, retain history, and require a fresh start without replay.
 
 - Add a compact upper-right AMS camera panel with raw humidity, temperature, active filament colors, and stale/fault indicators.
