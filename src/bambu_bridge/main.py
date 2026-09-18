@@ -116,6 +116,7 @@ def create_app(
             registry,
             ftps_port=ftps_port,
             spaghetti_detection=settings.bridge_spaghetti_detection,
+            feed_deadline_s=settings.bridge_feed_deadline_s,
             viz_cache=viz_cache,
         )
         # Must be registered before registry.load() so persisted printers
