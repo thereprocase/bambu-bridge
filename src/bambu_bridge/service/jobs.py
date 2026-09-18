@@ -586,7 +586,9 @@ class JobRun:
         # prints both arrive within seconds of each other.
         sig = await self._wait_signal(
             {"layer_advanced", "progress", "completed", "failed", "cancel", "interrupted"},
-            timeout=self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S,
+            timeout=(
+                self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S
+            ),
         )
         if sig is None:
             with contextlib.suppress(Exception):
