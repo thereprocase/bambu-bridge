@@ -26,6 +26,8 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, cast
 
+import structlog
+
 from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
 from bambu_bridge.native_video import NativeVideo
@@ -35,6 +37,8 @@ from bambu_bridge.turntable_overlay import Shape, archive_shape
 
 if TYPE_CHECKING:
     from bambu_bridge.native_inbox import NativeInbox
+
+log = structlog.get_logger(__name__)
 
 
 def field(value: bytes) -> bytes:
@@ -417,6 +421,31 @@ class NativeGateway:
         except TimeoutError as exc:
             raise ValueError("BBSTART_STATUS_REFRESH_TIMEOUT") from exc
 
+    async def recover_lost_start(self) -> None:
+        """Fetch the status evidence observe() needs to release a lost start.
+
+        A quiet idle P1S may not send another state edge for a long time, so a
+        start that expired to unknown would otherwise fence the printer until
+        someone resolved it by hand. The forced refresh only requests status;
+        the report reaches observe_inbox() before ensure_idle() returns.
+        Caller holds inbox_dispatch_lock.
+        """
+        inbox = self.inbox
+        if inbox is None or self.config is None:
+            return
+        try:
+            if not await asyncio.to_thread(inbox.recoverable, self.config["printer_id"]):
+                return
+            await self.ensure_idle(force_refresh=True)
+        except ValueError as exc:
+            # Busy, disconnected or silent printer: keep the fence. The status
+            # report sent on the next MQTT reconnect gives observe() another look.
+            log.info("native.start_recovery_deferred", reason=str(exc))
+        except Exception:
+            # Recovery is best effort and runs inside the delivery worker and
+            # the start path; a failure here must not stop either of them.
+            log.warning("native.start_recovery_failed", exc_info=True)
+
     def arm_inbox_expiry(self) -> None:
         def expired() -> None:
             self.inbox_expiry.discard(handle)
@@ -438,6 +467,7 @@ class NativeGateway:
             yield
             return
         async with self.inbox_dispatch_lock:
+            await self.recover_lost_start()
             await self.ensure_idle()
             identifier = await asyncio.to_thread(
                 inbox.claim_external,
@@ -512,6 +542,7 @@ class NativeGateway:
                 yield
                 self.inbox_wake.set()
                 return
+            await self.recover_lost_start()
             await self.ensure_idle()
             identifier = await asyncio.to_thread(inbox.claim_external, printer, payload)
             self.arm_inbox_expiry()
@@ -536,7 +567,16 @@ class NativeGateway:
             self.service().native_snapshot(),
         )
         if changed:
+            previous = {row["id"]: row.get("code") for row in self.inbox_status}
             self.inbox_status = await asyncio.to_thread(inbox.status)
+            for row in self.inbox_status:
+                if row["id"] in previous and previous[row["id"]] != row.get("code"):
+                    log.info(
+                        "native.start_state",
+                        upload_id=row["id"],
+                        start_state=row.get("start_state"),
+                        code=row.get("code"),
+                    )
 
     async def deliver_inbox(self) -> None:
         """One ordered worker, independent of Orca socket lifetime; never replay a start."""
@@ -549,7 +589,10 @@ class NativeGateway:
             await self.inbox_wake.wait()
             self.inbox_wake.clear()
             for expired in await asyncio.to_thread(inbox.expire_dispatch):
+                log.warning("native.start_unknown", upload_id=expired["id"])
                 self.inbox_failure(expired, "BBSTART_UNKNOWN")
+            async with self.inbox_dispatch_lock:
+                await self.recover_lost_start()
             await asyncio.to_thread(inbox.prune)
             for row in await asyncio.to_thread(inbox.pending, printer_id):
                 identifier = row["id"]
@@ -594,6 +637,14 @@ class NativeGateway:
                     await asyncio.to_thread(inbox.mark_readiness, identifier)
                     try:
                         await self.ensure_idle()
+                        if current.get("replay_request_id"):
+                            replay = getattr(self.app.state, "library_replay", None)
+                            if replay is None:
+                                raise ValueError("BBREPLAY_DISABLED")
+                            await replay.before_dispatch(current)
+                            # The inventory round trip can reveal a newly active
+                            # printer. Recheck readiness against that fresh state.
+                            await self.ensure_idle()
                     except ValueError as exc:
                         reason = str(exc)
                         await asyncio.to_thread(inbox.block_start, identifier, reason)
@@ -1057,6 +1108,13 @@ class NativeGateway:
                             translated = transpose_identity(payload, serial, service.serial)
                             held = None
                             if self.inbox is not None:
+                                section = translated.get("print")
+                                if isinstance(section, dict) and section.get("command") in (
+                                    "project_file",
+                                    "gcode_file",
+                                ):
+                                    async with self.inbox_dispatch_lock:
+                                        await self.recover_lost_start()
                                 try:
                                     held = await asyncio.to_thread(
                                         self.inbox.hold_start,
@@ -1065,6 +1123,7 @@ class NativeGateway:
                                         peer=peer,
                                     )
                                 except ValueError as exc:
+                                    log.warning("native.start_refused", reason=str(exc), peer=peer)
                                     await report(
                                         {
                                             "print": {

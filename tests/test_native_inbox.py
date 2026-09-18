@@ -110,6 +110,50 @@ def start(url="file:///sdcard/cache/test.3mf", sequence="17"):
     return {"print": {"command": "project_file", "url": url, "sequence_id": sequence}}
 
 
+async def test_library_receipt_paging_requires_exact_stored_bytes_and_native_start(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    first = await stored(inbox)
+    command = start()
+    command["print"].update(param="Metadata/plate_1.gcode", ams_mapping=[3], use_ams=True)
+    assert inbox.archive_page() == []  # file upload is not a print attempt
+    inbox.hold_start("fixture-printer", command)
+    inbox.cancel_queued("fixture-printer")
+    second = await stored(inbox, "/second.3mf")
+    inbox.hold_start("fixture-printer", start("file:///sdcard/second.3mf"))
+    inbox.cancel_queued("fixture-printer")
+    inbox.claim_external("other-printer", start())
+    page = inbox.archive_page(limit=1)
+    assert [row["id"] for row in page] == [first["id"]]
+    assert page[0]["start_requested_at"] is not None
+    assert page[0]["revision"] > 0
+    tail = inbox.archive_page(after=page[0]["archive_cursor"])
+    assert [row["id"] for row in tail] == [second["id"]]
+
+
+async def test_library_keeps_uncertain_attempt_after_native_recovery(tmp_path):
+    from bambu_bridge.library import LibraryStore
+    from bambu_bridge.service.library_history import LibraryHistory
+
+    inbox = NativeInbox(tmp_path / "pairing")
+    row = await stored(inbox)
+    command = start()
+    command["print"].update(param="Metadata/plate_1.gcode", ams_mapping=[3], use_ams=True)
+    inbox.hold_start("fixture-printer", command)
+    store = LibraryStore(tmp_path / "library")
+    worker = LibraryHistory(store, lambda: inbox)
+    await worker.scan()
+    capture = store.list()[0]
+    inbox.transition(row["id"], "stored", "delivered", "BBDELIVERY_OK")
+    assert inbox.claim_start(row["id"])
+    inbox.recover()  # outcome unknown; neither history nor recovery can resend
+    await worker.scan()
+    latest = store.get(capture["id"])
+    assert latest["attempts"][0]["state"] == "unknown"
+    assert latest["attempts"][0]["created_at"] == capture["attempts"][0]["created_at"]
+    assert inbox.claim_start(row["id"]) is None
+    assert store.download(capture["id"], "plate-1.gcode.3mf")[0].read_bytes() == b"fixture"
+
+
 async def test_receipt_is_durable_and_independent_of_printer(tmp_path):
     inbox = NativeInbox(tmp_path)
     row = await stored(inbox)
@@ -497,3 +541,93 @@ async def test_empty_idle_does_not_release_an_unconfirmed_start(tmp_path):
     idle = {"print": {"gcode_state": "IDLE", "gcode_file": "", "subtask_name": ""}}
     inbox.observe("fixture-printer", idle, idle)
     assert inbox.get(row["id"])["start_state"] == "dispatching"
+
+
+EMPTY_IDLE = {"print": {"gcode_state": "IDLE", "gcode_file": "", "subtask_name": ""}}
+
+
+def age_dispatch(inbox, identifier, seconds):
+    with inbox.connect() as db:
+        db.execute(
+            "UPDATE uploads SET dispatched_at=unixepoch()-? WHERE id=?", (seconds, identifier)
+        )
+
+
+async def test_power_cycle_after_ack_releases_start_never_seen_active(tmp_path):
+    # 2026-09-17: printer ACKed the start, was powered off before PREPARE, and
+    # the unknown receipt then refused every later start as BBSTART_UNRESOLVED.
+    inbox = NativeInbox(tmp_path)
+    row, payload = await dispatched(inbox)
+    ack = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": payload["print"]["sequence_id"],
+            "result": "SUCCESS",
+        }
+    }
+    inbox.observe("fixture-printer", ack, {"print": {"gcode_state": "IDLE"}})
+    assert inbox.get(row["id"])["start_state"] == "accepted"
+    age_dispatch(inbox, row["id"], 600)
+    inbox.expire_dispatch()
+    assert inbox.get(row["id"])["start_state"] == "unknown"
+    assert inbox.recoverable("fixture-printer")
+    assert inbox.observe("fixture-printer", EMPTY_IDLE, EMPTY_IDLE)
+    lost = inbox.get(row["id"])
+    assert lost["start_state"] == "interrupted" and lost["code"] == "BBSTART_LOST"
+    assert lost["terminal_at"] is not None
+    assert not inbox.unresolved("fixture-printer")
+    assert not inbox.recoverable("fixture-printer")
+    # The lost command is never replayed; a new upload starts normally.
+    assert inbox.claim_start(row["id"]) is None
+    fresh = await stored(inbox)
+    assert inbox.hold_start("fixture-printer", start())["id"] == fresh["id"]
+
+
+async def test_empty_idle_inside_grace_keeps_unconfirmed_start(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row, _ = await dispatched(inbox)
+    age_dispatch(inbox, row["id"], 5)
+    assert not inbox.recoverable("fixture-printer")
+    inbox.observe("fixture-printer", EMPTY_IDLE, EMPTY_IDLE)
+    assert inbox.get(row["id"])["start_state"] == "sent"
+
+
+@pytest.mark.parametrize("state", ["IDLE", "FINISH", "FAILED"])
+async def test_expired_start_auto_resolves_on_fresh_ready_report(tmp_path, state):
+    inbox = NativeInbox(tmp_path)
+    row, _ = await dispatched(inbox)
+    age_dispatch(inbox, row["id"], 600)
+    inbox.expire_dispatch()
+    report = {"print": {"gcode_state": state, "gcode_file": "/previous.gcode.3mf"}}
+    assert inbox.observe("fixture-printer", report, report)
+    ended = inbox.get(row["id"])
+    assert ended["start_state"] == "resolved" and ended["code"] == "BBSTART_AUTO_RESOLVED"
+    assert not inbox.unresolved("fixture-printer")
+
+
+@pytest.mark.parametrize(
+    "incoming",
+    [
+        {"nozzle_temper": 25},
+        {"gcode_state": "PREPARE"},
+        {"gcode_state": "RUNNING", "gcode_file": "/someone-else.gcode.3mf"},
+        {"gcode_state": "PAUSE"},
+    ],
+)
+async def test_expired_start_stays_fenced_without_a_ready_report(tmp_path, incoming):
+    inbox = NativeInbox(tmp_path)
+    row, _ = await dispatched(inbox)
+    age_dispatch(inbox, row["id"], 600)
+    inbox.expire_dispatch()
+    inbox.observe("fixture-printer", {"print": incoming}, {"print": incoming})
+    assert inbox.get(row["id"])["start_state"] == "unknown"
+    assert inbox.unresolved("fixture-printer")
+
+
+async def test_ready_report_before_expiry_keeps_unconfirmed_start(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    row, _ = await dispatched(inbox)
+    age_dispatch(inbox, row["id"], 60)
+    report = {"print": {"gcode_state": "FINISH", "gcode_file": "/previous.gcode.3mf"}}
+    inbox.observe("fixture-printer", report, report)
+    assert inbox.get(row["id"])["start_state"] == "sent"

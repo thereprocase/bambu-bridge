@@ -87,6 +87,7 @@ import * as controls from './controls.js';
 import * as camera from './camera.js';
 import * as submit from './submit.js';
 import * as settings from './settings.js';
+import * as library from './library.js';
 
 // ── prefs (localStorage-backed) ─────────────────────────────────────────────
 const LS_PREFS = 'bbl.prefs';
@@ -141,8 +142,7 @@ function showNav(show) {
 
 function setNavActive(hash) {
   if (!navEl) return;
-  const base = '#' + (hash.replace(/^#/, '').split('/')[0] === ''
-    ? '/' : '/' + hash.replace(/^#\//, '').split('/')[0]);
+  const base = '#/' + hash.replace(/^#\/?/, '').split('/')[0];
   navEl.querySelectorAll('.nav__item').forEach((a) => {
     const r = a.getAttribute('data-route');
     const active = r === base || (base === '#/' && r === '#/');
@@ -209,6 +209,7 @@ function requireKeyScreen() {
 
 // ── router ──────────────────────────────────────────────────────────────────
 const SCREENS = {
+  library,
   dashboard,
   submit,
   settings,
@@ -219,6 +220,7 @@ const SCREENS = {
 
 // hash -> {name, module-key}. Order doesn't matter; first segment decides.
 const ROUTES = {
+  'library': { name: 'library', screen: 'library' },
   '': { name: 'dashboard', screen: 'dashboard' },
   'print': { name: 'submit', screen: 'submit' },
   'settings': { name: 'settings', screen: 'settings' },
