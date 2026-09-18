@@ -48,6 +48,8 @@ def test_feed_deadline_default_and_settings(monkeypatch: pytest.MonkeyPatch) -> 
     ``BRIDGE_FEED_DEADLINE_S`` at import; ``Settings`` carries the same knob
     for the service and ``JobManager(feed_deadline_s=...)`` overrides it.
     """
+    from pydantic import ValidationError
+
     from bambu_bridge.config import Settings
     from bambu_bridge.service import jobs as jobs_mod
 
@@ -56,5 +58,5 @@ def test_feed_deadline_default_and_settings(monkeypatch: pytest.MonkeyPatch) -> 
     assert Settings(_env_file=None, bridge_api_key="k").bridge_feed_deadline_s == 1800.0
     monkeypatch.setenv("BRIDGE_FEED_DEADLINE_S", "900")
     assert Settings(_env_file=None, bridge_api_key="k").bridge_feed_deadline_s == 900.0
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         Settings(_env_file=None, bridge_api_key="k", bridge_feed_deadline_s=0)
