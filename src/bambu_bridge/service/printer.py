@@ -28,6 +28,7 @@ from bambu_bridge.protocol.job_identity import empty_idle_report
 from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_command
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.events import Event, EventBus, diff_state
+from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.translate import (
     SnapshotContext,
     _started_at_iso,
@@ -211,6 +212,7 @@ class PrinterService:
 
         self.bus = EventBus()
         self.raw_bus = EventBus()  # native P1S clients need every ack, even unchanged reports
+        self.material_inventory = MaterialInventory()
         self.command_guard: (
             Callable[[dict[str, Any]], contextlib.AbstractAsyncContextManager[None]] | None
         ) = None
@@ -509,6 +511,7 @@ class PrinterService:
     # ----------------------------------------------------------------- #
 
     async def _handle_connected(self) -> None:
+        self.material_inventory.clear()
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
@@ -554,6 +557,7 @@ class PrinterService:
 
     async def _handle_lost(self) -> None:
         self._connected = False
+        self.material_inventory.clear()
         self._disconnected_at = time.time()
         # Desync: while disconnected the toolhead may move (firmware recovery,
         # operator at the screen, a print starting) without us seeing it. Drop
@@ -577,6 +581,7 @@ class PrinterService:
         self.last_failure_phase = phase  # type: ignore[assignment]
         self.last_failure_text = human
         self.last_failure_at = _time.time()
+        self.material_inventory.clear()
         # A failed MQTT session means we may have missed motion; forget the
         # dead-reckon estimate (fail closed) until the next successful home.
         self.reset_motion_state("session_error")
@@ -636,6 +641,8 @@ class PrinterService:
         # A raw-bus consumer must never see new state with an old watermark.
         if raw:
             self._last_telemetry_at = time.time()
+        if isinstance(raw.get("print"), dict):
+            self.material_inventory.observe(raw["print"])
         for category, payload in raw.items():
             if isinstance(payload, dict):
                 self._native_categories[category] = _deep_merge(

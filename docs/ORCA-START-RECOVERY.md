@@ -50,4 +50,38 @@ only after the jobs database proved that its tray print completed. The current
 left-arm print was separately confirmed running; no print commands were sent.
 
 ## Printer power-cycle recovery
-A confirmed active job becomes interrupted when fresh telemetry explicitly reports IDLE with empty gcode_file and subtask_name. Split identity/state deltas are supported. Missing fields, disconnection, PAUSE, named IDLE, and unconfirmed starts do not release ownership. The receipt and job history remain terminal; no resume, stop, or replay command is sent. Start a new print after clearing the physical bed.
+A confirmed active job becomes interrupted when fresh telemetry explicitly reports IDLE with empty gcode_file and subtask_name. Split identity/state deltas are supported. Missing fields, disconnection, PAUSE and named IDLE do not release ownership. The receipt and job history remain terminal; no resume, stop, or replay command is sent. Start a new print after clearing the physical bed.
+
+## Lost-start recovery
+September 17 incident: the printer acknowledged a start and was powered off
+before it reported PREPARE. The receipt expired to unknown, the rebooted
+printer's empty IDLE could not release it because it had never been seen
+active, and every later Orca start failed with BBSTART_UNRESOLVED until the
+owner resolved it by hand. The native path logged nothing, so the journal
+looked healthy.
+
+A dispatched start that was never seen active is now released by fresh
+telemetry that contradicts it. Elapsed time alone still releases nothing.
+
+- BBSTART_LOST (interrupted): at least 30 seconds after dispatch, a fresh
+  report shows explicit empty IDLE. The printer restarted and holds no job.
+  The grace period covers a status report that was already in flight when the
+  start was published.
+- BBSTART_AUTO_RESOLVED (resolved): at least 120 seconds after dispatch, a
+  fresh report explicitly carries gcode_state IDLE, FINISH or FAILED. The start
+  either never began or already ended. PREPARE, RUNNING, PAUSE, temperature-only
+  packets and silence keep the fence.
+
+This is safe against a late duplicate because starts are published at QoS 0 on
+a clean MQTT session and are never retransmitted or replayed by the bridge. It
+relies on the P1S acting on an accepted project_file within seconds rather than
+holding it for minutes; if a firmware is ever observed doing that, raise
+DISPATCH_EXPIRY in native_inbox.py.
+
+A quiet idle P1S may send no state edge for a long time, so the gateway asks
+for a status-only pushall when a start expires and again before it would refuse
+a new start. A busy, disconnected or silent printer defers recovery; the
+pushall sent on every MQTT reconnect gives the next opportunity. Transitions
+are logged as native.start_state, native.start_unknown, native.start_refused
+and native.start_recovery_deferred. The dashboard Resolve action remains for
+anything these rules do not cover.
