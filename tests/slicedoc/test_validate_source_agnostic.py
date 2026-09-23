@@ -102,6 +102,57 @@ def test_filament_maps_mismatch_still_caught_when_present() -> None:
     assert any("filament arity mismatch" in i for i in r.issues)
 
 
+# OrcaSlicer 2.4.2 two-colour slice on a P1S (2026-09-23 masonry keys): the
+# colour layers list both filaments in one entry, and filament_maps carries a
+# single token for two filaments on a single-nozzle printer.
+_ORCA_TWO_COLOUR = (
+    '<?xml version="1.0"?><config><plate>'
+    '<metadata key="filament_maps" value="1"/>'
+    '<metadata key="limit_filament_maps" value="0 0"/>'
+    '<nozzle id="0" extruder_id="1" nozzle_diameter="0.4" volume_type="Standard"/>'
+    '<filament id="1" type="ASA" color="#1A1A1A"/>'
+    '<filament id="2" type="ASA" color="#F2F2F2"/>'
+    "<layer_filament_lists>"
+    '<layer_filament_list filament_list="0 1" layer_ranges="0 1,77 78" />'
+    '<layer_filament_list filament_list="0" layer_ranges="2 76" />'
+    "</layer_filament_lists>"
+    "</plate></config>"
+)
+_TWO_COLOUR_GCODE = b"M620 S0A\nT0\nM621 S0A\nM620 S1A\nT1\nM621 S1A\nM620 S0A\nT0\nM621 S0A\n"
+
+
+def test_orca_multi_filament_layer_list_passes() -> None:
+    # was: ValueError int('0 1') -> HTTP 500 on POST /jobs
+    r = validate(_container(_ORCA_TWO_COLOUR, _TWO_COLOUR_GCODE), expected_ams_mapping=[0, 1])
+    assert r.ok, r.issues
+
+
+def test_multi_filament_layer_list_index_out_of_range_rejected() -> None:
+    slice_info = _ORCA_TWO_COLOUR.replace('filament_list="0 1"', 'filament_list="0 2"')
+    r = validate(_container(slice_info, _TWO_COLOUR_GCODE), expected_ams_mapping=[0, 1])
+    assert not r.ok
+    assert any("filament_list=2" in i for i in r.issues)
+
+
+def test_malformed_filament_list_is_an_issue_not_a_crash() -> None:
+    slice_info = _ORCA_TWO_COLOUR.replace('filament_list="0 1"', 'filament_list="0,1"')
+    r = validate(_container(slice_info, _TWO_COLOUR_GCODE), expected_ams_mapping=[0, 1])
+    assert not r.ok
+    assert any("not parseable" in i for i in r.issues)
+
+
+def test_single_token_filament_maps_needs_single_nozzle() -> None:
+    # the shorthand is only accepted when the slice declares one nozzle
+    two_nozzles = _ORCA_TWO_COLOUR.replace(
+        '<nozzle id="0" extruder_id="1" nozzle_diameter="0.4" volume_type="Standard"/>',
+        '<nozzle id="0" extruder_id="1" nozzle_diameter="0.4"/>'
+        '<nozzle id="1" extruder_id="2" nozzle_diameter="0.4"/>',
+    )
+    r = validate(_container(two_nozzles, _TWO_COLOUR_GCODE), expected_ams_mapping=[0, 1])
+    assert not r.ok
+    assert any("filament arity mismatch" in i for i in r.issues)
+
+
 @pytest.mark.parametrize("missing", ["Metadata/plate_1.gcode", "Metadata/slice_info.config"])
 def test_gate_required_members_are_the_three_it_reads(missing: str) -> None:
     members = {

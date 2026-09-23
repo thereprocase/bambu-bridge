@@ -53,16 +53,26 @@ class ValidationReport:
             raise ContainerError("; ".join(self.issues))
 
 
-def _slice_info_arity(xml_bytes: bytes) -> tuple[int, int, set[int]]:
-    """``(filament_maps token count, <filament> count, filament_list idxs)``."""
+def _slice_info_arity(xml_bytes: bytes) -> tuple[int, int, set[int], int]:
+    """``(filament_maps token count, <filament> count, filament_list idxs, <nozzle> count)``.
+
+    ``filament_list`` is a space-separated list: OrcaSlicer writes ``"0 1"`` for a
+    layer range that uses both filaments (a two-colour face). Raises ValueError on
+    a non-integer token.
+    """
     root = ET.fromstring(xml_bytes)  # noqa: S314 — our own generated XML
     maps_tokens = 0
     for md in root.iter("metadata"):
         if md.get("key") == "filament_maps":
             maps_tokens = len((md.get("value") or "").split())
     filament_count = sum(1 for _ in root.iter("filament"))
-    fl_idxs = {int(lfl.get("filament_list") or -1) for lfl in root.iter("layer_filament_list")}
-    return maps_tokens, filament_count, fl_idxs
+    fl_idxs = {
+        int(tok)
+        for lfl in root.iter("layer_filament_list")
+        for tok in (lfl.get("filament_list") or "-1").split()
+    }
+    nozzle_count = sum(1 for _ in root.iter("nozzle"))
+    return maps_tokens, filament_count, fl_idxs, nozzle_count
 
 
 def validate(
@@ -125,16 +135,20 @@ def validate(
     fil_n: int | None = None
     if slice_xml:
         try:
-            maps_n, fil_n, fl_idxs = _slice_info_arity(slice_xml)
-        except ET.ParseError as exc:
+            maps_n, fil_n, fl_idxs, nozzle_n = _slice_info_arity(slice_xml)
+        except (ET.ParseError, ValueError) as exc:
+            # a malformed value is a rejected container, never an HTTP 500
             r.issues.append(f"G5 slice_info.config not parseable: {exc}")
             fil_n = None
         else:
-            # ``filament_maps`` is a Bambu-Studio key; OrcaSlicer omits it.
-            # It is a *cross-check when present* (a donor whose maps list
-            # disagreed with its <filament> records is the original §6.3
-            # trap) — its absence is not a defect.
-            if maps_n and maps_n != fil_n:
+            # ``filament_maps`` maps each filament to an extruder. It is a
+            # *cross-check when present* (a donor whose maps list disagreed with
+            # its <filament> records is the original §6.3 trap) — its absence is
+            # not a defect. OrcaSlicer 2.4.2 writes a single ``"1"`` for a
+            # multi-filament slice on a single-nozzle printer: every filament goes
+            # to extruder 1, so one token is not a mismatch there.
+            single_nozzle_shorthand = maps_n == 1 and nozzle_n <= 1
+            if maps_n and maps_n != fil_n and not single_nozzle_shorthand:
                 r.issues.append(
                     f"G5 filament arity mismatch: filament_maps has "
                     f"{maps_n} slots but {fil_n} <filament> record(s) "
