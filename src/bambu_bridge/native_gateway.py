@@ -236,12 +236,25 @@ class NativeGateway:
         from bambu_bridge.service.viz_cache import find_3mf
 
         async def fetch() -> bytes | None:
-            ftps = cache._make_ftps(service.ip, service.access_code)
-            location = await find_3mf(ftps, filename)
-            if location is None:
-                return None
-            remote_dir, name = location
-            return await ftps.download_bytes(name, remote_dir=remote_dir)
+            # REST jobs are stored at the SD root under this exact name: try that first
+            # (one connection, no listing), then search like the 3D view. The P1S refuses
+            # FTPS sessions while others are open, so retry briefly before giving up.
+            for attempt in range(3):
+                ftps = cache._make_ftps(service.ip, service.access_code)
+                try:
+                    return await ftps.download_bytes(filename, remote_dir="")
+                except Exception as exc:  # noqa: BLE001
+                    direct = repr(exc)[:200]
+                try:
+                    location = await find_3mf(ftps, filename)
+                    if location is not None:
+                        remote_dir, name = location
+                        return await ftps.download_bytes(name, remote_dir=remote_dir)
+                except Exception as exc:  # noqa: BLE001
+                    direct = f"{direct}; search: {exc!r}"[:300]
+                log.info("turntable.sd_fetch_retry", file=filename, attempt=attempt, error=direct)
+                await asyncio.sleep(2 * (attempt + 1))
+            return None
 
         data = asyncio.run(fetch())
         if not data:

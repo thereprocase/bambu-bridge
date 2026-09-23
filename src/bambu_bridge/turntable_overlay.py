@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import math
 import time
 import weakref
@@ -11,9 +12,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
+import structlog
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from bambu_bridge.protocol.gcode_path import parse_gcode_toolpath
+
+log = structlog.get_logger(__name__)
 
 MAX_GCODE = 120 * 1024 * 1024
 MAX_SEGMENTS = 6000
@@ -36,9 +40,15 @@ def archive_shape(source: BinaryIO) -> Shape | None:
         info = archive.getinfo("Metadata/plate_1.gcode")
         if info.file_size > MAX_GCODE:
             raise ValueError("Preview gcode exceeds size limit")
-        data = archive.read(info)
-    walls = parse_gcode_toolpath(data, features=WALL_TYPES)
-    surfaces = parse_gcode_toolpath(data, features=SURFACE_TYPES)
+
+        def stream() -> io.TextIOWrapper:
+            # stream the member: never hold the whole gcode (80 MB plates OOM'd 512 MB hosts)
+            return io.TextIOWrapper(archive.open(info), encoding="utf-8", errors="replace")
+
+        with stream() as text:
+            walls = parse_gcode_toolpath(text, features=WALL_TYPES)
+        with stream() as text:
+            surfaces = parse_gcode_toolpath(text, features=SURFACE_TYPES)
     # Preserve the silhouette first; spend the remaining budget on visible skins.
     wall_budget = (
         min(walls.segment_count, MAX_SEGMENTS * 2 // 3) if surfaces.segment_count else MAX_SEGMENTS
@@ -487,8 +497,14 @@ class ShapeCache:
         if self.task and self.task.done():
             try:
                 result = self.task.result()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 — never break frames; say why, retry later
+                log.warning(
+                    "turntable.shape_load_failed", job=self.loading_key, error=repr(exc)[:300]
+                )
                 result = None
+            else:
+                if result is None:
+                    log.info("turntable.shape_unavailable", job=self.loading_key)
             if self.loading_key == key:
                 self.shape = result
                 self.retry_at = time.monotonic() + 60
