@@ -7,8 +7,8 @@
                   └─► failed ◄─┴───────────┴───────────┘
     queued ─► canceled        (cancel before the printer acks)
 
-The §6.3 boundary in state form: `submitted` means the printer answered
-`result:"success"` for `print.project_file` — NOT that printing began.
+`submitted` means dispatch was attempted, NOT a printer acknowledgement.
+The durable start operation distinguishes dispatch from observation.
 `preparing` is the heat-soak + bed-level window (`gcode_state == RUNNING`
 but `layer_num == 0`). `printing` is gated on `layer_num > 0` — the
 single most important rule in the contract.
@@ -22,8 +22,8 @@ Driven by the printer's named bus events (M2):
 * ``print_completed`` gcode_state -> FINISH    => * -> completed
 * ``print_failed`` / ``error``                 => -> failed
 
-A ``submitted`` job that never sees RUNNING within 60 s fails (MQTT
-timeout, spec 8). The FED_NO_PROGRESS watchdog (600 s, AMS engagement)
+A managed start without RUNNING within 60 s remains outcome-unknown and
+retains printer ownership. The FED_NO_PROGRESS watchdog (600 s, AMS engagement)
 runs from the preparing-onward window — it is the §6.3 hard-fail safety
 net independent of the layer_num signal.
 
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import time
 import uuid
@@ -51,6 +52,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from bambu_bridge.db.jobs import EventRepo, Job, JobRepo, JobState
+from bambu_bridge.db.starts import StartConflict, StartRepo
 from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.events import Event
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
@@ -68,11 +70,13 @@ _RUNNING_TIMEOUT_S = 60  # started -> printing deadline (spec 8)
 # Job states that mean "a print is actively in flight for this printer."
 # Mirrors db/jobs._LIVE_JOB_STATES — kept here to avoid importing a private
 # symbol across package boundaries. Both sets must be kept in sync.
-_LIVE_STATES = frozenset({
-    JobState.SUBMITTED,
-    JobState.PREPARING,
-    JobState.PRINTING,
-})
+_LIVE_STATES = frozenset(
+    {
+        JobState.SUBMITTED,
+        JobState.PREPARING,
+        JobState.PRINTING,
+    }
+)
 _CANCEL_CONFIRM_S = 30  # bound the wait for the printer to confirm a stop
 # Post-RUNNING: the AMS must actually engage a tray (ams.tray_now set) within
 # this, else FED_NO_PROGRESS. In §6.3 *and* the 2026-05-19 recurrence tray_now
@@ -96,7 +100,10 @@ _ALLOWED: dict[JobState, set[JobState]] = {
     JobState.UPLOADING: {JobState.SUBMITTED, JobState.FAILED, JobState.CANCELED},
     JobState.SUBMITTED: {JobState.PREPARING, JobState.FAILED, JobState.CANCELED},
     JobState.PREPARING: {
-        JobState.PRINTING, JobState.COMPLETED, JobState.FAILED, JobState.CANCELED,
+        JobState.PRINTING,
+        JobState.COMPLETED,
+        JobState.FAILED,
+        JobState.CANCELED,
     },
     JobState.PRINTING: {JobState.COMPLETED, JobState.FAILED, JobState.CANCELED},
 }
@@ -116,6 +123,7 @@ class JobManager:
         viz_cache: VizCache | None = None,
     ) -> None:
         self._jobs = jobs
+        self.starts = StartRepo(jobs._db)
         self._events = events
         self._registry = registry
         self._ftps_port = ftps_port
@@ -132,24 +140,21 @@ class JobManager:
         file_name: str,
         *,
         ams_mapping: list[int] | None = None,
+        operation_id: str | None = None,
     ) -> Job:
         """Create a queued job and kick off its lifecycle task."""
-        self._registry.get(printer_id)  # PrinterNotFoundError -> 404 at API
-        job = Job(
-            id=uuid.uuid4().hex,
-            printer_id=printer_id,
-            file_name=file_name,
-            state=JobState.QUEUED,
-            queued_at=int(time.time()),
-            metadata_json=None,
-        )
-        await self._jobs.create(job)
-        await self._events.add(
-            printer_id=job.printer_id,
-            job_id=job.id,
-            event_type="job_created",
-            payload={"state": JobState.QUEUED.value, "file_name": file_name},
-        )
+        operation_id = operation_id or uuid.uuid4().hex
+        payload = {
+            "file_name": file_name,
+            "ams_mapping": ams_mapping,
+            "content_sha256": hashlib.sha256(file_bytes).hexdigest(),
+        }
+        operation, created = await self._claim(operation_id, printer_id, payload)
+        job = await self._jobs.get(operation["job_id"])
+        if job is None:
+            raise StartConflict("Start identity is retained, but its job history was removed")
+        if not created:
+            return job
         run = JobRun(
             job,
             file_bytes,
@@ -159,12 +164,94 @@ class JobManager:
             ftps_port=self._ftps_port,
             ams_mapping=ams_mapping,
             spaghetti_detection=self._spaghetti_detection,
+            starts=self.starts,
+            operation_id=operation_id,
         )
         self._runs[job.id] = run
         run.start()
         assert run._task is not None
         run._task.add_done_callback(lambda _task: self._runs.pop(job.id, None))
         return job
+
+    @staticmethod
+    def require_idle(service: Any) -> None:
+        """A connected socket alone is not a fresh printer observation."""
+        snapshot = service.snapshot()
+        session = snapshot.get("session", {})
+        timestamp = session.get("last_telemetry_at")
+        try:
+            observed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+            age = (datetime.now(UTC) - observed).total_seconds()
+        except (ValueError, TypeError):
+            age = float("inf")
+        if (
+            not service.connected
+            or session.get("connected") is not True
+            or not 0 <= age <= 15
+            or snapshot.get("phase") not in ("idle", "completed")
+        ):
+            raise StartConflict("Printer must have fresh, connected idle/finished telemetry")
+
+    async def _claim(
+        self,
+        operation_id: str,
+        printer_id: str,
+        payload: dict[str, Any],
+        *,
+        queue_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        service = self._registry.get(printer_id)
+        existing = await self.starts.get(operation_id)
+        if existing is None:
+            self.require_idle(service)
+        return await self.starts.claim(operation_id, printer_id, payload, queue_id=queue_id)
+
+    async def start_stored(
+        self,
+        operation_id: str,
+        printer_id: str,
+        file_name: str,
+        file_path: str,
+        ams_mapping: list[int] | None,
+        *,
+        queue_id: str | None = None,
+        command_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # Root-only is the current command contract. Do not silently ignore a
+        # directory or normalize a different card file while claiming it.
+        if "/" in file_name or "\\" in file_name or file_path != "/" + file_name:
+            raise StartConflict("Stored-file starts currently require an exact root file path")
+        payload: dict[str, Any] = {
+            "file_name": file_name,
+            "file_path": file_path,
+            "ams_mapping": ams_mapping,
+        }
+        if command_fields is not None:
+            payload["command_fields"] = command_fields
+        operation, created = await self._claim(operation_id, printer_id, payload, queue_id=queue_id)
+        if not created:
+            return operation
+        job = await self._jobs.get(operation["job_id"])
+        assert job is not None
+        run = JobRun(
+            job,
+            b"",
+            self._jobs,
+            self._events,
+            self._registry,
+            ftps_port=self._ftps_port,
+            ams_mapping=ams_mapping,
+            spaghetti_detection=self._spaghetti_detection,
+            starts=self.starts,
+            operation_id=operation_id,
+            stored_file=True,
+            command_fields=command_fields,
+        )
+        self._runs[job.id] = run
+        run.start()
+        assert run._task is not None
+        run._task.add_done_callback(lambda _task: self._runs.pop(job.id, None))
+        return operation
 
     async def cancel(self, job_id: str) -> Job:
         job = await self._jobs.get(job_id)
@@ -174,6 +261,11 @@ class JobManager:
         if run is not None and not job.state.terminal:
             await run.request_cancel()
         return await self._jobs.get(job_id) or job
+
+    async def quiesce_start(self, job_id: str) -> None:
+        run = self._runs.get(job_id)
+        if run is not None:
+            await run.stop()
 
     async def get(self, job_id: str) -> Job | None:
         return await self._jobs.get(job_id)
@@ -199,6 +291,43 @@ class JobManager:
         protocol so the registry can call it the same way it calls
         :meth:`~bambu_bridge.service.event_persister.EventPersister.attach`.
         """
+
+        async def start_raw(fields: dict[str, Any]) -> None:
+            # Native/raw clients lack a durable caller-generated intent ID.
+            # They still share the same atomic printer reservation. Never
+            # silently replace their slice/AMS/options with app defaults.
+            url = fields.get("url")
+            prefix = "file:///sdcard/"
+            if not isinstance(url, str) or not url.startswith(prefix):
+                raise StartConflict("Managed starts require a root SD-card file URL")
+            name = url[len(prefix) :]
+            if not name.endswith(".gcode.3mf") or fields.get("param") != "Metadata/plate_1.gcode":
+                raise StartConflict("Managed starts currently support plate_1 in a gcode.3mf")
+            forwarded = {k: v for k, v in fields.items() if k not in ("command", "sequence_id")}
+            allowed = project_file_command(name, use_ams=False, ams_mapping=[])
+            if set(forwarded) - set(allowed):
+                raise StartConflict("Unsupported native print options; no command sent")
+            sequence = fields.get("sequence_id")
+            if sequence is not None:
+                if type(sequence) not in (str, int) or not 0 < len(str(sequence)) <= 64:
+                    raise StartConflict("Invalid native request sequence")
+                forwarded["sequence_id"] = str(sequence)
+            mapping = fields.get("ams_mapping")
+            if mapping is not None and (
+                not isinstance(mapping, list)
+                or any(type(slot) is not int or slot < -1 or slot > 3 for slot in mapping)
+            ):
+                raise StartConflict("Invalid native AMS mapping")
+            await self.start_stored(
+                uuid.uuid4().hex,
+                service.serial,
+                name,
+                "/" + name,
+                mapping,
+                command_fields=forwarded,
+            )
+
+        service.start_handler = start_raw
         prior = self._watch_tasks.pop(service.serial, None)
         if prior is not None:
             prior.cancel()
@@ -262,9 +391,7 @@ class JobManager:
                 except Exception:  # noqa: BLE001 — never let the watch task die
                     log_.exception("jobs.watch.error", ev_name=ev.name)
 
-    async def _maybe_create_external_job(
-        self, printer_id: str, ev: Event, log_: Any
-    ) -> None:
+    async def _maybe_create_external_job(self, printer_id: str, ev: Event, log_: Any) -> None:
         """Insert an external job row if no live row exists for this printer.
 
         The live-row check fetches the most recent 50 jobs and scans for any
@@ -287,9 +414,7 @@ class JobManager:
         started_epoch: int
         if raw_started and isinstance(raw_started, str):
             try:
-                dt = datetime.strptime(raw_started, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=UTC
-                )
+                dt = datetime.strptime(raw_started, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
                 started_epoch = int(dt.timestamp())
             except ValueError:
                 started_epoch = int(time.time())
@@ -319,9 +444,7 @@ class JobManager:
         )
         log_.info("jobs.external_created", job_id=job.id, file_name=file_name)
 
-    async def _maybe_close_external_job(
-        self, printer_id: str, event_name: str, log_: Any
-    ) -> None:
+    async def _maybe_close_external_job(self, printer_id: str, event_name: str, log_: Any) -> None:
         """Close an external-origin job row on completion or failure.
 
         Only acts on rows whose metadata marks them as external and whose state
@@ -375,9 +498,7 @@ class JobManager:
                         "trigger": "printer_error",
                     },
                 )
-            log_.info(
-                "jobs.external_closed", job_id=job.id, ev_name=event_name
-            )
+            log_.info("jobs.external_closed", job_id=job.id, ev_name=event_name)
             break  # only one external job expected per printer at a time
 
     async def shutdown(self) -> None:
@@ -410,6 +531,10 @@ class JobRun:
         ftps_port: int,
         ams_mapping: list[int] | None,
         spaghetti_detection: bool = False,
+        starts: StartRepo | None = None,
+        operation_id: str | None = None,
+        stored_file: bool = False,
+        command_fields: dict[str, Any] | None = None,
     ) -> None:
         self._job = job
         self._file_bytes = file_bytes
@@ -419,6 +544,13 @@ class JobRun:
         self._ftps_port = ftps_port
         self._ams_mapping = ams_mapping
         self._spaghetti_detection = spaghetti_detection
+        self._starts = starts
+        self._operation_id = operation_id
+        self._stored_file = stored_file
+        self._command_fields = command_fields
+        self._dispatch_started = False
+        self._dispatch_at = float("inf")
+        self._observed_session: str | None = None
         self._signals: asyncio.Queue[str] = asyncio.Queue()
         self._cancel = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -477,6 +609,28 @@ class JobRun:
         """
         async for ev in sub:  # type: Event
             assert isinstance(ev, Event)
+            if self._starts:
+                if not self._dispatch_started or ev.observed_at < self._dispatch_at:
+                    continue
+                service = self._registry.get(self._job.printer_id)
+                if ev.name == "connection_lost":
+                    self._observed_session = None
+                    await self._fail("connection_lost")
+                    continue
+                if ev.name == "print_started" and ev.session_id:
+                    expected = (self._command_fields or {}).get("subtask_name") or (
+                        sd_filename(self._job.file_name).removesuffix(".gcode.3mf")
+                    )
+                    if ev.data.get("subtask_name") != expected:
+                        await self._fail("uncorrelated_printer_start")
+                        continue
+                    self._observed_session = ev.session_id
+                if (
+                    not self._observed_session
+                    or ev.session_id != self._observed_session
+                    or service.bus.session_id != self._observed_session
+                ):
+                    continue
             if ev.name == "print_started":
                 self._signals.put_nowait("running")
             elif ev.name == "print_progress":
@@ -499,50 +653,90 @@ class JobRun:
             await self._set(JobState.CANCELED, "canceled_before_upload")
             return
 
+        if (
+            self._starts
+            and self._operation_id
+            and not await self._starts.transition(self._operation_id, ("accepted",), "validating")
+        ):
+            return
+        if self._stored_file:
+            ftps = FtpsTransfer(service.ip, service.access_code, port=self._ftps_port)
+            self._file_bytes = await ftps.download_bytes(self._job.file_name, remote_dir="")
+
         # Gate the .gcode.3mf BEFORE touching the printer. This is the §6.3
         # fix: an inconsistent AMS binding, bad md5, or unsafe temperature is
         # rejected here — not discovered as "printed air" 17 min in.
-        report = validate(
-            self._file_bytes, expected_ams_mapping=self._ams_mapping
+        report = await asyncio.to_thread(
+            validate, self._file_bytes, expected_ams_mapping=self._ams_mapping
         )
         if not report.ok:
             await self._fail(f"invalid_3mf: {'; '.join(report.issues)}")
             return
 
+        if (
+            self._starts
+            and self._operation_id
+            and not await self._starts.transition(self._operation_id, ("validating",), "staging")
+        ):
+            return
+
         # queued -> uploading -> started (spec 5.2: distinct transitions)
         await self._set(JobState.UPLOADING, "ftps_begin")
-        ftps = FtpsTransfer(
-            service.ip, service.access_code, port=self._ftps_port
-        )
+        ftps = FtpsTransfer(service.ip, service.access_code, port=self._ftps_port)
         sd_name = sd_filename(self._job.file_name)
         try:
             # FTP root == SD card root (REPORT §5) — store at root, not model/.
-            remote = await ftps.upload_bytes(
-                self._file_bytes, sd_name, remote_dir=""
-            )
+            remote = await ftps.upload_bytes(self._file_bytes, sd_name, remote_dir="")
         except Exception as exc:  # noqa: BLE001
             await self._fail(f"upload_error: {exc!s}")
             return
         self._file_bytes = b""
         await self._jobs.update(self._job.id, file_path=remote)
 
-        await self._set(JobState.SUBMITTED, "project_file_published")
+        if self._cancel.is_set():
+            await self._set(JobState.CANCELED, "canceled_before_dispatch")
+            return
+        if self._starts and self._operation_id:
+            operation = await self._starts.get(self._operation_id)
+            if operation is None or time.time() - operation["created_at"] > 300:
+                await self._fail("intent_expired_before_dispatch")
+                return
+            JobManager.require_idle(service)
+            if not await self._starts.transition(self._operation_id, ("staging",), "dispatching"):
+                return
+        self._dispatch_started = True
+
+        def before_dispatch() -> None:
+            if self._starts:
+                JobManager.require_idle(service)
+                if self._cancel.is_set():
+                    raise StartConflict("Canceled before publish")
+            self._dispatch_at = time.monotonic()
+
+        await self._set(JobState.SUBMITTED, "project_file_dispatch_attempted")
         # url = file:///sdcard/<name>.gcode.3mf — the ONLY confirmed scheme
         # (REPORT §6.2). The old code used ftp://, flagged untested in §9.
         await service.send_command(
             "print",
             "project_file",
-            **project_file_command(
-                self._job.file_name,
-                use_ams=bool(self._ams_mapping),
-                ams_mapping=self._ams_mapping or [],
+            **({"before_publish": before_dispatch} if self._starts else {}),
+            **(
+                self._command_fields
+                if self._command_fields is not None
+                else project_file_command(
+                    self._job.file_name,
+                    use_ams=bool(self._ams_mapping),
+                    ams_mapping=self._ams_mapping or [],
+                )
             ),
         )
+        if self._starts and self._operation_id:
+            await self._starts.transition(
+                self._operation_id, ("dispatching",), "awaiting_observation"
+            )
 
         # submitted -> preparing  (RUNNING within 60 s, else timeout-fail)
-        sig = await self._wait_signal(
-            {"running", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S
-        )
+        sig = await self._wait_signal({"running", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S)
         if sig == "cancel":
             await self._do_cancel(service, acked=False)
             return
@@ -563,8 +757,7 @@ class JobRun:
             timeout=_FEED_DEADLINE_S,
         )
         if sig is None:
-            with contextlib.suppress(Exception):
-                await service.send_command("print", "stop")
+            await self._stop_owned(service)
             await self._fail("FED_NO_PROGRESS")
             return
         if sig == "completed":
@@ -603,8 +796,7 @@ class JobRun:
         elif sig == "cancel":
             await self._do_cancel(service, acked=True)
         elif sig == "spaghetti":
-            with contextlib.suppress(Exception):
-                await service.send_command("print", "stop")
+            await self._stop_owned(service)
             await self._fail("SPAGHETTI_DETECTED")
         else:
             await self._fail("printer_error")
@@ -613,9 +805,7 @@ class JobRun:
     # Transitions
     # ------------------------------------------------------------------ #
 
-    async def _wait_signal(
-        self, accept: set[str], *, timeout: float | None = None
-    ) -> str | None:
+    async def _wait_signal(self, accept: set[str], *, timeout: float | None = None) -> str | None:
         """Pull signals until one is in ``accept``; None on timeout."""
         deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
         while True:
@@ -631,9 +821,7 @@ class JobRun:
             if sig in accept:
                 return sig
 
-    def _start_spaghetti_monitor(
-        self, service: Any
-    ) -> asyncio.Task[None] | None:
+    def _start_spaghetti_monitor(self, service: Any) -> asyncio.Task[None] | None:
         """Opt-in camera failure watch, scoped to the PRINTING phase.
 
         Returns the running task, or None when disabled / no camera. The
@@ -656,40 +844,81 @@ class JobRun:
         return asyncio.create_task(monitor.run())
 
     async def _do_cancel(self, service: Any, *, acked: bool) -> None:
-        with contextlib.suppress(Exception):
-            await service.send_command("print", "stop")
-        if acked:
+        if not await self._stop_owned(service):
+            await self._fail("cancel_outcome_unknown")
+            return
+        if acked or self._starts:
             # Printer was printing — wait for it to confirm the stop (spec 8).
-            await self._wait_signal(
+            confirmation = await self._wait_signal(
                 {"stopped", "completed", "failed"}, timeout=_CANCEL_CONFIRM_S
             )
+            if self._starts and confirmation is None:
+                await self._fail("stop_not_confirmed")
+                return
         await self._set(JobState.CANCELED, "user_cancel")
 
+    async def _stop_owned(self, service: Any) -> bool:
+        """A historical job must never stop the next physical session."""
+        if self._starts and self._operation_id:
+            operation = await self._starts.get(self._operation_id)
+            if (
+                not operation
+                or operation["state"] != "observed_started"
+                or not self._observed_session
+                or not service.connected
+                or service.bus.session_id != self._observed_session
+            ):
+                return False
+        try:
+
+            def before_stop() -> None:
+                if not service.connected or service.bus.session_id != self._observed_session:
+                    raise StartConflict("Physical session changed before stop")
+
+            await service.send_command(
+                "print", "stop", **({"before_publish": before_stop} if self._starts else {})
+            )
+            return True
+        except Exception:
+            return False
+
     async def _complete(self) -> None:
-        now = int(time.time())
-        started = self._job.started_at or now
-        await self._jobs.update(
-            self._job.id,
-            progress_pct=100.0,
-            finished_at=now,
-            duration_s=now - started,
-        )
         await self._set(JobState.COMPLETED, "gcode_finish")
 
     async def _fail(self, reason: str) -> None:
-        await self._jobs.update(
-            self._job.id, finished_at=int(time.time()), error_code=reason
-        )
+        if self._starts and self._operation_id and self._dispatch_started:
+            await self._starts.transition(
+                self._operation_id,
+                ("dispatching", "awaiting_observation", "observed_started"),
+                "outcome_unknown",
+                reason=reason.split(":", 1)[0],
+            )
+            # Do not call a transport/observation failure a physical print
+            # failure or free the printer for a retry.
+            return
+        await self._jobs.update(self._job.id, finished_at=int(time.time()), error_code=reason)
         await self._set(JobState.FAILED, reason)
 
     async def _set(self, new: JobState, trigger: str) -> None:
+        if self._starts and self._dispatch_started and new.terminal:
+            service = self._registry.get(self._job.printer_id)
+            if (
+                not self._observed_session
+                or not service.connected
+                or service.bus.session_id != self._observed_session
+            ):
+                await self._fail("terminal_session_not_confirmed")
+                return
         cur = self._job.state
         if new != cur and new not in _ALLOWED.get(cur, set()):
-            self._log.warning(
-                "job.illegal_transition", frm=cur.value, to=new.value
-            )
+            self._log.warning("job.illegal_transition", frm=cur.value, to=new.value)
             return
         fields: dict[str, Any] = {"state": new}
+        if new is JobState.COMPLETED:
+            now = int(time.time())
+            fields.update(
+                progress_pct=100.0, finished_at=now, duration_s=now - (self._job.started_at or now)
+            )
         if new is JobState.SUBMITTED and self._job.started_at is None:
             fields["started_at"] = int(time.time())
         updated = await self._jobs.update(self._job.id, **fields)
@@ -702,6 +931,33 @@ class JobRun:
             payload={"from": cur.value, "to": new.value, "trigger": trigger},
         )
         self._log.info("job.transition", frm=cur.value, to=new.value, trigger=trigger)
+        if self._starts and self._operation_id:
+            if new in (JobState.PREPARING, JobState.PRINTING):
+                await self._starts.transition(
+                    self._operation_id,
+                    ("awaiting_observation", "observed_started"),
+                    "observed_started",
+                )
+            elif new.terminal:
+                state = (
+                    "rejected_before_dispatch"
+                    if new is JobState.FAILED
+                    else "canceled_before_dispatch"
+                    if not self._dispatch_started
+                    else new.value
+                )
+                await self._starts.transition(
+                    self._operation_id,
+                    (
+                        "accepted",
+                        "validating",
+                        "staging",
+                        "awaiting_observation",
+                        "observed_started",
+                    ),
+                    state,
+                    release=True,
+                )
 
 
 def _gcode_state(data: dict[str, Any]) -> str | None:
