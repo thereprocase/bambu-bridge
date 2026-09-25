@@ -60,6 +60,7 @@ def build_app(
     ftps_port: int = 990,
     camera_port: int = 6000,
     camera_linger_s: float = 10.0,
+    feed_deadline_s: float | None = None,
 ) -> FastAPI:
     """A fully wired app for API tests.
 
@@ -69,6 +70,10 @@ def build_app(
     ``viz_token`` sets ``BRIDGE_VIZ_TOKEN`` — the read-only viewer token.
     When ``None`` (default), the feature is off: only the master key works on
     the viz/snapshot routes.
+
+    ``feed_deadline_s`` sets ``BRIDGE_FEED_DEADLINE_S`` (the FED_NO_PROGRESS
+    watchdog). The app hands the Settings value to every job, so patching
+    ``jobs._FEED_DEADLINE_S`` does not shorten it; pass it here.
     """
     settings = Settings(
         bridge_api_key=api_key,
@@ -78,6 +83,7 @@ def build_app(
         bridge_log_format="console",
         bridge_allow_loopback_host=True,  # in-process broker binds 127.0.0.1
         bridge_camera_linger_s=camera_linger_s,
+        **({"bridge_feed_deadline_s": feed_deadline_s} if feed_deadline_s is not None else {}),
     )
     return create_app(
         settings,
@@ -216,6 +222,7 @@ class MockPrinter:
         *,
         simulate_print: bool = False,
         stall: bool = False,
+        script: list[tuple[float, dict[str, Any]]] | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -225,8 +232,12 @@ class MockPrinter:
         # job state machine end to end. ``stall`` = go RUNNING but never make
         # progress and never FINISH (the §6.3 "printed air" shape) so the
         # FED_NO_PROGRESS watchdog has to fire.
-        self._simulate = simulate_print
+        self._simulate = simulate_print or script is not None
         self._stall = stall
+        # ``script``: instead of RUNNING -> FINISH, answer project_file by
+        # pushing each report after its delay (s) — a real printer's sequence
+        # (pause for a nozzle check, resume, layers, finish) replayed as is.
+        self._script = script
         self.report_topic = f"device/{SERIAL}/report"
         self.request_topic = f"device/{SERIAL}/request"
         self.requests: list[dict[str, Any]] = []
@@ -281,7 +292,9 @@ class MockPrinter:
         if not self._simulate:
             return
         cmd = payload.get("print", {}).get("command")
-        if cmd == "project_file":
+        if cmd == "project_file" and self._script is not None:
+            self._side_tasks.append(asyncio.create_task(self._play_script()))
+        elif cmd == "project_file":
             await self._emit(
                 {"gcode_state": "RUNNING", "mc_percent": 0, "subtask_name": "job"}
             )
@@ -291,6 +304,12 @@ class MockPrinter:
                 )
         elif cmd == "stop":
             await self._emit({"gcode_state": "IDLE", "mc_percent": 0})
+
+    async def _play_script(self) -> None:
+        assert self._script is not None
+        for delay, fields in self._script:
+            await asyncio.sleep(delay)
+            await self._emit(fields)
 
     async def _finish_soon(self) -> None:
         await asyncio.sleep(0.3)

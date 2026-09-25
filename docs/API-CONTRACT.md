@@ -574,9 +574,9 @@ queued → uploading → submitted → preparing → printing → completed
 | `submitted` | `project_file` published, printer returned `result:"success"` | "Submitted — preparing soon" |
 | `preparing` | first non-IDLE gcode_state seen | "Preparing — heating & leveling" |
 | `printing` | `layer_num > 0` | "Printing" + progress bar |
-| `paused` | `gcode_state == PAUSE` | "Paused" |
+| *(paused)* | `gcode_state == PAUSE` — **not a job state.** The job keeps its state (`submitted` / `preparing` / `printing`); the printer's `phase` reads `paused`. The job's event log gets `printer_paused` `{phase, print_error, hms, layer_num, mc_print_stage}` and, on resume, `printer_resumed` `{phase}`. No deadline runs while paused (a person is deciding at the printer); the FED_NO_PROGRESS window starts over on resume. | "Paused" (from the printer's `phase`) |
 | `completed` | `gcode_state == FINISH` AND `layer_num == total_layer_num` | "Done" |
-| `failed` | `gcode_state == FAILED` OR `print_error != 0` OR `FED_NO_PROGRESS` (no layer advance and no AMS engagement within `BRIDGE_FEED_DEADLINE_S`, default 1800 s; was a fixed 600 s, which aborted healthy ASA prints during a 100 °C bed preheat) | "Print failed" (sticky) |
+| `failed` | `gcode_state == FAILED` (`printer_error`) OR a pause ended at the printer's screen (PAUSE → IDLE, `printer_stopped`) OR a `print_error` with no RUNNING or PAUSE within 60 s of `submitted` (the printer refused the job, `printer_error`) OR `FED_NO_PROGRESS` (no layer advance and no AMS engagement within `BRIDGE_FEED_DEADLINE_S`, default 1800 s; was a fixed 600 s, which aborted healthy ASA prints during a 100 °C bed preheat). A non-zero `print_error` on its own is **not** a failure: the P1S pauses with one for things a person settles at the printer (the nozzle-setting check before a print, filament runout, a door) — the bridge used to fail those jobs 20 s after `submitted` while they went on to print. The failing `state_change` carries the printer's structured `print_error` when there is one. | "Print failed" (sticky) |
 | `canceled` | user-initiated stop confirmed | "Stopped" |
 
 **Note: state enum renames vs current code (PR B):**
@@ -622,6 +622,8 @@ queued → uploading → submitted → preparing → printing → completed
   ]
 }
 ```
+
+Event types in a job's log: `job_created`, `state_change` (`{from, to, trigger}`, plus `print_error` on a failure the printer reported), `printer_paused` and `printer_resumed` (see §7.4: a pause is logged, not a state).
 
 ### 8.3 `POST /api/v1/jobs/{job_id}/cancel`
 
