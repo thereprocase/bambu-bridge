@@ -1,6 +1,6 @@
 /* One responsive contract for the entire Gridline project network. */
 :root{--gl-edge:clamp(8px,1vw,32px);--gl-space:clamp(16px,1.5vw,32px);--gl-gap:clamp(16px,1.25vw,32px);--gl-reading:72ch}
-.gl-desktop,.gl-workspace,.gl-content,.gl-pane,.gl-featured,.gl-flow-grid,.gl-render-grid,.gl-detail-columns{min-width:0}
+.gl-desktop,.gl-workspace,.gl-content,.gl-pane,.gl-render-grid,.gl-detail-columns{min-width:0}
 .gl-content :where(h1,h2,h3,p,a,span,li,dt,dd),.gl-titlebar,.gl-statusbar{overflow-wrap:anywhere}
 .gl-titlebar{flex-wrap:wrap;gap:8px 24px}
 .gl-titlebar>.gl-brand{flex-shrink:0}
@@ -14,21 +14,9 @@
 .gl-counts{max-width:100%;min-inline-size:min(100%,240px);flex-shrink:1}
 .gl-counts>div{flex:1;min-width:0;padding:8px clamp(8px,1.2vw,24px)}
 .gl-counts dt{overflow-wrap:normal}
-.gl-featured article{display:flex;flex-direction:column;align-items:flex-start;padding:var(--gl-space)}
-.gl-featured article>p{max-width:var(--gl-reading)}
-.gl-featured h3,.gl-featured .gl-workflow{width:100%}
-.gl-featured .gl-button{margin-top:auto}
-.gl-featured p:not(.gl-kicker){min-height:0}
-.gl-workflow{container-type:inline-size}
-.gl-workflow>div{padding-right:20px}
-.gl-workflow strong{overflow-wrap:normal;word-break:normal}
-.gl-workflow>div>span:last-child:not(:first-child){right:6px}
 .gl-render-grid figure{display:flex;flex-direction:column}
 .gl-render-grid figcaption{flex:1}
 .gl-render-grid img{max-height:clamp(260px,23vw,520px)}
-.gl-media-label{grid-template-columns:minmax(0,1fr) auto}
-.gl-flow-grid figure{display:flex;flex-direction:column}
-.gl-flow-grid figcaption{margin-top:auto}
 .gl-register-head,.gl-project-row{grid-template-columns:minmax(160px,1fr) minmax(0,2.2fr) 32px}
 .gl-project-row>span:not(.gl-row-action){max-width:90ch}
 .gl-directory{position:relative;min-width:0}
@@ -47,18 +35,12 @@
 .gl-home>#projects{display:grid;gap:var(--gl-gap);grid-template-columns:repeat(auto-fit,minmax(min(100%,600px),1fr));align-items:start}
 .gl-home>#projects>.gl-register{margin-bottom:0}
 .gl-home>#projects>.gl-register:last-child{margin-bottom:var(--gl-gap)}
-@container (max-width:320px){.gl-workflow>div{padding:8px 18px 8px 8px}.gl-workflow strong{font-size:11px;overflow-wrap:anywhere}}
 @media(min-width:1760px){
  .gl-home{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--gl-gap);align-items:start}
- .gl-home>.gl-introduction,.gl-home>#airflow,.gl-home>#projects{grid-column:1/-1}
+ .gl-home>.gl-introduction,.gl-home>#render-library,.gl-home>#projects{grid-column:1/-1}
  .gl-home>.gl-pane,.gl-home>.gl-introduction{margin-bottom:0}
  .gl-home .gl-render-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
  .gl-home .gl-render-link img{aspect-ratio:1;max-height:420px}
- .gl-home .gl-featured{grid-template-columns:1fr}
- .gl-home .gl-featured article{border-right:0;border-bottom:1px solid var(--gl-rule)}
- .gl-home .gl-featured article:last-child{border-bottom:0}
- .gl-home .gl-featured .gl-workflow{margin:12px 0}
- .gl-home .gl-flow-grid video{max-height:700px;object-fit:contain}
  .gl-project-detail:has(.gl-detail-render){grid-template-columns:minmax(0,1.2fr) minmax(360px,1fr);column-gap:var(--gl-gap)}
  .gl-project-detail>.gl-breadcrumb,.gl-project-detail>.gl-introduction,.gl-project-detail>.gl-state-line,.gl-project-detail>.gl-caution{grid-column:1/-1}
  .gl-project-detail>.gl-detail-render{grid-column:1;grid-row:4/7}
@@ -66,22 +48,13 @@
  .gl-project-detail:has(.gl-detail-render)>.gl-button{grid-column:2}
 }
 @media(min-width:2800px){
- .gl-home .gl-featured{grid-template-columns:repeat(2,minmax(0,1fr))}
- .gl-home .gl-featured article{border-right:1px solid var(--gl-rule);border-bottom:0}
- .gl-home .gl-featured article:last-child{border-right:0}
  .gl-home>#projects{grid-template-columns:repeat(3,minmax(0,1fr))}
- .gl-home .gl-flow-grid video{max-height:900px}
  .gl-content{font-size:17px}
  .gl-prose{font-size:17px}
 }
 @media(max-width:1199px){
  .gl-introduction{align-items:flex-start}
  .gl-detail-columns{grid-template-columns:1fr;gap:0}
- .gl-featured{grid-template-columns:1fr}
- .gl-featured article{border-right:0;border-bottom:1px solid var(--gl-rule)}
- .gl-featured article:last-child{border:0}
- .gl-flow-grid{grid-template-columns:1fr}
- .gl-flow-grid figure{border-right:0;border-bottom:1px solid var(--gl-rule)}
  .gl-render-grid{grid-template-columns:1fr}
  .gl-render-grid figure{display:grid;grid-template-columns:1fr 1fr;border-right:0;border-bottom:1px solid var(--gl-rule)}
  .gl-render-grid figcaption{border-top:0;border-left:1px solid var(--gl-rule);display:flex;flex-direction:column;justify-content:center}
@@ -120,15 +93,6 @@
  .gl-counts dd{font-size:24px}
  .gl-render-grid figure{display:flex;border-bottom:1px solid var(--gl-rule)}
  .gl-render-grid figcaption{border-left:0;border-top:1px solid var(--gl-rule)}
- .gl-media-label{display:flex;flex-wrap:wrap;gap:4px 12px}
- .gl-media-label h3{flex:1 1 100%;order:1}
- .gl-featured h3{font-size:18px}
- .gl-featured h3 a{align-items:baseline}
- .gl-workflow{display:block}
- .gl-workflow>div{display:flex;flex-direction:row;align-items:baseline;gap:12px;padding:8px 28px 8px 12px;border-right:0;border-bottom:1px solid var(--gl-soft-rule)}
- .gl-workflow>div>span:last-child:not(:first-child){transform:rotate(90deg);top:8px;right:10px}
- .gl-workflow strong{font-size:12px;overflow-wrap:normal}
- .gl-pane>.gl-workflow{margin:12px}
  .gl-directory[data-expanded=true] nav{grid-template-columns:1fr}
  .gl-caution,.gl-prose{padding:12px}
  .gl-pane-title{padding:8px 12px}
