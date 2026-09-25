@@ -6,6 +6,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+- Stop marking jobs failed when the printer pauses. The P1S pauses with a non-zero
+  `print_error` for things a person settles at the printer (the nozzle-setting check
+  before a print, filament runout, a door) and waits; the bridge turned that error into
+  `failed / printer_error` 20 s after `submitted`, and the job stayed failed while it
+  printed. A pause now holds the job with no deadline (FED_NO_PROGRESS included, which
+  restarts on resume), is logged as `printer_paused` / `printer_resumed` with the
+  printer's error and HMS, and a resume carries on to `completed`. A pause that ends in
+  FAILED, a stop at the printer's screen, or an error with no run or pause within 60 s
+  still fail. Test apps can now set `BRIDGE_FEED_DEADLINE_S`, which revives the
+  watchdog test (it had been running with the 1800 s default wherever it ran at all).
 - Make the FED_NO_PROGRESS watchdog deadline configurable (`BRIDGE_FEED_DEADLINE_S`)
   and raise its default from 600 s to 1800 s. A 100 °C bed preheat from cold (ASA)
   takes longer than 600 s to reach filament load, and the fixed deadline was

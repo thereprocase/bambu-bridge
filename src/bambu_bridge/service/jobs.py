@@ -20,12 +20,25 @@ Driven by the printer's named bus events (M2):
 * ``print_started``   gcode_state -> RUNNING   => submitted -> preparing
 * ``print_progress``  layer_num crossed 0      => preparing -> printing
 * ``print_completed`` gcode_state -> FINISH    => * -> completed
-* ``print_failed`` / ``error``                 => -> failed
+* ``print_failed``    gcode_state -> FAILED    => -> failed
 
-A ``submitted`` job that never sees RUNNING within 60 s fails (MQTT
-timeout, spec 8). The FED_NO_PROGRESS watchdog (600 s, AMS engagement)
-runs from the preparing-onward window — it is the §6.3 hard-fail safety
-net independent of the layer_num signal.
+A printer PAUSE is not a failure. The P1S pauses with a non-zero
+``print_error`` for things a human settles at the printer (the nozzle-setting
+check before a print, filament runout, a door opening) and waits there; the
+job keeps its state, gets ``printer_paused`` / ``printer_resumed`` entries in
+its event log, and continues when the printer goes RUNNING again (a resume
+from PAUSE does not fire ``print_started``, so the FSM watches the
+PAUSE -> RUNNING edge itself). A named ``error`` event alone never fails a
+job: only a terminal printer state does (FAILED, or IDLE after a stop), or,
+before the printer ever runs the job, an error with no RUNNING or PAUSE
+within 60 s (the printer refused it).
+
+A ``submitted`` job that never sees RUNNING or PAUSE within 60 s fails (MQTT
+timeout, spec 8). The FED_NO_PROGRESS watchdog (``BRIDGE_FEED_DEADLINE_S``,
+AMS engagement) runs from the preparing-onward window — it is the §6.3
+hard-fail safety net independent of the layer_num signal. It is suspended
+while the printer is paused (a person is deciding) and starts a fresh window
+on resume.
 
 External prints (screen/SD/Bambu-Studio-direct)
 -----------------------------------------------
@@ -57,6 +70,7 @@ from bambu_bridge.service.events import Event
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.service.viz_cache import VizCache
 from bambu_bridge.slicedoc import project_file_command, sd_filename, validate
+from bambu_bridge.translate import build_print_error
 from bambu_bridge.vision import SpaghettiMonitor
 
 if TYPE_CHECKING:
@@ -448,6 +462,13 @@ class JobRun:
         self._cancel = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._log = log.bind(job_id=job.id, printer_id=job.printer_id)
+        # Printer-side context the bus reader keeps for the FSM: the last
+        # gcode_state seen, the latest structured print_error (from `error` /
+        # `print_failed` events or a report's own fields) and the report that
+        # carried the latest PAUSE, for the printer_paused event.
+        self._last_gcode: str | None = None
+        self._last_error: dict[str, Any] | None = None
+        self._pause_report: dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
 
@@ -503,6 +524,9 @@ class JobRun:
         - ``running`` — gcode_state crossed into RUNNING (submitted → preparing)
         - ``layer_advanced`` — layer_num crossed 0 → positive (preparing → printing)
         - ``progress`` — AMS engaged (FED_NO_PROGRESS watchdog satisfaction)
+        - ``paused`` / ``resumed`` — gcode_state entered PAUSE / went PAUSE → RUNNING
+        - ``error`` — the printer reported a print_error (kept in ``_last_error``;
+          not terminal on its own: the P1S also pauses with one)
         - ``completed`` / ``failed`` / ``stopped`` — terminal signals
         """
         confirmed_active = self._job.state in (JobState.PREPARING, JobState.PRINTING)
@@ -517,10 +541,23 @@ class JobRun:
             elif ev.name == "print_interrupted":
                 if confirmed_active:
                     self._signals.put_nowait("interrupted")
-            elif ev.name in ("print_failed", "error"):
+            elif ev.name == "print_failed":
+                self._last_error = ev.data.get("print_error") or self._last_error
                 self._signals.put_nowait("failed")
+            elif ev.name == "error":
+                self._last_error = ev.data.get("print_error") or self._last_error
+                self._signals.put_nowait("error")
             elif ev.type in ("delta", "snapshot"):
                 gs = _gcode_state(ev.data)
+                prev, self._last_gcode = self._last_gcode, gs or self._last_gcode
+                code = ev.data.get("mc_print_error_code") or ev.data.get("print_error")
+                if code not in (None, 0, "0", ""):
+                    self._last_error = build_print_error(code)
+                if gs == "PAUSE" and prev != "PAUSE":
+                    self._pause_report = dict(ev.data)
+                    self._signals.put_nowait("paused")
+                elif gs == "RUNNING" and prev == "PAUSE":
+                    self._signals.put_nowait("resumed")
                 if gs in ("IDLE", "FAILED", "FINISH"):
                     self._signals.put_nowait("stopped")
                 if _ams_engaged(ev.data):
@@ -567,29 +604,71 @@ class JobRun:
             ),
         )
 
-        # submitted -> preparing  (RUNNING within 60 s, else timeout-fail)
-        sig = await self._wait_signal({"running", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S)
+        # submitted -> preparing  (RUNNING within 60 s, else timeout-fail). A
+        # PAUSE in this window means the printer took the job and stopped for
+        # a person (the nozzle-setting check does this before the first move):
+        # hold without a deadline until it runs or ends. An `error` alone is
+        # remembered, not fatal; with no RUNNING/PAUSE by the deadline the
+        # printer refused the job and it fails as printer_error.
+        deadline = asyncio.get_running_loop().time() + _RUNNING_TIMEOUT_S
+        trigger = "gcode_running"
+        while True:
+            sig = await self._wait_signal(
+                {"running", "resumed", "paused", "error", "cancel", "failed"},
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
+            if sig == "error":
+                continue
+            if sig == "paused":
+                sig = await self._hold_while_paused()
+                trigger = "gcode_running_after_pause"
+            break
         if sig == "cancel":
-            await self._do_cancel(service, acked=False)
+            # after a pause the printer holds the job: wait for it to confirm the stop
+            await self._do_cancel(service, acked=trigger != "gcode_running")
+            return
+        if sig in ("stopped", "completed", "interrupted"):
+            await self._end_while_paused(sig)
             return
         if sig in (None, "failed"):
-            reason = "no_running_within_60s" if sig is None else "printer_error"
+            refused = sig == "failed" or self._last_error is not None
+            reason = "printer_error" if refused else "no_running_within_60s"
             await self._fail(reason)
             return
-        await self._set(JobState.PREPARING, "gcode_running")
+        await self._set(JobState.PREPARING, trigger)
 
         # preparing -> printing  (layer_num > 0 OR completion, with the
         # FED_NO_PROGRESS watchdog still in force as the §6.3 hard safety).
         # `layer_advanced` is the canonical "printing began" signal per
         # contract §6.0.1; `progress` (AMS engaged) is the parallel safety
         # check — if neither fires within the deadline, abort. In healthy
-        # prints both arrive within seconds of each other.
-        sig = await self._wait_signal(
-            {"layer_advanced", "progress", "completed", "failed", "cancel", "interrupted"},
-            timeout=(
-                self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S
-            ),
-        )
+        # prints both arrive within seconds of each other. A pause suspends the
+        # watchdog (a person is deciding at the printer) and a resume starts a
+        # fresh window.
+        while True:
+            sig = await self._wait_signal(
+                {
+                    "layer_advanced",
+                    "progress",
+                    "completed",
+                    "failed",
+                    "cancel",
+                    "interrupted",
+                    "paused",
+                },
+                timeout=(
+                    self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S
+                ),
+            )
+            if sig != "paused":
+                break
+            sig = await self._hold_while_paused()
+            if sig in ("resumed", "running"):
+                continue
+            if sig in ("stopped", "completed", "interrupted"):
+                await self._end_while_paused(sig)
+                return
+            break
         if sig is None:
             with contextlib.suppress(Exception):
                 await service.send_command("print", "stop")
@@ -621,12 +700,22 @@ class JobRun:
         # healthy by construction at this point (RUNNING, tray engaged, past
         # FED_NO_PROGRESS) so a sustained chaotic-frame run means the print
         # itself failed. It feeds the same abort path as any other failure.
-        accept = {"completed", "failed", "cancel", "interrupted"}
+        accept = {"completed", "failed", "cancel", "interrupted", "paused"}
         spaghetti = self._start_spaghetti_monitor(service)
         if spaghetti is not None:
             accept.add("spaghetti")
         try:
-            sig = await self._wait_signal(accept)
+            while True:
+                sig = await self._wait_signal(accept)
+                if sig != "paused":
+                    break
+                sig = await self._hold_while_paused()
+                if sig in ("resumed", "running"):
+                    continue
+                if sig in ("stopped", "completed", "interrupted"):
+                    await self._end_while_paused(sig)
+                    return
+                break
         finally:
             if spaghetti is not None:
                 spaghetti.cancel()
@@ -652,6 +741,82 @@ class JobRun:
     # ------------------------------------------------------------------ #
     # Transitions
     # ------------------------------------------------------------------ #
+
+    async def _hold_while_paused(self) -> str:
+        """Wait out a printer PAUSE, with no deadline: a person settles it at the printer.
+
+        Logs ``printer_paused`` (the job's phase, the printer's print_error,
+        HMS list, layer and stage) and, on resume, ``printer_resumed``.
+        Returns the signal that ended the pause: ``resumed`` / ``running``,
+        or ``cancel`` / ``failed`` / ``stopped`` / ``completed`` /
+        ``interrupted``. Feed and layer signals that arrive while paused are
+        handed back to the queue on resume, so the watchdog after the pause
+        still sees them.
+        """
+        report = self._pause_report
+        await self._events.add(
+            printer_id=self._job.printer_id,
+            job_id=self._job.id,
+            event_type="printer_paused",
+            payload={
+                "phase": self._job.state.value,
+                "print_error": self._last_error,
+                "hms": report.get("hms"),
+                "layer_num": report.get("layer_num"),
+                "mc_print_stage": report.get("mc_print_stage"),
+            },
+        )
+        self._log.info(
+            "job.printer_paused", phase=self._job.state.value, print_error=self._last_error
+        )
+        held: list[str] = []
+        while True:
+            sig = await self._wait_signal(
+                {
+                    "resumed",
+                    "running",
+                    "cancel",
+                    "failed",
+                    "stopped",
+                    "completed",
+                    "interrupted",
+                    "progress",
+                    "layer_advanced",
+                }
+            )
+            assert sig is not None  # no timeout
+            if sig in ("progress", "layer_advanced"):
+                if sig not in held:
+                    held.append(sig)
+                continue
+            break
+        if sig in ("resumed", "running"):
+            await self._events.add(
+                printer_id=self._job.printer_id,
+                job_id=self._job.id,
+                event_type="printer_resumed",
+                payload={"phase": self._job.state.value},
+            )
+            self._log.info("job.printer_resumed", phase=self._job.state.value)
+            for s in held:
+                self._signals.put_nowait(s)
+        return sig
+
+    async def _end_while_paused(self, sig: str) -> None:
+        """The printer left PAUSE without resuming: FINISH completes, a lost job is
+        interrupted, FAILED fails as printer_error and IDLE (stopped at the printer's
+        screen) as printer_stopped."""
+        if sig == "completed" or (sig == "stopped" and self._last_gcode == "FINISH"):
+            if self._job.state is JobState.SUBMITTED:  # paused before it ever ran
+                await self._set(JobState.PREPARING, "gcode_running_after_pause")
+            await self._complete()
+        elif sig == "interrupted":
+            await self._jobs.update(
+                self._job.id, finished_at=int(time.time()), error_code="printer_job_lost"
+            )
+            await self._set(JobState.INTERRUPTED, "printer_job_lost")
+        else:
+            await self._fail("printer_error" if self._last_gcode == "FAILED" else "printer_stopped")
 
     async def _wait_signal(self, accept: set[str], *, timeout: float | None = None) -> str | None:
         """Pull signals until one is in ``accept``; None on timeout."""
@@ -720,9 +885,12 @@ class JobRun:
 
     async def _fail(self, reason: str) -> None:
         await self._jobs.update(self._job.id, finished_at=int(time.time()), error_code=reason)
-        await self._set(JobState.FAILED, reason)
+        extra = {"print_error": self._last_error} if self._last_error else None
+        await self._set(JobState.FAILED, reason, extra=extra)
 
-    async def _set(self, new: JobState, trigger: str) -> None:
+    async def _set(
+        self, new: JobState, trigger: str, *, extra: dict[str, Any] | None = None
+    ) -> None:
         cur = self._job.state
         if new != cur and new not in _ALLOWED.get(cur, set()):
             self._log.warning("job.illegal_transition", frm=cur.value, to=new.value)
@@ -737,7 +905,7 @@ class JobRun:
             printer_id=self._job.printer_id,
             job_id=self._job.id,
             event_type="state_change",
-            payload={"from": cur.value, "to": new.value, "trigger": trigger},
+            payload={"from": cur.value, "to": new.value, "trigger": trigger, **(extra or {})},
         )
         self._log.info("job.transition", frm=cur.value, to=new.value, trigger=trigger)
 

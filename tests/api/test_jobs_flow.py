@@ -23,7 +23,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-import bambu_bridge.service.jobs as jobs_mod
 from tests.conftest import (
     ACCESS_CODE,
     API_KEY,
@@ -242,13 +241,15 @@ async def test_fed_no_progress_watchdog(
     stalling_mock: MockPrinter,
     ftps_server: tuple[int, Path],
     valid_gcode_3mf: bytes,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RUNNING but no progress → auto-stop + FAILED(FED_NO_PROGRESS)."""
-    monkeypatch.setattr(jobs_mod, "_FEED_DEADLINE_S", 0.5)
     ftps_port, _ = ftps_server
+    # Through Settings, as in production: the app passes the configured
+    # deadline to every job, so patching jobs._FEED_DEADLINE_S alone left
+    # this at 1800 s (the test only ever ran where the probe file exists).
     app = build_app(
-        tmp_path / "fed.db", mqtt_port=mqtt_broker, ftps_port=ftps_port
+        tmp_path / "fed.db", mqtt_port=mqtt_broker, ftps_port=ftps_port,
+        feed_deadline_s=0.5,
     )
     captured: dict[str, object] = {}
 
