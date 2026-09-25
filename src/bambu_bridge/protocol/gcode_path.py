@@ -44,7 +44,8 @@ Collinear merge
 ---------------
 Consecutive segments at the same Z whose direction vectors satisfy
 ``|cross(d1, d2)| < _COLLINEAR_EPS`` (unit-normalised cross product) are
-merged into a single segment.
+merged only when their endpoints touch and their directions agree. Disconnected
+parallel paths must never be joined across a travel gap.
 
 Budget
 ------
@@ -178,7 +179,16 @@ def _merge_collinear(segs: list[_Segment]) -> list[_Segment]:
         elif cur_dir is None and nxt_dir is None:
             collinear = True
 
-        if collinear:
+        connected = (
+            abs(current.x1 - nxt.x0) <= 1e-6
+            and abs(current.y1 - nxt.y0) <= 1e-6
+            and abs(current.z1 - nxt.z0) <= 1e-6
+        )
+        forward = bool(
+            cur_dir and nxt_dir
+            and sum(a * b for a, b in zip(cur_dir, nxt_dir, strict=True)) > 0
+        )
+        if collinear and connected and forward:
             # Extend current to cover nxt's endpoint.
             current = _Segment(
                 current.x0, current.y0, current.z0,
@@ -258,7 +268,9 @@ def _parse_line(
     return cmd, params
 
 
-def parse_gcode_toolpath(source: bytes | str) -> GcodeToolpath:
+def parse_gcode_toolpath(
+    source: bytes | str, *, features: frozenset[str] | None = None
+) -> GcodeToolpath:
     """Parse gcode text/bytes and return extrusion-move toolpath segments.
 
     Parameters
@@ -296,7 +308,10 @@ def parse_gcode_toolpath(source: bytes | str) -> GcodeToolpath:
     # Segments grouped by Z for decimation later.
     layers: dict[float, list[_Segment]] = {}
 
+    feature = ""
     for raw_line in text_iter:
+        if raw_line.startswith("; FEATURE:") or raw_line.startswith(";TYPE:"):
+            feature = raw_line.partition(":")[2].strip()
         parsed = _parse_line(raw_line)
         if parsed is None:
             continue
@@ -373,7 +388,7 @@ def parse_gcode_toolpath(source: bytes | str) -> GcodeToolpath:
 
         is_extrusion = has_e and e_delta > 0.0 and (x_changed or y_changed)
 
-        if is_extrusion:
+        if is_extrusion and (features is None or feature in features):
             # Flat-segment convention (see module docstring): both endpoints use
             # cur_z, so a Z-changing extrusion (spiral-vase) is flattened onto
             # the layer it started on.  This keeps each segment in exactly one

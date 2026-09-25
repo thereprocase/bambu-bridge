@@ -145,9 +145,7 @@ async def test_external_print_started_creates_row(database: Database) -> None:
     assert row.file_name == "my-print"
     assert row.printer_id == SERIAL
     # started_at must come from the event payload epoch, not now().
-    expected_epoch = int(
-        datetime(2026, 6, 11, 10, 0, 0, tzinfo=UTC).timestamp()
-    )
+    expected_epoch = int(datetime(2026, 6, 11, 10, 0, 0, tzinfo=UTC).timestamp())
     assert row.started_at == expected_epoch
     assert row.queued_at == expected_epoch
 
@@ -173,9 +171,7 @@ async def test_external_print_started_fallback_file_name(
     await asyncio.sleep(0)
 
     # No subtask_name in payload
-    svc.bus.publish(
-        Event("event", {"started_at": "2026-06-11T10:00:00Z"}, name="print_started")
-    )
+    svc.bus.publish(Event("event", {"started_at": "2026-06-11T10:00:00Z"}, name="print_started"))
     await asyncio.sleep(0.1)
 
     rows = await jobs.list(printer_id=SERIAL)
@@ -576,9 +572,7 @@ async def test_terminal_job_does_not_shadow_live_job_from_newer_queued(
 
     rows = await jobs.list(printer_id=SERIAL)
     # Must still be exactly two rows — the pre-existing ones; no external added.
-    assert len(rows) == 2, (
-        f"expected 2 rows (no external duplicate), got {len(rows)}: {rows}"
-    )
+    assert len(rows) == 2, f"expected 2 rows (no external duplicate), got {len(rows)}: {rows}"
     ids = {r.id for r in rows}
     assert ids == {"live-job", "done-job"}
 
@@ -787,9 +781,9 @@ async def test_restart_recovery_works_when_paused_at_seed(
                         if ev.type == "snapshot":
                             break
                 snap = service.snapshot()
-                assert snap["job"]["started_at"] == "2026-06-11T07:00:00Z", (
-                    f"PAUSE-seed recovery failed; got started_at={snap['job']['started_at']}"
-                )
+                assert (
+                    snap["job"]["started_at"] == "2026-06-11T07:00:00Z"
+                ), f"PAUSE-seed recovery failed; got started_at={snap['job']['started_at']}"
             finally:
                 await service.stop()
     finally:
@@ -857,3 +851,35 @@ async def test_live_external_print_creates_row_via_mqtt(
     finally:
         await manager.shutdown()
         await registry.shutdown()
+
+
+async def test_interrupted_external_history_is_terminal_and_does_not_complete(database):
+    import structlog
+
+    await _seed_printer(database)
+    jobs, events = JobRepo(database), EventRepo(database)
+    manager = JobManager(jobs, events, _FakeRegistry())
+    await manager._maybe_create_external_job(
+        SERIAL, _make_print_started_event(), structlog.get_logger()
+    )
+    await manager._maybe_close_external_job(SERIAL, "print_interrupted", structlog.get_logger())
+    row = (await jobs.list(printer_id=SERIAL))[0]
+    assert row.state is JobState.INTERRUPTED and row.state.terminal
+    assert row.finished_at and row.error_code == "printer_job_lost"
+    await manager._maybe_close_external_job(SERIAL, "print_completed", structlog.get_logger())
+    assert (await jobs.get(row.id)).state is JobState.INTERRUPTED
+
+
+async def test_restarted_api_job_is_interrupted_but_unconfirmed_submission_is_preserved(database):
+    import structlog
+
+    await _seed_printer(database)
+    jobs = JobRepo(database)
+    manager = JobManager(jobs, EventRepo(database), _FakeRegistry())
+    for ident, state in [("active", JobState.PREPARING), ("unconfirmed", JobState.SUBMITTED)]:
+        await jobs.create(
+            Job(id=ident, printer_id=SERIAL, file_name="base", state=state, queued_at=1)
+        )
+    await manager._maybe_close_external_job(SERIAL, "print_interrupted", structlog.get_logger())
+    assert (await jobs.get("active")).state is JobState.INTERRUPTED
+    assert (await jobs.get("unconfirmed")).state is JobState.SUBMITTED

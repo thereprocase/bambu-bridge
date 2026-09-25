@@ -13,9 +13,10 @@ from __future__ import annotations
 import logging
 import sys
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from bambu_bridge.log_redaction import install, redact_event
@@ -34,8 +35,12 @@ class Settings(BaseSettings):
     bridge_pairing_dir: str | None = None  # runner defaults beside the jobs DB
     bridge_pairing_url: str | None = None  # direct local HTTPS; auto-detect if omitted
     bridge_pairing_remote_url: str | None = None  # optional direct HTTPS over Tailscale
+    bridge_dashboard_port: int | None = None
+    bridge_dashboard_origin: str = ""
+    bridge_dashboard_login: str = ""
     bridge_trusted_proxies: str = ""  # opt in exact trusted reverse proxy source IPs
     bridge_native_host: str | None = None  # explicit private IPv4; no listeners until enabled
+    bridge_native_durable_inbox: bool = False  # staged rollout; native command ordering changes
     bridge_api_key: str = ""  # empty => fail closed (see api/auth.py)
 
     # Optional read-only viewer token (env BRIDGE_VIZ_TOKEN).
@@ -51,6 +56,9 @@ class Settings(BaseSettings):
     bridge_allow_loopback_host: bool = False
 
     # Storage
+    bridge_library_dir: str | None = None  # opt-in immutable artifact archive
+    bridge_library_quota_bytes: int = Field(default=20 * 1024**3, gt=0)
+    bridge_library_replay_enabled: bool = False  # explicit rollout after replay qualification
     bridge_db_path: str = "/var/lib/bambu-bridge/jobs.db"
     bridge_files_dir: str = "/var/lib/bambu-bridge/files"
     bridge_max_transfer_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
@@ -60,12 +68,31 @@ class Settings(BaseSettings):
     # request reuses the live stream instead of opening a new TCP+TLS
     # connection. 0 = immediate teardown (original behaviour). Default 10 s.
     bridge_camera_linger_s: float = 10.0
+    # Shared native/HTTP HUD; HTTP ?overlay=false opts out.
+    bridge_native_camera_overlay: bool = True
+    bridge_native_video: bool = False
+    bridge_native_video_advertise: bool = False  # enable only after client acceptance
+    bridge_mediamtx_path: str = "/usr/local/bin/mediamtx"
+    bridge_ffmpeg_path: str = "/usr/bin/ffmpeg"
+    bridge_camera_timezone: str = "UTC"  # IANA zone for the shared camera's completion estimate
+
+    @field_validator("bridge_camera_timezone")
+    @classmethod
+    def validate_camera_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("Use an installed IANA time zone, e.g. America/New_York") from exc
+        return value
 
     # Print-failure detection. Phase 1 spaghetti detection is a coarse,
     # zero-dependency heuristic (vision/) — default OFF until validated
     # against real chamber frames. It never weakens the telemetry air
     # watchdog; it only adds an extra debounced abort path while PRINTING.
     bridge_spaghetti_detection: bool = False
+    # FED_NO_PROGRESS watchdog: seconds after RUNNING without a layer advance or AMS
+    # engagement before the bridge stops the print. 600 aborted healthy ASA preheats.
+    bridge_feed_deadline_s: float = Field(default=1800.0, gt=0)
 
     # Logging
     bridge_log_level: str = "info"

@@ -576,7 +576,7 @@ queued → uploading → submitted → preparing → printing → completed
 | `printing` | `layer_num > 0` | "Printing" + progress bar |
 | `paused` | `gcode_state == PAUSE` | "Paused" |
 | `completed` | `gcode_state == FINISH` AND `layer_num == total_layer_num` | "Done" |
-| `failed` | `gcode_state == FAILED` OR `print_error != 0` OR `FED_NO_PROGRESS` (10min) | "Print failed" (sticky) |
+| `failed` | `gcode_state == FAILED` OR `print_error != 0` OR `FED_NO_PROGRESS` (no layer advance and no AMS engagement within `BRIDGE_FEED_DEADLINE_S`, default 1800 s; was a fixed 600 s, which aborted healthy ASA prints during a 100 °C bed preheat) | "Print failed" (sticky) |
 | `canceled` | user-initiated stop confirmed | "Stopped" |
 
 **Note: state enum renames vs current code (PR B):**

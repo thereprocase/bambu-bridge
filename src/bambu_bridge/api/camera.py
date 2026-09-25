@@ -10,34 +10,98 @@ viewers share one printer-side connection and it closes when they all leave.
 
 from __future__ import annotations
 
+import asyncio
+import re
 from collections.abc import AsyncIterator
+from typing import cast
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import Response, StreamingResponse
 
-from bambu_bridge.api.auth import require_media_auth
+from bambu_bridge.api.auth import require_media_auth, require_owner
 from bambu_bridge.api.printers import get_registry
+from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 
 log = structlog.get_logger(__name__)
 
-router = APIRouter(
-    prefix="/printers", tags=["camera"], dependencies=[Depends(require_media_auth)]
-)
+router = APIRouter(prefix="/printers", tags=["camera"], dependencies=[Depends(require_media_auth)])
 
 _BOUNDARY = "frame"
 _SNAPSHOT_WAIT_S = 10.0
 
 
+def hls_resource(resource: str, query: dict[str, str]) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+\.(?:m3u8|mp4|m4s|ts)", resource)) and all(
+        (
+            key in {"_HLS_msn", "_HLS_part"}
+            and value.isascii()
+            and value.isdigit()
+            and len(value) <= 12
+        )
+        or (key == "_HLS_skip" and value in {"YES", "v2"})
+        or (key == "session" and bool(re.fullmatch(r"[A-Za-z0-9-]{1,64}", value)))
+        or (key == "cookieCheck" and value == "1")
+        for key, value in query.items()
+    )
+
+
+@router.get("/{printer_id}/camera/hls/{resource}")
+async def camera_hls(printer_id: str, resource: str, request: Request) -> Response:
+    """Authenticated HTTPS facade for the shared adaptive HLS ladder."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    query = dict(request.query_params)
+    # Each playlist/part request must carry its own header/cookie authentication.
+    if (
+        request.url.scheme != "https"
+        or not hls_resource(resource, query)
+        or not gateway
+        or not gateway.config
+        or gateway.config.get("printer_id") != printer_id
+        or not gateway.video.ready
+    ):
+        raise HTTPException(404, "Video unavailable")
+    try:
+        data = await gateway.video.adaptive.read(resource)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Video resource unavailable") from exc
+    except (TimeoutError, RuntimeError, OSError, ValueError) as exc:
+        log.warning("camera.adaptive_failed", error=type(exc).__name__)
+        raise HTTPException(503, "Video unavailable") from exc
+    return Response(
+        data,
+        media_type="application/vnd.apple.mpegurl" if resource.endswith(".m3u8") else "video/mp4",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _overlay(request: Request, printer_id: str, enabled: bool) -> OverlayStream | None:
+    """Share the configured native printer's HUD with web, APK and HA viewers."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    if (
+        enabled
+        and gateway
+        and gateway.config
+        and gateway.config.get("printer_id") == printer_id
+        and request.app.state.settings.bridge_native_camera_overlay
+    ):
+        return cast(OverlayStream, gateway.camera_overlay)
+    return None
+
+
 def mjpeg_part(jpeg: bytes) -> bytes:
     """One ``multipart/x-mixed-replace`` part for a JPEG frame (spec 5.3)."""
     return (
-        f"--{_BOUNDARY}\r\n"
-        f"Content-Type: image/jpeg\r\n"
-        f"Content-Length: {len(jpeg)}\r\n\r\n"
-    ).encode() + jpeg + b"\r\n"
+        (
+            f"--{_BOUNDARY}\r\n"
+            f"Content-Type: image/jpeg\r\n"
+            f"Content-Length: {len(jpeg)}\r\n\r\n"
+        ).encode()
+        + jpeg
+        + b"\r\n"
+    )
 
 
 def _service(registry: Registry, printer_id: str) -> PrinterService:
@@ -50,31 +114,90 @@ def _service(registry: Registry, printer_id: str) -> PrinterService:
         ) from exc
 
 
-@router.get("/{printer_id}/camera/stream.mjpeg")
-async def camera_stream(
-    printer_id: str, registry: Registry = Depends(get_registry)
-) -> StreamingResponse:
-    service = _service(registry, printer_id)
+@router.get("/{printer_id}/camera/video.rgb", dependencies=[Depends(require_owner)])
+async def camera_video(printer_id: str, request: Request) -> StreamingResponse:
+    """Private, fixed-size RGB feed for the single local on-demand encoder."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    if (
+        not request.client
+        or request.client.host != "127.0.0.1"
+        or not gateway
+        or not gateway.config
+        or gateway.config.get("printer_id") != printer_id
+        or not request.app.state.settings.bridge_native_video
+    ):
+        raise HTTPException(404, "Video encoder unavailable")
 
     async def frames() -> AsyncIterator[bytes]:
-        async with service.camera.subscribe() as queue:
+        async with gateway.video_overlay.subscribe() as queue:
+            while (frame := await queue.get()) is not None:
+                yield frame
+
+    return StreamingResponse(
+        frames(), media_type="application/octet-stream", headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.get("/{printer_id}/camera/video.lease", dependencies=[Depends(require_owner)])
+async def camera_video_lease(printer_id: str, request: Request) -> dict[str, str]:
+    """Local remux worker renews the same lease as Android's HLS requests."""
+    gateway = getattr(request.app.state, "native_gateway", None)
+    if (
+        not request.client
+        or request.client.host != "127.0.0.1"
+        or not gateway
+        or not gateway.config
+        or gateway.config.get("printer_id") != printer_id
+        or not gateway.video.ready
+    ):
+        raise HTTPException(404, "Video unavailable")
+    await gateway.video.adaptive.read("high.m3u8")
+    return {"playlist": str(gateway.video.adaptive.directory / "high.m3u8")}
+
+
+@router.get("/{printer_id}/camera/stream.mjpeg")
+async def camera_stream(
+    printer_id: str,
+    request: Request,
+    registry: Registry = Depends(get_registry),
+    overlay: bool = True,
+) -> StreamingResponse:
+    service = _service(registry, printer_id)
+    hud = _overlay(request, printer_id, overlay)
+    source = hud if hud is not None else service.camera
+
+    async def frames() -> AsyncIterator[bytes]:
+        async with source.subscribe() as queue:
             while True:
                 jpeg = await queue.get()
+                if jpeg is None:
+                    return
                 yield mjpeg_part(jpeg)
 
     return StreamingResponse(
         frames(),
         media_type=f"multipart/x-mixed-replace; boundary={_BOUNDARY}",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "X-Camera-Overlay": str(hud is not None).lower()},
     )
 
 
 @router.get("/{printer_id}/camera/snapshot.jpg")
 async def camera_snapshot(
-    printer_id: str, registry: Registry = Depends(get_registry)
+    printer_id: str,
+    request: Request,
+    registry: Registry = Depends(get_registry),
+    overlay: bool = True,
 ) -> Response:
     service = _service(registry, printer_id)
-    frame = await service.camera.wait_for_frame(_SNAPSHOT_WAIT_S)
+    hud = _overlay(request, printer_id, overlay)
+    if hud is not None:
+        async with hud.subscribe() as queue:
+            try:
+                frame = await asyncio.wait_for(queue.get(), _SNAPSHOT_WAIT_S)
+            except TimeoutError:
+                frame = None
+    else:
+        frame = await service.camera.wait_for_frame(_SNAPSHOT_WAIT_S)
     if frame is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -83,5 +206,5 @@ async def camera_snapshot(
     return Response(
         content=frame,
         media_type="image/jpeg",
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", "X-Camera-Overlay": str(hud is not None).lower()},
     )

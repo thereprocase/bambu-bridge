@@ -8,7 +8,7 @@ import { useViewingStore } from "./state";
 import { viewingConfig } from "./native";
 import { CAMERA_HUD_INTERVAL_MS, shouldPublishCameraHud } from "./hud";
 
-interface CameraEvent { state: string; fps: number; width: number; height: number }
+interface CameraEvent { state: string; fps: number; width: number; height: number; transport?: string }
 const NativeCamera = requireNativeComponent<ViewProps & {
   source: string | null; zoomEnabled: boolean;
   onState(event: NativeSyntheticEvent<CameraEvent>): void;
@@ -23,6 +23,7 @@ export function Camera({ printer, fullscreen = false }: { printer: string; fulls
   const [source, setSource] = useState<string | null>(null);
   const [state, setState] = useState("connecting");
   const [fps, setFps] = useState(0);
+  const [quality, setQuality] = useState("");
   const [now, setNow] = useState(Date.now());
   const base = useRef("");
   const failures = useRef(0);
@@ -87,6 +88,7 @@ export function Camera({ printer, fullscreen = false }: { printer: string; fulls
       hud.current.publishedAt = at;
       setState(event.state);
       setFps(hud.current.fps);
+      if (event.state === "frame") setQuality(event.transport === "hls" ? `Auto · ${event.height}p` : "JPEG fallback");
       setNow(at);
     }
   }
@@ -96,7 +98,7 @@ export function Camera({ printer, fullscreen = false }: { printer: string; fulls
     : state === "auth" ? "Camera access rejected. Check your pairing or API key."
     : !active ? "Camera paused"
     : stale ? `Last frame ${age}s ago · reconnecting`
-    : state === "frame" ? `Live · ${fps > 0 ? fps.toFixed(2) + " FPS" : "receiving frames"}`
+    : state === "frame" ? `Live · ${quality} · ${fps > 0 ? fps.toFixed(1) + " FPS" : "receiving frames"}`
     : state === "connecting" ? "Connecting camera…" : "Reconnecting camera…";
   return <View style={{ flex: fullscreen ? 1 : undefined, aspectRatio: fullscreen ? undefined : 4/3,
     backgroundColor: "#111113", overflow: "hidden", minHeight: 120 }}>

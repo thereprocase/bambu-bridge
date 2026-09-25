@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import ftplib
 import io
 import json
+import os
+import shutil
 import ssl
 import struct
+import threading
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,11 +21,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from bambu_bridge.config import Settings
-from bambu_bridge.native_gateway import NativeGateway
+from bambu_bridge.native_gateway import NativeGateway, field, packet, read_packet
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.protocol.camera import build_auth_packet
-from bambu_bridge.protocol.ftps import _ImplicitFTP_TLS
+from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 from bambu_bridge.service.events import Event, EventBus
+from bambu_bridge.service.printer import PrinterService
 from tests.conftest import ACCESS_CODE
 
 SERIAL = "NATIVE_TEST_P1S"
@@ -66,7 +71,9 @@ async def gateway(tmp_path):
     )
     app = SimpleNamespace(
         state=SimpleNamespace(
-            registry=SimpleNamespace(get=lambda _: service), settings=Settings(), ftps_port=1
+            registry=SimpleNamespace(get=lambda _: service),
+            settings=Settings(bridge_native_camera_overlay=False),
+            ftps_port=1,
         )
     )
     gateway = NativeGateway(
@@ -348,6 +355,112 @@ async def test_native_ftps_roundtrip_reaches_printer_before_success(gateway, ftp
         ftp.quit()
 
     await asyncio.to_thread(exchange)
+
+
+async def test_native_upload_failure_is_sanitized_and_fresh_session_can_retry(
+    gateway,
+    ftps_server,
+    monkeypatch,
+):
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    original = FtpsTransfer._connect
+    connection_count = 0
+
+    def connect(transfer):
+        nonlocal connection_count
+        backend = original(transfer)
+        connection_count += 1
+        if connection_count == 2:  # fresh upload connection, not login connection
+
+            def fail(*_args, **_kwargs):
+                raise ConnectionResetError(104, "synthetic-private-filename-and-code")
+
+            backend.storbinary = fail
+        return backend
+
+    monkeypatch.setattr(FtpsTransfer, "_connect", connect)
+
+    def upload(expect_failure):
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        try:
+            ftp.connect("127.0.0.1", port(gateway, 1))
+            ftp.login("bblp", gateway.test_code)
+            ftp.prot_p()
+            if expect_failure:
+                with pytest.raises(ftplib.error_temp, match="451.*uploading_to_printer") as error:
+                    ftp.storbinary("STOR /retry-fixture.3mf", io.BytesIO(b"fixture"))
+                assert "synthetic-private" not in str(error.value)
+            else:
+                assert ftp.storbinary("STOR /retry-fixture.3mf", io.BytesIO(b"fixture")).startswith(
+                    "226"
+                )
+        finally:
+            ftp.close()
+
+    await asyncio.to_thread(upload, True)
+    diagnostic = gateway.diagnostics["ftps"]["last_transfer_failure"]
+    assert diagnostic["phase"] == "uploading_to_printer"
+    assert diagnostic["bytes"] == 7
+    assert diagnostic["exception_type"] == "ConnectionResetError"
+    assert diagnostic["errno"] == 104
+    assert "synthetic-private" not in json.dumps(diagnostic)
+    await asyncio.to_thread(upload, False)
+    assert (storage / "retry-fixture.3mf").read_bytes() == b"fixture"
+    gateway.service().send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize("offset", [None, "3"])
+async def test_upload_does_not_reuse_idle_login_session_and_preserves_directory(
+    gateway,
+    ftps_server,
+    monkeypatch,
+    offset,
+):
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    (storage / "cache").mkdir(exist_ok=True)
+    (storage / "cache" / "relative.3mf").write_bytes(b"ABC")
+    original = FtpsTransfer._connect
+    connections = []
+    writes = []
+
+    def connect(transfer):
+        backend = original(transfer)
+        connections.append(backend)
+        stored = backend.storbinary
+        number = len(connections)
+
+        def store(*args, **kwargs):
+            writes.append((number, kwargs.get("rest")))
+            if number == 1:
+                raise ConnectionResetError("idle login session is unusable")
+            return stored(*args, **kwargs)
+
+        backend.storbinary = store
+        return backend
+
+    monkeypatch.setattr(FtpsTransfer, "_connect", connect)
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        try:
+            ftp.connect("127.0.0.1", port(gateway, 1))
+            ftp.login("bblp", gateway.test_code)
+            ftp.prot_p()
+            ftp.cwd("cache")
+            if offset is not None:
+                ftp.sendcmd("REST " + offset)
+            result = ftp.storbinary("STOR relative.3mf", io.BytesIO(b"complete fixture"))
+            assert result.startswith("226")
+        finally:
+            ftp.close()
+
+    await asyncio.to_thread(exchange)
+    assert len(connections) == 2
+    assert writes == [(2, offset)]  # exactly one write, on the fresh connection
+    prefix = b"ABC" if offset else b""
+    assert (storage / "cache" / "relative.3mf").read_bytes() == prefix + b"complete fixture"
     gateway.service().send_raw.assert_not_awaited()
 
 
@@ -358,7 +471,223 @@ async def test_failed_auth_rate_limited(gateway):
     assert await gateway.authenticate("bblp", gateway.test_code, "different-peer")
 
 
+@pytest.mark.parametrize("maximum", ["1.2", "1.3"])
+@pytest.mark.parametrize("durable", [False, True])
+async def test_curl_native_upload_complete(gateway, ftps_server, tmp_path, maximum, durable):
+    curl = os.environ.get("BELUGA_TEST_CURL", "curl")
+    if not shutil.which(curl):
+        pytest.skip("curl not installed")
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    if durable:
+        await gateway.close()
+        gateway.app.state.settings.bridge_native_durable_inbox = True
+        await gateway.start()
+    source = tmp_path / "curl-fixture.bin"
+    for attempt in range(12):
+        size = (131072, 180000, 1048576)[attempt % 3]
+        payload = (bytes(range(256)) * 4096)[:size]
+        source.write_bytes(payload)
+        name = f"curl-fixture-{maximum}-{attempt}.bin"
+        process = await asyncio.create_subprocess_exec(
+            curl,
+            "--silent",
+            "--show-error",
+            "--insecure",
+            "--ssl-reqd",
+            "--tls-max",
+            maximum,
+            "--max-time",
+            "20",
+            "--user",
+            "bblp:" + gateway.test_code,
+            "--upload-file",
+            str(source),
+            f"ftps://127.0.0.1:{port(gateway, 1)}/{name}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, error = await process.communicate()
+        assert process.returncode == 0, error.decode()
+        if durable:
+            row = gateway.inbox.status()[0]
+            assert gateway.inbox.payload(row["id"]).read_bytes() == payload
+            assert row["state"] in ("stored", "delivering", "delivered")
+        else:
+            assert (storage / name).read_bytes() == payload
+    gateway.service().send_raw.assert_not_awaited()
+
+
+async def test_durable_receipt_does_not_wait_for_printer_and_start_is_held(gateway, monkeypatch):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    release = threading.Event()
+    connected = threading.Event()
+    delivered = []
+
+    class Backend:
+        def storbinary(self, command, source):
+            delivered.append((command, source.read()))
+
+        def close(self):
+            pass
+
+    def connect(_transfer):
+        connected.set()
+        assert release.wait(10), "test did not release fake printer"
+        return Backend()
+
+    monkeypatch.setattr(FtpsTransfer, "_connect", connect)
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=3)
+        try:
+            ftp.connect("127.0.0.1", port(gateway, 1))
+            ftp.login("bblp", gateway.test_code)
+            ftp.prot_p()
+            ftp.cwd("cache")
+            receipt = ftp.storbinary("STOR fast.3mf", io.BytesIO(b"fast fixture"))
+            assert ftp.size("fast.3mf") == len(b"fast fixture")
+            parts = []
+            ftp.retrbinary("RETR fast.3mf", parts.append)
+            assert b"".join(parts) == b"fast fixture"
+            return receipt
+        finally:
+            ftp.close()
+
+    try:
+        receipt = await asyncio.wait_for(asyncio.to_thread(exchange), 4)
+        assert receipt.startswith("226 BBFTP_STORED id=")
+        assert delivered == []
+        row = await asyncio.to_thread(
+            gateway.inbox.hold_start,
+            SERIAL,
+            {
+                "print": {
+                    "command": "project_file",
+                    "sequence_id": "41",
+                    "url": "file:///sdcard/cache/fast.3mf",
+                }
+            },
+            peer="127.0.0.1",
+        )
+        assert row is not None
+        gateway.inbox_wake.set()
+        gateway.service().send_raw.assert_not_awaited()
+        release.set()
+        async with asyncio.timeout(5):
+            while gateway.service().send_raw.await_count == 0:
+                await asyncio.sleep(0.01)
+        assert delivered == [("STOR " + row["remote"], b"fast fixture")]
+        assert gateway.service().send_raw.await_args.args[0]["print"]["url"] == (
+            "file:///sdcard" + row["remote"]
+        )
+        gateway.inbox_wake.set()
+        await asyncio.sleep(0.05)
+        gateway.service().send_raw.assert_awaited_once()
+    finally:
+        release.set()
+
+
+async def test_common_service_gate_serializes_native_and_app_starts(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    # Exercise the real service wire methods, without a hardware transport.
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    command = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": "external-1",
+            "url": "file:///sdcard/existing.3mf",
+        }
+    }
+    await service.send_raw(command)
+    service._mqtt.publish.assert_awaited_once()
+    with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
+        await service.send_command("print", "project_file", url="file:///sdcard/other.3mf")
+    assert service._mqtt.publish.await_count == 1
+    # Explicit stop remains allowed; it must not create a new start owner.
+    await service.send_command("print", "stop")
+    assert service._mqtt.publish.await_count == 2
+    with pytest.raises(ValueError, match="BBSTART_USE_FILE_COMMAND"):
+        await service.send_command("print", "gcode_line", param="M24\n")
+    assert service._mqtt.publish.await_count == 2
+    with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
+        await gateway.disable()
+
+
+async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    cancelled = asyncio.Event()
+    async with gateway.guard_managed_job(cancelled):
+        assert gateway.inbox.status()[0]["start_state"] == "reserved"
+        with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
+            gateway.inbox.claim_external(
+                SERIAL, {"print": {"command": "project_file", "url": "/other.3mf"}}
+            )
+        cancelled.set()
+        with pytest.raises(ValueError, match="BBSTART_CANCELLED"):
+            await service.send_command("print", "project_file", url="file:///sdcard/managed.3mf")
+    service._mqtt.publish.assert_not_awaited()
+    assert gateway.inbox.status()[0]["start_state"] == "cancelled"
+    async with gateway.guard_managed_job(asyncio.Event()):
+        await service.send_command("print", "project_file", url="file:///sdcard/managed.3mf")
+        assert gateway.inbox.status()[0]["start_state"] == "sent"
+        with pytest.raises(ValueError, match="BBSTOP_START_NOT_CONFIRMED"):
+            await service.send_command("print", "stop")
+    service._mqtt.publish.assert_awaited_once()
+
+
+@pytest.mark.parametrize("protocol,version", [(b"MQTT", 4), (b"MQIsdp", 3)])
+async def test_mqtt_qos_duplicate_does_not_repeat_a_start(gateway, protocol, version):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 0), ssl=tls())
+    connect = (
+        field(protocol)
+        + bytes([version])
+        + b"\xc2\x00\x3c"
+        + field(b"fixture-client")
+        + field(b"bblp")
+        + field(gateway.test_code.encode())
+    )
+    writer.write(packet(0x10, connect))
+    await writer.drain()
+    assert await read_packet(reader) == (0x20, b"\x00\x00")
+    payload = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": "fixture-duplicate",
+            "url": "file:///sdcard/existing.3mf",
+        }
+    }
+    body = (
+        field(f"device/{gateway.serial}/request".encode())
+        + b"\x00\x01"
+        + json.dumps(payload).encode()
+    )
+    for head in (0x32, 0x3A):
+        writer.write(packet(head, body))
+        await writer.drain()
+        assert await read_packet(reader) == (0x40, b"\x00\x01")
+    gateway.service().send_raw.assert_awaited_once()
+    writer.close()
+    await writer.wait_closed()
+
+
 async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
+    assert gateway.data_context is not gateway.context
+    assert gateway.data_context.num_tickets == 0
+    assert gateway.context.num_tickets > 0
+    assert gateway.data_context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert gateway.data_context.maximum_version == ssl.TLSVersion.MAXIMUM_SUPPORTED
     directory = gateway.store.directory
     phone_key, _, phone_pin = identity(directory)
     before = phone_key.read_bytes()
@@ -380,7 +709,9 @@ async def test_rsa_only_native_tls_preserves_phone_identity(gateway):
         await client.subscribe(f"device/{gateway.serial}/report")
         message = await asyncio.wait_for(anext(client.messages.__aiter__()), 3)
         assert "print" in json.loads(message.payload)
-        assert gateway.status()["connections"]["mqtt"]["phase"] == "authenticated"
+        diagnostics = gateway.status()["connections"]["mqtt"]
+        assert diagnostics["phase"] == "subscribed"
+        assert any(item["phase"] == "authenticated" for item in diagnostics["history"])
     assert identity(directory)[2] == phone_pin and phone_key.read_bytes() == before
 
 
@@ -430,3 +761,34 @@ async def test_discovery_is_private_and_contains_no_access_code(gateway, monkeyp
         assert b"Location: 127.0.0.1" in data
     with pytest.raises(ValueError):
         await gateway.announce("8.8.8.8")
+
+
+async def test_native_overlay_sends_decodable_keyframe(gateway):
+    from PIL import Image
+
+    from tests.test_camera_overlay import jpeg, snapshot
+
+    @asynccontextmanager
+    async def frames():
+        queue = asyncio.Queue()
+        queue.put_nowait(jpeg())
+        yield queue
+
+    gateway.service().snapshot = snapshot
+    gateway.service().camera = SimpleNamespace(subscribe=frames)
+    gateway.app.state.settings.bridge_native_camera_overlay = True
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(gateway, 2), ssl=tls())
+    writer.write(build_auth_packet("bblp", gateway.test_code))
+    await writer.drain()
+    try:
+        header = await asyncio.wait_for(reader.readexactly(16), 3)
+        length, reserved, keyframe, trailing = struct.unpack("<IIII", header)
+        assert (reserved, keyframe, trailing) == (0, 1, 0)
+        frame = await asyncio.wait_for(reader.readexactly(length), 3)
+        with Image.open(io.BytesIO(frame)) as image:
+            image.load()
+            assert image.format == "JPEG" and image.size == (1280, 720)
+        assert frame != jpeg()
+    finally:
+        writer.close()
+        await writer.wait_closed()

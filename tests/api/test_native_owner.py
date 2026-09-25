@@ -1,12 +1,14 @@
 """Native gateway setup remains owner-only and HTTPS-only."""
 
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
 from bambu_bridge.config import Settings
 from bambu_bridge.main import create_app
+from bambu_bridge.native_inbox import NativeInbox
 
 
 def test_native_owner_boundary_and_no_store(tmp_path):
@@ -28,6 +30,11 @@ def test_native_owner_boundary_and_no_store(tmp_path):
             announce=AsyncMock(),
             setup_status=lambda _: {"printer_connected": False, "camera_streaming": False},
             close=AsyncMock(),
+            inbox_dispatch_lock=asyncio.Lock(),
+            ensure_idle=AsyncMock(),
+            service=lambda: SimpleNamespace(
+                native_snapshot=lambda: {"print": {"gcode_state": "FINISH"}}
+            ),
         )
         app.state.native_gateway = gateway
         app.state.registry.get = lambda _: SimpleNamespace(model="P1S")
@@ -40,6 +47,8 @@ def test_native_owner_boundary_and_no_store(tmp_path):
             ("POST", "/native"),
             ("DELETE", "/native"),
             ("POST", "/native/announce"),
+            ("POST", "/native/readiness"),
+            ("POST", "/native/uploads/" + "a" * 32),
         ]:
             kwargs = {"json": {"printer_id": "FIXTURE"}} if method == "POST" else {}
             assert client.request(method, "/api/v1" + path, **kwargs).status_code == 401
@@ -50,6 +59,11 @@ def test_native_owner_boundary_and_no_store(tmp_path):
                 == 403
             )
         response = client.post("/api/v1/native", headers=owner, json={"printer_id": "FIXTURE"})
+        ready = client.post("/api/v1/native/readiness", headers=owner)
+        assert ready.json() == {"ready": True, "gcode_state": "FINISH", "print_commands_sent": 0}
+        gateway.ensure_idle.assert_awaited_once_with(force_refresh=True)
+        gateway.ensure_idle.side_effect = ValueError("BBSTART_NOT_IDLE")
+        assert client.post("/api/v1/native/readiness", headers=owner).status_code == 409
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert "access_code" not in client.get("/api/v1/native", headers=owner).json()
@@ -98,3 +112,28 @@ def test_native_owner_boundary_and_no_store(tmp_path):
             client.post("/api/v1/native", headers=owner, json={"printer_id": "FIXTURE"}).status_code
             == 422
         )
+        inbox = NativeInbox(tmp_path / "recovery")
+        identifier = inbox.claim_external(
+            "FIXTURE",
+            {
+                "print": {
+                    "command": "project_file",
+                    "sequence_id": "fixture-1",
+                    "url": "file:///sdcard/test.3mf",
+                }
+            },
+        )
+        inbox.dispatched(identifier, "unknown")
+        gateway.inbox = inbox
+        gateway.config = {"printer_id": "FIXTURE"}
+        gateway.inbox_dispatch_lock = asyncio.Lock()
+        gateway.inbox_wake = asyncio.Event()
+        gateway.require_idle = Mock(side_effect=ValueError("BBSTART_NOT_IDLE"))
+        action = {"action": "resolve", "confirm": "I checked the printer and this action"}
+        path = "/api/v1/native/uploads/" + identifier
+        assert client.post(path, headers=owner, json=action).status_code == 409
+        assert inbox.get(identifier)["start_state"] == "unknown"
+        gateway.require_idle.side_effect = None
+        assert client.post(path, headers=owner, json={"action": "resolve"}).status_code == 422
+        assert client.post(path, headers=owner, json=action).status_code == 200
+        assert inbox.get(identifier)["start_state"] == "resolved"

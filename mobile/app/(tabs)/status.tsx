@@ -337,6 +337,17 @@ export default function StatusScreen() {
         )}
       </Surface>
 
+      {view.amsPresent && (
+        <Surface padded style={{ gap: space.sm }}>
+          <Text style={[type.h2, { color: c.text }]}>AMS environment</Text>
+          {view.amsUnits.map((unit, i) => (
+            <Text key={unit.id} style={[type.small, { color: c.muted }]}>
+              {live?.status !== "open" ? "Last known · " : ""}AMS {Number(unit.id) + 1 || i + 1} · {unit.humidityPct == null ? "Humidity unavailable" : `${unit.humidityPct}% RH`} · {unit.temperatureC == null ? "Temperature unavailable" : `${unit.temperatureC.toFixed(1)} °C`}
+            </Text>
+          ))}
+        </Surface>
+      )}
+
       {/* Quick actions ------------------------------------------------------ */}
       <Surface padded style={{ gap: space.sm }}>
         <Text style={[type.h2, { color: c.text }]}>Quick actions</Text>

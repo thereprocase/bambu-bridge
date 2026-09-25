@@ -87,6 +87,7 @@ import * as controls from './controls.js';
 import * as camera from './camera.js';
 import * as submit from './submit.js';
 import * as settings from './settings.js';
+import * as library from './library.js';
 
 // ── prefs (localStorage-backed) ─────────────────────────────────────────────
 const LS_PREFS = 'bbl.prefs';
@@ -141,8 +142,7 @@ function showNav(show) {
 
 function setNavActive(hash) {
   if (!navEl) return;
-  const base = '#' + (hash.replace(/^#/, '').split('/')[0] === ''
-    ? '/' : '/' + hash.replace(/^#\//, '').split('/')[0]);
+  const base = '#/' + hash.replace(/^#\/?/, '').split('/')[0];
   navEl.querySelectorAll('.nav__item').forEach((a) => {
     const r = a.getAttribute('data-route');
     const active = r === base || (base === '#/' && r === '#/');
@@ -209,6 +209,7 @@ function requireKeyScreen() {
 
 // ── router ──────────────────────────────────────────────────────────────────
 const SCREENS = {
+  library,
   dashboard,
   submit,
   settings,
@@ -219,6 +220,7 @@ const SCREENS = {
 
 // hash -> {name, module-key}. Order doesn't matter; first segment decides.
 const ROUTES = {
+  'library': { name: 'library', screen: 'library' },
   '': { name: 'dashboard', screen: 'dashboard' },
   'print': { name: 'submit', screen: 'submit' },
   'settings': { name: 'settings', screen: 'settings' },
@@ -293,8 +295,26 @@ function startTour() {
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────
-function boot() {
+async function boot() {
   applyTheme();
+
+  // The dedicated private Serve listener authenticates the user. No owner
+  // secret is sent to the browser; this marker only satisfies the UI gate.
+  try {
+    const response = await fetch('/app/session', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+    if (response.ok && (await response.json()).authentication === 'tailscale') {
+      api.setBaseUrl('');
+      api.setKey('tailscale-session');
+      const printers = await api.api('/printers');
+      if (printers.ok && Array.isArray(printers.data)) {
+        store.setPrinterList(printers.data);
+        if (!printers.data.some((p) => p.printer_id === currentPrinterId())) {
+          setCurrentPrinterId(printers.data[0]?.printer_id || null);
+        }
+      }
+      if (!location.hash || ['#/onboarding', '#/setup'].includes(location.hash)) location.hash = '#/';
+    }
+  } catch { /* Other deployments retain the existing explicit key flow. */ }
 
   // first-run detection: no stored key -> onboarding.
   if (!api.getKey()) {

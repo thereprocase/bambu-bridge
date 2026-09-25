@@ -946,3 +946,19 @@ describe("viewOf — preparing phase (no fake data)", () => {
     expect(v.statusLine).toBe("Preparing");
   });
 });
+
+
+describe("AMS environmental readings", () => {
+  it("supports older bridges", () => {
+    expect(viewOf(snap({ ams: { present: true, slots: [] } })).amsUnits).toEqual([]);
+  });
+  it("keeps raw RH precision, zero and multiple units", () => {
+    const units = [{ id: "0", humidity_pct: 6, temperature_c: 36.4 }, { id: "1", humidity_pct: 0, temperature_c: 0 }];
+    expect(viewOf(snap({ ams: { units } })).amsUnits).toEqual([
+      { id: "0", humidityPct: 6, temperatureC: 36.4 }, { id: "1", humidityPct: 0, temperatureC: 0 },
+    ]);
+  });
+  it.each([null, true, "", "6", NaN, Infinity, -1, 101])("rejects invalid humidity %p", (value) => {
+    expect(viewOf(snap({ ams: { units: [{ humidity_pct: value }] } })).amsUnits[0].humidityPct).toBeNull();
+  });
+});

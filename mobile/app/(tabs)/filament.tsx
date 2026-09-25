@@ -145,6 +145,11 @@ export default function FilamentScreen() {
       {selectedId && (
         <Surface padded style={{ gap: space.md }}>
           <Text style={[type.h2, { color: c.text }]}>AMS</Text>
+          {view.amsUnits.map((unit, i) => (
+            <Text key={unit.id} style={[type.small, { color: c.muted }]}>
+              {live?.status !== "open" ? "Last known · " : ""}AMS {Number(unit.id) + 1 || i + 1} · {unit.humidityPct == null ? "Humidity unavailable" : `${unit.humidityPct}% RH`} · {unit.temperatureC == null ? "Temperature unavailable" : `${unit.temperatureC.toFixed(1)} °C`}
+            </Text>
+          ))}
           {/* §6.1.1 state machine:
               !amsPresent             → no AMS hardware
               amsPresent + slots      → render slots

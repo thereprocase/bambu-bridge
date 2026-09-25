@@ -145,3 +145,6 @@ assert.equal(context.acceptGeometryJob("current-file"), true);
 assert.equal(context.STATE.jobKey.start, "s1");
 
 console.log("viewer_toolhead_state: ok");
+
+// Run warm-resume regressions through the existing browser CI entry point too.
+require("./viewer_lifecycle.test.cjs");

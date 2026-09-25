@@ -51,6 +51,7 @@ class JobState(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
+    INTERRUPTED = "interrupted"
 
     @property
     def terminal(self) -> bool:
@@ -58,6 +59,7 @@ class JobState(StrEnum):
             JobState.COMPLETED,
             JobState.FAILED,
             JobState.CANCELED,
+            JobState.INTERRUPTED,
         )
 
 

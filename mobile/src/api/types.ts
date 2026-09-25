@@ -105,6 +105,7 @@ export interface PrinterSnapshot {
     present: boolean;
     engaged_slot: number | string | null;
     slots: AmsSlotWire[];
+    units?: { id: string; humidity_pct: number | null; temperature_c: number | null }[];
     external_spool: {
       in_use: boolean;
       type: string | null;

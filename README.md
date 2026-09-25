@@ -1,6 +1,6 @@
 # Bambu Bridge
 
-Live status, viewer and connection recovery.
+Durable delivery, print library and adaptive video.
 
 This is a consolidated development milestone. The bridge is at the repository
 root and its Android companion is under mobile/. See the latest main branch

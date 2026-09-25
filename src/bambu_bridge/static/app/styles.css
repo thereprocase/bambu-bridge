@@ -525,7 +525,7 @@ a:hover{text-decoration:underline;}
   align-items:center;justify-content:center;gap:var(--space-2);
   color:var(--text-dim);font-size:14px;background:rgba(0,0,0,.4);text-align:center;}
 .camera.is-stale .camera__img{opacity:.5;}
-.camera__label{position:absolute;left:8px;bottom:8px;font-size:11px;
+.camera__label{position:absolute;left:8px;top:8px;font-size:11px;
   color:var(--paper);text-shadow:0 1px 3px rgba(0,0,0,.7);}
 .camera__3d{position:absolute;right:8px;top:8px;}
 

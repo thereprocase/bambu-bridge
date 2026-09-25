@@ -94,6 +94,7 @@ export function mount(root, app) {
   // shared step state. We keep the registered printer's display facts for Step 3.
   const stepHost = el('div', { class: 'grow' });
   wizard.appendChild(stepHost);
+  wizard.appendChild(el('a', { href: '/downloads/android', class: 't-caption mt-4', text: 'Install Android app' }));
 
   let teardown = null;     // per-step cleanup (timers/listeners)
 

@@ -85,6 +85,17 @@ mirror it. Keep all three in sync before cutting a release.
 
 ## Distribution
 
+Version0.20.3 (versionCode27) adds Media3 H.264 playback over authenticated HTTPS
+LL-HLS. The camera reuses the paired/scoped OkHttp client for every playlist and
+segment, rejects resources outside the selected camera, and falls back to MJPEG
+when HLS is unavailable. Playback closes on screen/background lifecycle changes.
+No native camera access code is embedded in the APK or video URLs.
+
+Test the phone APK on ARM hardware. For the x86_64 emulator, build the same source
+with `-PreactNativeArchitectures=x86_64`; React Native's SoLoader cannot reliably
+use the emulator's advertised ARM translation support. Keep that test artifact
+separate from the distributed ARM64 update.
+
 Releases are distributed as GitHub Release assets (no Play Store).
 Attach the signed APK to a GitHub Release tagged `v<versionName>` (e.g. `v0.18.3`).
 No Play Store review process is in scope for this project.

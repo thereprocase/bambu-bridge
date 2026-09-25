@@ -37,6 +37,21 @@ def _service(port: int) -> PrinterService:
     )
 
 
+async def test_material_inventory_tracks_raw_frames_and_forgets_connection_loss():
+    from bambu_bridge.protocol.models import ReportMessage
+    from bambu_bridge.service.material_inventory import inventory_view
+    from tests.test_library_replay import materials
+
+    service = _service(1883)  # no network connection is started
+    await service._handle_report(ReportMessage.model_validate({"print": materials()}))
+    assert len(inventory_view(service.material_inventory.snapshot())["slots"]) == 4
+    observed = service.material_inventory.ams_at
+    await service._handle_report(ReportMessage.model_validate({"print": {"nozzle_temper": 220}}))
+    assert service.material_inventory.ams_at == observed
+    await service._handle_lost()
+    assert inventory_view(service.material_inventory.snapshot())["slots"] == []
+
+
 @pytest.mark.asyncio
 async def test_seed_snapshot_then_delta_then_named_events(
     mqtt_broker: int, mock_printer: MockPrinter
@@ -57,9 +72,7 @@ async def test_seed_snapshot_then_delta_then_named_events(
             # New status with a changed field -> delta carries only that field
             # and emits NO spurious print_started (seed was already RUNNING).
             await mock_printer.push_report({"print": {"mc_percent": 99}})
-            delta = await _next(
-                sub, lambda e: e.type == "delta" and "mc_percent" in e.data
-            )
+            delta = await _next(sub, lambda e: e.type == "delta" and "mc_percent" in e.data)
             assert delta.data == {"mc_percent": 99}
 
             # Real transition RUNNING -> FINISH emits print_completed.
@@ -86,9 +99,7 @@ async def test_print_started_fires_on_real_transition_not_seed(
             # Trigger the simulation: a project_file command flips the mock
             # to RUNNING which IS a real transition.
             await service.send_command("print", "project_file", param="x.3mf")
-            started = await _next(
-                sub, lambda e: e.name == "print_started", timeout=5.0
-            )
+            started = await _next(sub, lambda e: e.name == "print_started", timeout=5.0)
             assert started.type == "event"
         finally:
             await service.stop()
@@ -175,10 +186,12 @@ async def test_print_failed_event_carries_structured_print_error(
         try:
             await _next(sub, lambda e: e.type == "snapshot")
             await mock_printer.push_report(
-                {"print": {
-                    "gcode_state": "FAILED",
-                    "mc_print_error_code": "0300_0200_0001_0001",
-                }}
+                {
+                    "print": {
+                        "gcode_state": "FAILED",
+                        "mc_print_error_code": "0300_0200_0001_0001",
+                    }
+                }
             )
             failed = await _next(sub, lambda e: e.name == "print_failed")
             err = failed.data["print_error"]
@@ -215,9 +228,7 @@ async def test_running_transition_stamps_started_at_in_snapshot(
             assert service.snapshot()["job"]["started_at"] is None
             before = datetime.now(UTC)
             await service.send_command("print", "project_file", param="x.3mf")
-            started = await _next(
-                sub, lambda e: e.name == "print_started", timeout=5.0
-            )
+            started = await _next(sub, lambda e: e.name == "print_started", timeout=5.0)
             after = datetime.now(UTC)
             # Event payload carries the synthesized value...
             iso = started.data["started_at"]
@@ -233,8 +244,7 @@ async def test_running_transition_stamps_started_at_in_snapshot(
             await service.stop()
 
 
-_ONE_SECOND = (datetime(2000, 1, 1, 0, 0, 1, tzinfo=UTC)
-               - datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC))
+_ONE_SECOND = datetime(2000, 1, 1, 0, 0, 1, tzinfo=UTC) - datetime(2000, 1, 1, 0, 0, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -272,9 +282,7 @@ async def test_pause_resume_does_not_change_started_at(
 
 
 @pytest.mark.asyncio
-async def test_completion_clears_started_at(
-    mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
+async def test_completion_clears_started_at(mqtt_broker: int, mock_printer: MockPrinter) -> None:
     """FINISH clears the synthesized start so the next idle snapshot is null."""
     service = _service(mqtt_broker)
     async with service.bus.subscribe() as sub:
@@ -355,3 +363,29 @@ async def test_restart_recovery_leaves_null_when_no_job_row(
             assert service.snapshot()["job"]["started_at"] is None
         finally:
             await service.stop()
+
+
+async def test_empty_idle_report_emits_interruption_after_reconnect_and_split_identity():
+    from bambu_bridge.protocol.models import ReportMessage
+
+    service = _service(8883)
+    async with service.bus.subscribe() as sub:
+        await service._handle_report(
+            ReportMessage.model_validate(
+                {
+                    "print": {
+                        "gcode_state": "PAUSE",
+                        "gcode_file": "old.gcode.3mf",
+                        "subtask_name": "old",
+                    }
+                }
+            )
+        )
+        await service._handle_report(
+            ReportMessage.model_validate({"print": {"gcode_state": "IDLE"}})
+        )
+        await service._handle_report(
+            ReportMessage.model_validate({"print": {"gcode_file": "", "subtask_name": ""}})
+        )
+        ev = await _next(sub, lambda e: e.name == "print_interrupted", timeout=1)
+        assert ev.data["reason"] == "printer_job_lost"

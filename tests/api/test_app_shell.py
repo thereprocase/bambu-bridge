@@ -33,7 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from bambu_bridge.api import viz as viz_mod
@@ -236,7 +236,9 @@ async def test_handler_dotdot_guard_rejects(app_dir: Path) -> None:
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        await viz_mod.get_app_asset(path="../main.py")
+        await viz_mod.get_app_asset(
+            path="../main.py", request=Request({"type": "http", "app": FastAPI()})
+        )
     assert exc.value.status_code == 404
 
 
@@ -251,5 +253,23 @@ async def test_handler_resolved_escape_rejected(app_dir: Path) -> None:
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        await viz_mod.get_app_asset(path="icons/../../conftest.py")
+        await viz_mod.get_app_asset(
+            path="icons/../../conftest.py", request=Request({"type": "http", "app": FastAPI()})
+        )
     assert exc.value.status_code == 404
+
+
+def test_android_download_fixed_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    artifact = tmp_path / "signed.apk"
+    monkeypatch.setattr(viz_mod, "_ANDROID_APK", artifact)
+    app = FastAPI()
+    _wire_shell(app)
+    with TestClient(app) as client:
+        assert client.get("/downloads/android").status_code == 404
+        artifact.write_bytes(b"apk-fixture")
+        response = client.get("/downloads/android")
+        assert response.content == b"apk-fixture"
+        assert response.headers["content-type"] == "application/vnd.android.package-archive"
+        assert response.headers["cache-control"] == "no-cache"
+        assert "attachment" in response.headers["content-disposition"]
+        assert client.get("/downloads/android/other").status_code == 404
