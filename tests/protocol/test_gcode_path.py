@@ -590,3 +590,22 @@ def test_g0_with_e_increase_is_extrusion() -> None:
     ])
     tp = parse_gcode_toolpath(gcode)
     assert tp.segment_count == 1
+
+
+def test_text_stream_input_matches_bytes_input() -> None:
+    # archive_shape streams the zip member instead of holding the whole gcode
+    # (an 80 MB plate decoded in memory OOM-killed the 512 MB bridge host).
+    import io
+
+    from bambu_bridge.protocol.gcode_path import parse_gcode_toolpath
+
+    gcode = (
+        b"G90\nM83\n; FEATURE: Outer wall\nG1 X10 Y10 Z0.2 F3000\nG1 X20 Y10 E0.5\n"
+        b"G1 X20 Y20 E0.5\n; FEATURE: Sparse infill\nG1 X10 Y20 E0.5\n"
+    )
+    walls = frozenset({"Outer wall"})
+    from_bytes = parse_gcode_toolpath(gcode, features=walls)
+    stream = io.TextIOWrapper(io.BytesIO(gcode), encoding="utf-8", errors="replace")
+    from_stream = parse_gcode_toolpath(stream, features=walls)
+    assert from_stream.segment_count == from_bytes.segment_count == 2
+    assert list(from_stream.positions) == list(from_bytes.positions)

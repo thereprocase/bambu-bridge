@@ -70,6 +70,7 @@ import io
 import math
 import zipfile
 from dataclasses import dataclass
+from typing import TextIO
 
 # ------------------------------------------------------------------ #
 # Constants
@@ -269,7 +270,7 @@ def _parse_line(
 
 
 def parse_gcode_toolpath(
-    source: bytes | str, *, features: frozenset[str] | None = None
+    source: bytes | str | TextIO, *, features: frozenset[str] | None = None
 ) -> GcodeToolpath:
     """Parse gcode text/bytes and return extrusion-move toolpath segments.
 
@@ -286,13 +287,20 @@ def parse_gcode_toolpath(
         All fields populated.  Zero segments is NOT an error.
     """
     # ---- Normalise input to text lines ----------------------------------- #
-    if len(source) > _MAX_INPUT_BYTES:
-        raise GcodeParseError(
-            f"Gcode input is {len(source) // (1024 * 1024)} MB "
-            f"(limit {_MAX_INPUT_BYTES // (1024 * 1024)} MB)."
-        )
-    text = source.decode("utf-8", errors="replace") if isinstance(source, bytes) else source
-    text_iter = io.StringIO(text)
+    # A text stream (e.g. io.TextIOWrapper over a zip member) is iterated line by
+    # line without ever holding the whole file: an 80 MB plate decoded in memory,
+    # once per feature pass, OOM-killed the 512 MB bridge host. The caller bounds
+    # its size (the zip member's file_size).
+    if hasattr(source, "read"):
+        text_iter = source
+    else:
+        if len(source) > _MAX_INPUT_BYTES:
+            raise GcodeParseError(
+                f"Gcode input is {len(source) // (1024 * 1024)} MB "
+                f"(limit {_MAX_INPUT_BYTES // (1024 * 1024)} MB)."
+            )
+        text = source.decode("utf-8", errors="replace") if isinstance(source, bytes) else source
+        text_iter = io.StringIO(text)
 
     # ---- State machine --------------------------------------------------- #
     # XYZ mode: absolute (G90) or relative (G91)

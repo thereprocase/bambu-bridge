@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import math
 import time
+import weakref
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, BinaryIO
 
+import structlog
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from bambu_bridge.protocol.gcode_path import parse_gcode_toolpath
+
+log = structlog.get_logger(__name__)
 
 MAX_GCODE = 120 * 1024 * 1024
 MAX_SEGMENTS = 6000
@@ -35,9 +40,15 @@ def archive_shape(source: BinaryIO) -> Shape | None:
         info = archive.getinfo("Metadata/plate_1.gcode")
         if info.file_size > MAX_GCODE:
             raise ValueError("Preview gcode exceeds size limit")
-        data = archive.read(info)
-    walls = parse_gcode_toolpath(data, features=WALL_TYPES)
-    surfaces = parse_gcode_toolpath(data, features=SURFACE_TYPES)
+
+        def stream() -> io.TextIOWrapper:
+            # stream the member: never hold the whole gcode (80 MB plates OOM'd 512 MB hosts)
+            return io.TextIOWrapper(archive.open(info), encoding="utf-8", errors="replace")
+
+        with stream() as text:
+            walls = parse_gcode_toolpath(text, features=WALL_TYPES)
+        with stream() as text:
+            surfaces = parse_gcode_toolpath(text, features=SURFACE_TYPES)
     # Preserve the silhouette first; spend the remaining budget on visible skins.
     wall_budget = (
         min(walls.segment_count, MAX_SEGMENTS * 2 // 3) if surfaces.segment_count else MAX_SEGMENTS
@@ -160,8 +171,167 @@ def exterior_faces(walls: Any, skins: Any) -> tuple[tuple[float, ...], ...]:
                 1.0,
             )
         )
-    stride = max(1, math.ceil(len(faces) / MAX_FACES))
-    return tuple(faces[::stride])
+    if len(faces) <= MAX_FACES:
+        return tuple(faces)
+    # Over budget (big multi-part plates: ~150k wall segments, 79 layers). Thinning
+    # faces[::stride] left random 0.16 mm slivers all through the height. Spend the
+    # budget on whole layers instead: complete outlines at evenly spaced heights,
+    # always including the top, each ribbon spanning down to the level below.
+    return _banded_faces(walls, skins)
+
+
+def _segments_by_level(path: Any) -> dict[float, list[tuple[float, float, float, float]]]:
+    levels: dict[float, list[tuple[float, float, float, float]]] = {}
+    for i in range(0, len(path), 6):
+        x, y, z, u, v, q = (float(n) for n in path[i : i + 6])
+        if abs(z - q) > 0.001 or math.hypot(u - x, v - y) < 0.001:
+            continue
+        if not all(math.isfinite(n) and abs(n) <= 1000 for n in (x, y, z, u, v, q)):
+            continue
+        levels.setdefault(round(z, 4), []).append((x, y, u, v))
+    return levels
+
+
+def _chords(
+    segments: list[tuple[float, float, float, float]], step: int
+) -> list[tuple[float, ...]]:
+    """Merge runs of connected segments into chords of up to ``step`` segments."""
+    if step <= 1:
+        return list(segments)
+    out: list[tuple[float, ...]] = []
+    run: list[tuple[float, float, float, float]] = []
+    for seg in segments:
+        if run and (
+            len(run) >= step or math.hypot(seg[0] - run[-1][2], seg[1] - run[-1][3]) > 0.01
+        ):
+            out.append((run[0][0], run[0][1], run[-1][2], run[-1][3]))
+            run = []
+        run.append(seg)
+    if run:
+        out.append((run[0][0], run[0][1], run[-1][2], run[-1][3]))
+    return [c for c in out if math.hypot(c[2] - c[0], c[3] - c[1]) >= 0.001]
+
+
+def _straighten(
+    segments: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    """Join connected, nearly collinear segments (arc-fit fragments, straight edges split
+    by the slicer) so the face budget goes to shape, not to redundant vertices."""
+    out: list[tuple[float, float, float, float]] = []
+    for seg in segments:
+        if out:
+            x, y, u, v = out[-1]
+            if math.hypot(seg[0] - u, seg[1] - v) < 0.01:
+                a = math.atan2(v - y, u - x)
+                b = math.atan2(seg[3] - seg[1], seg[2] - seg[0])
+                if abs((a - b + math.pi) % math.tau - math.pi) < math.radians(6):
+                    out[-1] = (x, y, seg[2], seg[3])
+                    continue
+        out.append(seg)
+    return out
+
+
+def _split(face: tuple[float, ...], piece: float) -> list[tuple[float, ...]]:
+    """Cut a long wall ribbon into <= ``piece`` mm lengths so painter's sorting by centre
+    does not draw a long far face over a short near one."""
+    x, y, lo, u, v = face[0], face[1], face[2], face[3], face[4]
+    hi = face[8]
+    n = max(1, math.ceil(math.hypot(u - x, v - y) / piece))
+    if n == 1:
+        return [face]
+    out = []
+    for i in range(n):
+        a, b = i / n, (i + 1) / n
+        x0, y0 = x + (u - x) * a, y + (v - y) * a
+        x1, y1 = x + (u - x) * b, y + (v - y) * b
+        out.append((x0, y0, lo, x1, y1, lo, x1, y1, hi, x0, y0, hi, *face[12:]))
+    return out
+
+
+def _banded_faces(walls: Any, skins: Any) -> tuple[tuple[float, ...], ...]:
+    wall_levels = {z: _straighten(v) for z, v in _segments_by_level(walls).items()}
+    if not wall_levels:
+        return ()
+    levels = sorted(wall_levels)
+    wall_budget = MAX_FACES * 3 // 4
+    per_level = max(len(v) for v in wall_levels.values())
+    bands = max(1, min(len(levels), wall_budget // max(1, per_level)))
+    # evenly spaced from the top down, so the finished top outline is always exact
+    picks = sorted(
+        {
+            levels[len(levels) - 1 - round(i * (len(levels) - 1) / max(1, bands - 1))]
+            for i in range(bands)
+        }
+        if bands > 1
+        else {levels[-1]}
+    )
+    budget_each = wall_budget // len(picks)
+    faces: list[tuple[float, ...]] = []
+    floor = 0.0
+    for z in picks:
+        segs = wall_levels[z]
+        for x, y, u, v in _chords(segs, math.ceil(len(segs) / max(1, budget_each))):
+            length = math.hypot(u - x, v - y)
+            faces.append(
+                (
+                    x - 128,
+                    y - 128,
+                    floor,
+                    u - 128,
+                    v - 128,
+                    floor,
+                    u - 128,
+                    v - 128,
+                    z,
+                    x - 128,
+                    y - 128,
+                    z,
+                    (v - y) / length,
+                    (x - u) / length,
+                    0.0,
+                )
+            )
+        floor = z
+    # split long ribbons while there is room (depth-sort quality)
+    room = MAX_FACES * 3 // 4 - len(faces)
+    if room > 0:
+        for piece in (8.0, 16.0, 32.0):
+            split = [f for face in faces for f in _split(face, piece)]
+            if len(split) - len(faces) <= room:
+                faces = split
+                break
+    # Top cap: only the highest skin layer is visible from above; widen thinned
+    # ribbons in proportion so the cap stays closed instead of striped.
+    skin_levels = _segments_by_level(skins)
+    if skin_levels:
+        top = skin_levels[max(skin_levels)]
+        room = max(1, MAX_FACES - len(faces))
+        stride = max(1, math.ceil(len(top) / room))
+        half = 0.25 * stride
+        z = max(skin_levels)
+        for x, y, u, v in top[::stride]:
+            length = math.hypot(u - x, v - y)
+            dx, dy = -(v - y) / length * half, (u - x) / length * half
+            faces.append(
+                (
+                    x - 128 + dx,
+                    y - 128 + dy,
+                    z,
+                    u - 128 + dx,
+                    v - 128 + dy,
+                    z,
+                    u - 128 - dx,
+                    v - 128 - dy,
+                    z,
+                    x - 128 - dx,
+                    y - 128 - dy,
+                    z,
+                    0.0,
+                    0.0,
+                    1.0,
+                )
+            )
+    return tuple(faces[:MAX_FACES])
 
 
 def cel_color(normal: tuple[float, ...], angle: float) -> tuple[int, ...]:
@@ -231,6 +401,60 @@ def projection(
     return project
 
 
+FRAMES = 120  # cached angle steps per revolution (3 degrees, 0.5 s at 1 rpm)
+SUPERSAMPLE = 2  # panel drawn at 2x then downsampled: smooth ink and ribbon edges
+_PANELS: dict[tuple[int, int, int], tuple[Any, dict[int, Image.Image]]] = {}
+
+
+def _panel(shape: Shape, w: int, h: int, index: int) -> Image.Image:
+    """One rotation step of the finished-shape panel, rendered once per job and size."""
+    key = (id(shape), w, h)
+    entry = _PANELS.get(key)
+    if entry is None or entry[0]() is not shape:
+        _PANELS.clear()  # one job at a time: drop the old job's frames
+        entry = (weakref.ref(shape), {})
+        _PANELS[key] = entry
+    frames = entry[1]
+    cached = frames.get(index)
+    if cached is not None:
+        return cached
+    k = SUPERSAMPLE
+    big = Image.new("RGBA", (w * k, h * k))
+    draw = ImageDraw.Draw(big)
+    draw.rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=10 * k, fill=(12, 19, 26, 190))
+    draw.rounded_rectangle((0, 9 * k, 3 * k, (h - 10) * k), radius=2 * k, fill="#9ee8cf")
+    angle = index * math.tau / FRAMES + math.pi / 4
+    project = projection(shape, w * k, h * k, angle)
+    plate = [project(x, y, 0) for x, y in [(-128, -128), (128, -128), (128, 128), (-128, 128)]]
+    draw.polygon(plate, fill=(40, 56, 67, 240), outline=(107, 137, 151, 255))
+    for offset in (-64, 0, 64):
+        draw.line(
+            [project(offset, -128, 0), project(offset, 128, 0)], fill=(68, 85, 94, 255), width=k
+        )
+        draw.line(
+            [project(-128, offset, 0), project(128, offset, 0)], fill=(68, 85, 94, 255), width=k
+        )
+
+    def depth(item: tuple[int, tuple[float, ...]]) -> float:
+        _, segment = item
+        x, y, z = ((segment[i] + segment[i + 3]) / 2 for i in range(3))
+        ry = x * math.sin(angle) + y * math.cos(angle)
+        return -ry * math.cos(PITCH) + z * math.sin(PITCH)
+
+    if shape.faces:
+        paint_cel(big, shape, project, angle)
+    else:
+        for i, segment in sorted(enumerate(shape.segments), key=depth):
+            wall = shape.wall_count is None or i < shape.wall_count
+            color = (62, 193, 180, 255) if wall else (102, 218, 199, 255)
+            draw.line([project(*segment[:3]), project(*segment[3:])], fill=color, width=k)
+    panel = big.resize((w, h), Image.Resampling.LANCZOS)
+    font = ImageFont.load_default(size=max(9, round(w / 19)))
+    ImageDraw.Draw(panel).text((10, 8), "Finished shape", font=font, fill="#9ee8cf")
+    frames[index] = panel
+    return panel
+
+
 def draw_shape(
     canvas: Image.Image, shape: Shape, seconds: float, left_width: int = 0, bottom_height: int = 0
 ) -> None:
@@ -241,33 +465,8 @@ def draw_shape(
     x, y = width - w - margin, height - h - margin
     if x < left_width + margin:
         y -= bottom_height + 8
-    panel = Image.new("RGBA", (w, h))
-    draw = ImageDraw.Draw(panel)
-    draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=10, fill=(12, 19, 26, 190))
-    draw.rounded_rectangle((0, 9, 3, h - 10), radius=2, fill="#9ee8cf")
-    font = ImageFont.load_default(size=max(9, round(width / 100)))
-    draw.text((10, 8), "Finished shape", font=font, fill="#9ee8cf")
-    project = projection(shape, w, h, (seconds % 60) * math.tau / 60 + math.pi / 4)
-    plate = [project(x, y, 0) for x, y in [(-128, -128), (128, -128), (128, 128), (-128, 128)]]
-    draw.polygon(plate, fill=(40, 56, 67, 240), outline=(107, 137, 151, 255))
-    for offset in (-64, 0, 64):
-        draw.line([project(offset, -128, 0), project(offset, 128, 0)], fill=(68, 85, 94, 255))
-        draw.line([project(-128, offset, 0), project(128, offset, 0)], fill=(68, 85, 94, 255))
-    angle = (seconds % 60) * math.tau / 60 + math.pi / 4
-
-    def depth(item: tuple[int, tuple[float, ...]]) -> float:
-        _, segment = item
-        x, y, z = ((segment[i] + segment[i + 3]) / 2 for i in range(3))
-        ry = x * math.sin(angle) + y * math.cos(angle)
-        return -ry * math.cos(PITCH) + z * math.sin(PITCH)
-
-    if shape.faces:
-        paint_cel(panel, shape, project, angle)
-    else:
-        for index, segment in sorted(enumerate(shape.segments), key=depth):
-            wall = shape.wall_count is None or index < shape.wall_count
-            color = (62, 193, 180, 255) if wall else (102, 218, 199, 255)
-            draw.line([project(*segment[:3]), project(*segment[3:])], fill=color, width=1)
+    index = int((seconds % 60) / 60 * FRAMES) % FRAMES
+    panel = _panel(shape, w, h, index)
     canvas.paste(panel, (x, max(margin, y)), panel)
 
 
@@ -298,8 +497,14 @@ class ShapeCache:
         if self.task and self.task.done():
             try:
                 result = self.task.result()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 — never break frames; say why, retry later
+                log.warning(
+                    "turntable.shape_load_failed", job=self.loading_key, error=repr(exc)[:300]
+                )
                 result = None
+            else:
+                if result is None:
+                    log.info("turntable.shape_unavailable", job=self.loading_key)
             if self.loading_key == key:
                 self.shape = result
                 self.retry_at = time.monotonic() + 60

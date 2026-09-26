@@ -12,6 +12,7 @@ import contextlib
 import contextvars
 import hashlib
 import hmac
+import io
 import ipaddress
 import json
 import re
@@ -206,18 +207,59 @@ class NativeGateway:
             self.config = dict(row)
 
     def load_camera_shape(self, snapshot: dict[str, Any]) -> Shape | None:
-        """Read only the immutable local archive matching the current printer job."""
+        """Shape for the current printer job: the gateway inbox archive, else the SD card.
+
+        Native-gateway jobs keep an immutable local copy (``beluga-<id>.gcode.3mf``).
+        REST ``POST /jobs`` uploads do not: the bridge drops its copy once the file
+        is on the printer, so fetch it back the way the 3D view does. Runs in the
+        ShapeCache worker thread, never on the frame path.
+        """
         inbox = self.inbox
         filename = str(snapshot.get("_raw", {}).get("gcode_file") or "").rsplit("/", 1)[-1]
         match = re.fullmatch(r"beluga-([0-9a-f]{32})\.gcode\.3mf", filename)
-        if inbox is None or match is None:
+        if inbox is not None and match is not None:
+            row = inbox.get(match.group(1))
+            if (str(row["remote"]).rsplit("/", 1)[-1] != filename
+                    or row["printer"] != snapshot.get("printer_id")):
+                return None
+            with inbox.open_verified(row["id"]) as source:
+                return archive_shape(source)
+        return self._load_sd_shape(snapshot, filename)
+
+    def _load_sd_shape(self, snapshot: dict[str, Any], filename: str) -> Shape | None:
+        if not filename.endswith(".3mf"):
             return None
-        row = inbox.get(match.group(1))
-        if (str(row["remote"]).rsplit("/", 1)[-1] != filename
-                or row["printer"] != snapshot.get("printer_id")):
+        cache = getattr(self.app.state, "viz_cache_obj", None)
+        service = self.app.state.registry.get(snapshot.get("printer_id"))
+        if cache is None or service is None:
             return None
-        with inbox.open_verified(row["id"]) as source:
-            return archive_shape(source)
+        from bambu_bridge.service.viz_cache import find_3mf
+
+        async def fetch() -> bytes | None:
+            # REST jobs are stored at the SD root under this exact name: try that first
+            # (one connection, no listing), then search like the 3D view. The P1S refuses
+            # FTPS sessions while others are open, so retry briefly before giving up.
+            for attempt in range(3):
+                ftps = cache._make_ftps(service.ip, service.access_code)
+                try:
+                    return await ftps.download_bytes(filename, remote_dir="")
+                except Exception as exc:  # noqa: BLE001
+                    direct = repr(exc)[:200]
+                try:
+                    location = await find_3mf(ftps, filename)
+                    if location is not None:
+                        remote_dir, name = location
+                        return await ftps.download_bytes(name, remote_dir=remote_dir)
+                except Exception as exc:  # noqa: BLE001
+                    direct = f"{direct}; search: {exc!r}"[:300]
+                log.info("turntable.sd_fetch_retry", file=filename, attempt=attempt, error=direct)
+                await asyncio.sleep(2 * (attempt + 1))
+            return None
+
+        data = asyncio.run(fetch())
+        if not data:
+            return None
+        return archive_shape(io.BytesIO(data))
 
     def service(self) -> Any:
         if self.config is None:
