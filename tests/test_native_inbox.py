@@ -36,6 +36,47 @@ def test_missing_archive_path_cannot_reserve_printer(tmp_path, url):
     assert not inbox.unresolved("fixture-printer")
 
 
+def test_acknowledge_past_reviews_keeps_unknown_owner_and_receipt_evidence(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    rows = [
+        ("a" * 32, "fixture-printer", "failed", "blocked", "BBDELIVERY_FAILED"),
+        ("b" * 32, "fixture-printer", "delivered", "blocked", "BBSTART_NOT_IDLE"),
+        ("c" * 32, "fixture-printer", "external", "unknown", "BBSTART_UNKNOWN"),
+        ("d" * 32, "other-printer", "failed", "blocked", "BBDELIVERY_FAILED"),
+    ]
+    with inbox.connect() as db:
+        db.executemany(
+            "INSERT INTO uploads (id,printer,logical,remote,state,start_state,code,created) "
+            "VALUES (?,?,'/file.3mf','/file.3mf',?,?,?,unixepoch())",
+            rows,
+        )
+    assert inbox.queue_overview("fixture-printer") == {
+        "start_owner": "c" * 32,
+        "review_count": 3,
+        "acknowledgeable_count": 2,
+    }
+    first_review = inbox.status(printer="fixture-printer", view="review", limit=1)
+    assert [row["id"] for row in first_review] == [
+        "c" * 32
+    ]
+    assert inbox.acknowledge_past_reviews("fixture-printer") == 2
+    assert inbox.acknowledge_past_reviews("fixture-printer") == 0
+    assert inbox.queue_overview("fixture-printer")["review_count"] == 1
+    assert [row["id"] for row in inbox.status(printer="fixture-printer", view="review")] == [
+        "c" * 32
+    ]
+    assert [row["id"] for row in inbox.status(printer="fixture-printer", view="active")] == [
+        "c" * 32
+    ]
+    assert len(inbox.status(printer="fixture-printer", view="all")) == 3
+    assert inbox.get("a" * 32)["code"] == "BBDELIVERY_FAILED"
+    assert inbox.get("a" * 32)["start_state"] == "blocked"
+    assert inbox.get("a" * 32)["review_ack_at"] is not None
+    assert inbox.get("c" * 32)["review_ack_at"] is None
+    assert inbox.get("d" * 32)["review_ack_at"] is None
+    assert inbox.unresolved("fixture-printer")
+
+
 async def test_real_orca_url_uses_staged_object_and_releases_after_finish(tmp_path):
     inbox = NativeInbox(tmp_path)
     row = await stored(inbox, "/tray.gcode.3mf")

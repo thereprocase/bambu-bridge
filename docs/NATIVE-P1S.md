@@ -9,7 +9,15 @@ key or a paired Android device over HTTPS. A paired device has administrator
 authority for these controls. Cancel applies only before a start is sent;
 resolve requires checking that the printer is idle and the print is not
 running. Retry delivery sends the saved file again but never automatically
-replays a blocked print start.
+replays a blocked print start. The Android app keeps a Bridge queue shortcut in
+every tab's header, even when the queue summary cannot load. Receipts can be
+filtered to Needs review, In progress, or All receipts.
+
+**Acknowledge past warnings** hides historical failed or blocked receipts from
+Needs review and clears their warning count. It does not delete receipts or
+files, change print/start state, or release an unknown/current start. Unknown
+starts stay visible until separately resolved after checking the printer.
+The bulk action is safe to use while another print is running.
 
 Create an inbox backup before repairing a damaged deployment. Backups contain
 the receipt database and verified, complete cached upload files. Download or

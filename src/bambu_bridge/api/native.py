@@ -68,6 +68,10 @@ class RestoreAction(BaseModel):
     confirm: Literal["Restore native inbox and review every pending start"]
 
 
+class AcknowledgePastReviews(BaseModel):
+    confirm: Literal["Ignore past review warnings; keep active starts"]
+
+
 @router.post("/readiness")
 async def readiness(request: Request) -> dict[str, Any]:
     """Exercise the start guard with status traffic only; never enqueue a print."""
@@ -116,6 +120,7 @@ async def queue_status(
     request: Request,
     limit: int = Query(100, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    view: Literal["all", "review", "active"] = Query("all"),
 ) -> dict[str, Any]:
     """Fresh receipt state for dashboard and paired-phone recovery screens."""
     instance = gateway(request)
@@ -124,7 +129,8 @@ async def queue_status(
         if inbox is None or config is None:
             raise HTTPException(409, "Durable inbox is not enabled")
         uploads = await asyncio.to_thread(
-            inbox.status, printer=config["printer_id"], limit=limit + 1, offset=offset
+            inbox.status, printer=config["printer_id"], limit=limit + 1, offset=offset,
+            view=view,
         )
         has_more = len(uploads) > limit
         uploads = uploads[:limit]
@@ -132,10 +138,25 @@ async def queue_status(
     return {
         "printer_id": config["printer_id"],
         **overview,
+        "view": view,
         "offset": offset,
         "has_more": has_more,
         "uploads": uploads,
     }
+
+
+@router.post("/queue/acknowledge")
+async def acknowledge_past_reviews(
+    body: AcknowledgePastReviews, request: Request
+) -> dict[str, Any]:
+    """Dismiss historical warnings without resolving or hiding active starts."""
+    instance = recovery_inbox(request)
+    async with instance.change_lock:
+        assert instance.inbox is not None and instance.config is not None
+        printer = instance.config["printer_id"]
+        count = await asyncio.to_thread(instance.inbox.acknowledge_past_reviews, printer)
+        overview = await asyncio.to_thread(instance.inbox.queue_overview, printer)
+    return {"acknowledged": count, **overview}
 
 
 def recovery_inbox(request: Request) -> NativeGateway:

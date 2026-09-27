@@ -151,6 +151,32 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         second_page = client.get("/api/v1/native/queue?limit=1&offset=1", headers=paired).json()
         assert first_page["has_more"] and not second_page["has_more"]
         assert first_page["uploads"][0]["id"] != second_page["uploads"][0]["id"]
+        with inbox.connect() as db:
+            db.execute(
+                "INSERT INTO uploads (id,printer,logical,remote,state,start_state,code,created) "
+                "VALUES (?,'FIXTURE','/failed.3mf','/failed.3mf','failed','blocked',"
+                "'BBDELIVERY_FAILED',unixepoch())",
+                ("f" * 32,),
+            )
+        review = client.get("/api/v1/native/queue?view=review", headers=paired)
+        assert review.status_code == 200
+        assert review.json()["review_count"] == 1
+        assert review.json()["acknowledgeable_count"] == 1
+        assert [row["id"] for row in review.json()["uploads"]] == ["f" * 32]
+        assert client.get("/api/v1/native/queue?view=invalid", headers=paired).status_code == 422
+        assert client.post("/api/v1/native/queue/acknowledge", headers=paired).status_code == 422
+        gateway.require_idle.side_effect = ValueError("BBSTART_NOT_IDLE")
+        acknowledged = client.post(
+            "/api/v1/native/queue/acknowledge", headers=paired,
+            json={"confirm": "Ignore past review warnings; keep active starts"},
+        )
+        assert acknowledged.status_code == 200
+        assert acknowledged.json()["acknowledged"] == 1
+        assert acknowledged.json()["review_count"] == 0
+        assert inbox.get("f" * 32)["state"] == "failed"
+        assert inbox.get("f" * 32)["code"] == "BBDELIVERY_FAILED"
+        remaining_review = client.get("/api/v1/native/queue?view=review", headers=paired)
+        assert remaining_review.json()["uploads"] == []
         backup = client.post("/api/v1/native/recovery/backups", headers=paired)
         assert backup.status_code == 201
         backup_id = backup.json()["id"]

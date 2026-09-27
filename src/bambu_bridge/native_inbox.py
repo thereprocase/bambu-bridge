@@ -20,7 +20,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 from urllib.parse import unquote, urlsplit
 
 from bambu_bridge.protocol.job_identity import empty_idle_report
@@ -48,6 +48,12 @@ LOST_START_GRACE = 30
 # claim. Revisit this bound if starts can wait for an idle printer in future.
 QUEUED_EXPIRY = 1800
 READY_STATES = ("IDLE", "FINISH", "FAILED")
+OWNER_SQL = (
+    "start_state IN ('reserved','queued','dispatching','sent','accepted','running','unknown')"
+)
+REVIEW_SQL = "(state='failed' OR start_state IN ('blocked','unknown'))"
+ACTIVE_SQL = f"(state IN ('receiving','stored','delivering') OR {OWNER_SQL})"
+ACKABLE_SQL = f"{REVIEW_SQL} AND (start_state IS NULL OR NOT {OWNER_SQL})"
 
 
 class InboxError(Exception):
@@ -107,6 +113,7 @@ class NativeInbox:
                 "client_peer": "TEXT",
                 "revision": "INTEGER NOT NULL DEFAULT 0",
                 "replay_request_id": "TEXT",
+                "review_ack_at": "INTEGER",
                 **{name: "REAL" for name in TIMING_FIELDS},
             }.items():
                 if name not in columns:
@@ -344,7 +351,7 @@ class NativeInbox:
             # claim_start requires delivered, so failed rows must not retain
             # the printer's start mutex even when they are not library replays.
             db.execute(
-                "UPDATE uploads SET state='failed',code=?,"
+                "UPDATE uploads SET state='failed',code=?,review_ack_at=NULL,"
                 "start_state=CASE WHEN start_state IN "
                 "('reserved','queued') THEN 'blocked' ELSE start_state END,"
                 "bytes=CASE WHEN sha256 IS NULL THEN ? ELSE bytes END WHERE id=?",
@@ -671,7 +678,8 @@ class NativeInbox:
                 )
             ]
             db.execute(
-                "UPDATE uploads SET start_state='unknown',code='BBSTART_UNKNOWN' "
+                "UPDATE uploads SET start_state='unknown',code='BBSTART_UNKNOWN',"
+                "review_ack_at=NULL "
                 "WHERE start_state IN ('dispatching','sent','accepted') "
                 "AND dispatched_at < unixepoch()-?",
                 (DISPATCH_EXPIRY,),
@@ -695,7 +703,8 @@ class NativeInbox:
                 )
             ]
             db.execute(
-                "UPDATE uploads SET start_state='blocked',code='BBSTART_QUEUE_EXPIRED' "
+                "UPDATE uploads SET start_state='blocked',code='BBSTART_QUEUE_EXPIRED',"
+                "review_ack_at=NULL "
                 "WHERE start_state IN ('reserved','queued') "
                 "AND dispatched_at IS NULL "
                 "AND COALESCE(start_requested_at,created) < unixepoch()-?",
@@ -756,7 +765,9 @@ class NativeInbox:
             raise ValueError("Only a complete, undispatched upload can be retried")
         with self.connect() as db:
             db.execute(
-                "UPDATE uploads SET state='stored',code='BBFTP_STORED' WHERE id=?", (identifier,)
+                "UPDATE uploads SET state='stored',code='BBFTP_STORED',review_ack_at=NULL "
+                "WHERE id=?",
+                (identifier,),
             )
 
     def discard(self, identifier: str) -> None:
@@ -812,7 +823,7 @@ class NativeInbox:
     def block_start(self, identifier: str, code: str = "BBSTART_NOT_IDLE") -> None:
         with self.connect() as db:
             db.execute(
-                "UPDATE uploads SET start_state='blocked',code=? "
+                "UPDATE uploads SET start_state='blocked',code=?,review_ack_at=NULL "
                 "WHERE id=? AND start_state='queued'",
                 (code, identifier),
             )
@@ -826,8 +837,14 @@ class NativeInbox:
             )
 
     def status(
-        self, *, printer: str | None = None, limit: int = 100, offset: int = 0
+        self, *, printer: str | None = None, limit: int = 100, offset: int = 0,
+        view: Literal["all", "review", "active"] = "all",
     ) -> list[dict[str, Any]]:
+        view_sql = {
+            "all": "1",
+            "review": f"review_ack_at IS NULL AND {REVIEW_SQL}",
+            "active": ACTIVE_SQL,
+        }[view]
         with self.connect() as db:
             return [
                 dict(row)
@@ -835,9 +852,11 @@ class NativeInbox:
                     "SELECT id,printer,logical,remote,kind,retained,"
                     "sha256 IS NOT NULL AS complete,"
                     "CASE WHEN state='receiving' THEN 0 ELSE bytes END AS bytes,"
-                    "state,code,start_state,created,dispatched_at,"
+                    "state,code,start_state,created,dispatched_at,review_ack_at,"
+                    f"CASE WHEN review_ack_at IS NULL AND {REVIEW_SQL} "
+                    "THEN 1 ELSE 0 END AS needs_review,"
                     + ",".join(TIMING_FIELDS)
-                    + " FROM uploads WHERE (? IS NULL OR printer=?) ORDER BY "
+                    + f" FROM uploads WHERE (? IS NULL OR printer=?) AND ({view_sql}) ORDER BY "
                     "COALESCE(start_state IN "
                     "('reserved','queued','dispatching','sent','accepted','running','unknown'),0) "
                     "DESC,"
@@ -855,8 +874,26 @@ class NativeInbox:
                 (printer,),
             ).fetchone()
             review_count = db.execute(
-                "SELECT COUNT(*) FROM uploads WHERE printer=? AND "
-                "(state='failed' OR start_state IN ('blocked','unknown'))",
+                f"SELECT COUNT(*) FROM uploads WHERE printer=? AND review_ack_at IS NULL "
+                f"AND {REVIEW_SQL}",
                 (printer,),
             ).fetchone()[0]
-            return {"start_owner": owner["id"] if owner else None, "review_count": review_count}
+            acknowledgeable_count = db.execute(
+                f"SELECT COUNT(*) FROM uploads WHERE printer=? AND review_ack_at IS NULL "
+                f"AND {ACKABLE_SQL}",
+                (printer,),
+            ).fetchone()[0]
+            return {
+                "start_owner": owner["id"] if owner else None,
+                "review_count": review_count,
+                "acknowledgeable_count": acknowledgeable_count,
+            }
+
+    def acknowledge_past_reviews(self, printer: str) -> int:
+        """Hide past review warnings without changing starts or deleting evidence."""
+        with self.connect() as db:
+            return db.execute(
+                "UPDATE uploads SET review_ack_at=unixepoch() WHERE printer=? "
+                f"AND review_ack_at IS NULL AND {ACKABLE_SQL}",
+                (printer,),
+            ).rowcount

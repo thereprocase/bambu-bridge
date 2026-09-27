@@ -3,7 +3,7 @@ import { timingSummary } from './native-timings.js';
 
 export function mountNativeRecovery(parent, app) {
   const base = app.api.apiBase(), key = app.getKey();
-  let alive = true, rows = [], hasMore = false;
+  let alive = true, rows = [], hasMore = false, view = 'review', acknowledgeableCount = 0;
   const current = () => alive && base === app.api.apiBase() && key === app.getKey();
   const section = el('section', { class: 'section mt-3' }, [
     el('h2', { class: 't-section', text: 'Native queue and recovery' }),
@@ -13,12 +13,14 @@ export function mountNativeRecovery(parent, app) {
   const receipts = el('div', { class: 'stack mt-3' });
   const backups = el('div', { class: 'stack mt-3' });
   const refresh = el('button', { class: 'btn btn--ghost', text: 'Refresh receipts and backups' });
+  const filters = el('div', { class: 'row gap-2', style: { flexWrap: 'wrap' } });
+  const acknowledge = el('button', { class: 'btn btn--ghost', text: 'Acknowledge past warnings', hidden: true });
   const older = el('button', { class: 'btn btn--ghost', text: 'Load older receipts', hidden: true });
   const create = el('button', { class: 'btn btn--primary', text: 'Create inbox backup' });
   const importFile = el('input', { type: 'file', accept: '.zip,application/zip', 'aria-label': 'Import inbox backup' });
   card.append(
     el('p', { text: 'Inspect every native upload and print-start receipt. Check the printer before resolving an uncertain start.' }),
-    refresh, summary, receipts, older,
+    refresh, summary, filters, acknowledge, receipts, older,
     el('h3', { text: 'Inbox backups' }),
     el('p', { text: 'Backups contain the receipt database and complete cached files. Download a copy off the bridge. Restoring restarts native access and holds pending starts for review.' }),
     create, importFile, backups,
@@ -28,7 +30,7 @@ export function mountNativeRecovery(parent, app) {
   function renderReceipt(upload) {
     const item = el('div', { class: 'stack mt-3' }, [
       el('p', { text: `${upload.logical || upload.id} · ${upload.state} · ${upload.start_state || 'no start'} · ${upload.code || 'pending'}` }),
-      el('p', { class: 'field__hint', text: `${upload.printer} · ${new Date(upload.created * 1000).toLocaleString()} · ${upload.bytes} bytes · ${upload.id}` }),
+      el('p', { class: 'field__hint', text: `${upload.printer} · ${new Date(upload.created * 1000).toLocaleString()} · ${upload.bytes} bytes · ${upload.id}${upload.review_ack_at ? ' · acknowledged' : ''}` }),
       el('p', { class: 'field__hint', text: timingSummary(upload) }),
     ]);
     const actions = [];
@@ -58,20 +60,48 @@ export function mountNativeRecovery(parent, app) {
 
   function renderReceipts() {
     clear(receipts);
-    if (!rows.length) receipts.appendChild(el('p', { text: 'No native receipts yet.' }));
+    if (!rows.length) receipts.appendChild(el('p', { text: view === 'review' ? 'No receipts need review.' : view === 'active' ? 'Nothing in progress.' : 'No native receipts yet.' }));
     for (const row of rows) receipts.appendChild(renderReceipt(row));
     older.hidden = !hasMore;
   }
 
   async function loadQueue() {
-    const result = await app.api.api('/native/queue?limit=100&offset=0', { cache: 'no-store' });
-    if (!current()) return;
+    const requestedView = view;
+    const result = await app.api.api(`/native/queue?limit=100&offset=0&view=${requestedView}`, { cache: 'no-store' });
+    if (!current() || view !== requestedView) return;
     if (!result.ok) { summary.textContent = result.message || 'Native inbox unavailable.'; return; }
     rows = result.data.uploads;
     hasMore = result.data.has_more;
     summary.textContent = `${result.data.start_owner ? `Start reserved by ${result.data.start_owner}.` : 'No start reservation.'} ${result.data.review_count} receipts need review.`;
+    acknowledgeableCount = result.data.acknowledgeable_count;
+    acknowledge.hidden = !acknowledgeableCount;
+    acknowledge.textContent = `Acknowledge past warnings (${acknowledgeableCount})`;
     renderReceipts();
   }
+
+  for (const [id, label] of [['review', 'Needs review'], ['active', 'In progress'], ['all', 'All receipts']]) {
+    const button = el('button', { class: 'btn btn--ghost', text: label, 'aria-pressed': String(view === id) });
+    button.addEventListener('click', () => {
+      view = id;
+      for (const peer of filters.children) peer.setAttribute('aria-pressed', String(peer === button));
+      rows = []; hasMore = false; renderReceipts();
+      void loadQueue();
+    });
+    filters.appendChild(button);
+  }
+  acknowledge.addEventListener('click', async () => {
+    const count = acknowledgeableCount;
+    if (!count || !await confirmSheet({ title: 'Acknowledge past warnings?',
+      body: `Hide ${count} historical warnings from Needs review. Receipts and files remain. Current or uncertain print starts are never changed.`,
+      confirmLabel: 'Acknowledge past' }) || !current()) return;
+    acknowledge.disabled = true;
+    const result = await app.api.postJson('/native/queue/acknowledge',
+      { confirm: 'Ignore past review warnings; keep active starts' });
+    if (!current()) return;
+    acknowledge.disabled = false;
+    toast(result.ok ? `${result.data.acknowledged} past warnings acknowledged.` : (result.message || 'Could not acknowledge warnings.'));
+    await loadQueue();
+  });
 
   async function loadBackups() {
     const result = await app.api.api('/native/recovery/backups', { cache: 'no-store' });
@@ -126,9 +156,10 @@ export function mountNativeRecovery(parent, app) {
   refresh.addEventListener('click', load);
   older.addEventListener('click', async () => {
     older.disabled = true;
-    const result = await app.api.api(`/native/queue?limit=100&offset=${rows.length}`, { cache: 'no-store' });
-    if (!current()) return;
+    const requestedView = view;
+    const result = await app.api.api(`/native/queue?limit=100&offset=${rows.length}&view=${requestedView}`, { cache: 'no-store' });
     older.disabled = false;
+    if (!current() || view !== requestedView) return;
     if (!result.ok) { toast(result.message || 'Could not load older receipts.'); return; }
     rows.push(...result.data.uploads); hasMore = result.data.has_more; renderReceipts();
   });
