@@ -14,9 +14,10 @@ import uuid
 import zipfile
 from contextlib import closing
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, TYPE_CHECKING, Any
 
-from bambu_bridge.native_inbox import NativeInbox
+if TYPE_CHECKING:
+    from bambu_bridge.native_inbox import NativeInbox
 
 VERSION = 1
 IDENTIFIER = re.compile(r"[0-9a-f]{32}")
