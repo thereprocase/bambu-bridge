@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import sqlite3
 
 import pytest
 
@@ -75,6 +76,28 @@ def test_acknowledge_past_reviews_keeps_unknown_owner_and_receipt_evidence(tmp_p
     assert inbox.get("c" * 32)["review_ack_at"] is None
     assert inbox.get("d" * 32)["review_ack_at"] is None
     assert inbox.unresolved("fixture-printer")
+
+
+def test_existing_inbox_receipts_gain_review_ack_column_on_upgrade(tmp_path):
+    directory = tmp_path / "native-inbox"
+    directory.mkdir()
+    with sqlite3.connect(directory / "inbox.sqlite3") as db:
+        db.execute(
+            "CREATE TABLE uploads (id TEXT PRIMARY KEY, printer TEXT NOT NULL,"
+            "logical TEXT NOT NULL, remote TEXT NOT NULL, bytes INTEGER NOT NULL,"
+            "sha256 TEXT, state TEXT NOT NULL, code TEXT, command TEXT,"
+            "start_state TEXT, created INTEGER NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO uploads VALUES (?,'fixture-printer','/old.3mf','/old.3mf',0,"
+            "NULL,'failed','BBDELIVERY_FAILED',NULL,'blocked',unixepoch())",
+            ("e" * 32,),
+        )
+    inbox = NativeInbox(tmp_path)
+    assert inbox.queue_overview("fixture-printer")["review_count"] == 1
+    assert inbox.acknowledge_past_reviews("fixture-printer") == 1
+    assert inbox.get("e" * 32)["state"] == "failed"
+    assert inbox.get("e" * 32)["review_ack_at"] is not None
 
 
 async def test_real_orca_url_uses_staged_object_and_releases_after_finish(tmp_path):
