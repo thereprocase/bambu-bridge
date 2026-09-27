@@ -868,7 +868,7 @@ class NativeInbox:
     def queue_overview(self, printer: str) -> dict[str, Any]:
         with self.connect() as db:
             owner = db.execute(
-                "SELECT id FROM uploads WHERE printer=? AND start_state IN "
+                "SELECT id,logical,start_state FROM uploads WHERE printer=? AND start_state IN "
                 "('reserved','queued','dispatching','sent','accepted','running','unknown') "
                 "ORDER BY created DESC,rowid DESC LIMIT 1",
                 (printer,),
@@ -885,6 +885,8 @@ class NativeInbox:
             ).fetchone()[0]
             return {
                 "start_owner": owner["id"] if owner else None,
+                "start_owner_state": owner["start_state"] if owner else None,
+                "start_owner_logical": owner["logical"] if owner else None,
                 "review_count": review_count,
                 "acknowledgeable_count": acknowledgeable_count,
             }

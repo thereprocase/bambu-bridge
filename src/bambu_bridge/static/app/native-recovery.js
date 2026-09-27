@@ -1,12 +1,13 @@
 import { el, clear, toast, confirmSheet } from './ui.js';
 import { timingSummary } from './native-timings.js';
+import { fileLabel, ownerLabel, startLabel } from './native-state.js';
 
 export function mountNativeRecovery(parent, app) {
   const base = app.api.apiBase(), key = app.getKey();
   let alive = true, rows = [], hasMore = false, view = 'review', acknowledgeableCount = 0;
   const current = () => alive && base === app.api.apiBase() && key === app.getKey();
   const section = el('section', { class: 'section mt-3' }, [
-    el('h2', { class: 't-section', text: 'Native queue and recovery' }),
+    el('h2', { class: 't-section', text: 'Print activity and recovery' }),
   ]);
   const card = el('div', { class: 'card mt-2 stack' });
   const summary = el('p', { class: 'statusline', role: 'status' });
@@ -19,7 +20,7 @@ export function mountNativeRecovery(parent, app) {
   const create = el('button', { class: 'btn btn--primary', text: 'Create inbox backup' });
   const importFile = el('input', { type: 'file', accept: '.zip,application/zip', 'aria-label': 'Import inbox backup' });
   card.append(
-    el('p', { text: 'Inspect every native upload and print-start receipt. Check the printer before resolving an uncertain start.' }),
+    el('p', { text: 'File transfers and print starts. A receipt is not a waiting-list item.' }),
     refresh, summary, filters, acknowledge, receipts, older,
     el('h3', { text: 'Inbox backups' }),
     el('p', { text: 'Backups contain the receipt database and complete cached files. Download a copy off the bridge. Restoring restarts native access and holds pending starts for review.' }),
@@ -29,8 +30,8 @@ export function mountNativeRecovery(parent, app) {
 
   function renderReceipt(upload) {
     const item = el('div', { class: 'stack mt-3' }, [
-      el('p', { text: `${upload.logical || upload.id} · ${upload.state} · ${upload.start_state || 'no start'} · ${upload.code || 'pending'}` }),
-      el('p', { class: 'field__hint', text: `${upload.printer} · ${new Date(upload.created * 1000).toLocaleString()} · ${upload.bytes} bytes · ${upload.id}${upload.review_ack_at ? ' · acknowledged' : ''}` }),
+      el('p', { text: `${upload.logical || upload.id} · File: ${fileLabel(upload.state)} · Start: ${startLabel(upload.start_state)}` }),
+      el('p', { class: 'field__hint', text: `${upload.printer} · ${new Date(upload.created * 1000).toLocaleString()} · ${upload.bytes} bytes · ${upload.id} · ${upload.code || 'no code'}${upload.review_ack_at ? ' · acknowledged' : ''}` }),
       el('p', { class: 'field__hint', text: timingSummary(upload) }),
     ]);
     const actions = [];
@@ -72,7 +73,7 @@ export function mountNativeRecovery(parent, app) {
     if (!result.ok) { summary.textContent = result.message || 'Native inbox unavailable.'; return; }
     rows = result.data.uploads;
     hasMore = result.data.has_more;
-    summary.textContent = `${result.data.start_owner ? `Start reserved by ${result.data.start_owner}.` : 'No start reservation.'} ${result.data.review_count} receipts need review.`;
+    summary.textContent = `${ownerLabel(result.data)}. ${result.data.review_count} receipts need review.`;
     acknowledgeableCount = result.data.acknowledgeable_count;
     acknowledge.hidden = !acknowledgeableCount;
     acknowledge.textContent = `Acknowledge past warnings (${acknowledgeableCount})`;

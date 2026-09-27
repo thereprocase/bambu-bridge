@@ -53,6 +53,8 @@ def test_acknowledge_past_reviews_keeps_unknown_owner_and_receipt_evidence(tmp_p
         )
     assert inbox.queue_overview("fixture-printer") == {
         "start_owner": "c" * 32,
+        "start_owner_state": "unknown",
+        "start_owner_logical": "/file.3mf",
         "review_count": 3,
         "acknowledgeable_count": 2,
     }
