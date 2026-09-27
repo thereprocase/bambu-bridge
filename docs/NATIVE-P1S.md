@@ -1,5 +1,33 @@
 # Native P1S access in OrcaSlicer
 
+## Queue recovery and inbox backups
+
+The dashboard's **Native queue and recovery** section and the Android app's
+**Native queue and recovery** screen show native upload receipts, the current
+start reservation, and receipts needing review. Both accept the bridge owner
+key or a paired Android device over HTTPS. A paired device has administrator
+authority for these controls. Cancel applies only before a start is sent;
+resolve requires checking that the printer is idle and the print is not
+running. Retry delivery sends the saved file again but never automatically
+replays a blocked print start.
+
+Create an inbox backup before repairing a damaged deployment. Backups contain
+the receipt database and verified, complete cached upload files. Download or
+share a copy off the bridge, and import it again after rebuilding the host.
+Delete old on-host backups from either recovery screen after confirming an
+off-device copy exists; each archive can be as large as the saved uploads.
+Restoring creates a safety backup of the current inbox, restarts native access,
+and places every pending or uncertain start into a review state. It does not
+send a print command. Inspect those receipts and the physical printer before
+resolving any uncertain start. A backup is tied to the same printer ID and
+cannot be restored onto a different printer configuration.
+
+The idle delivery worker checks for stale reserved or queued starts every
+minute. A start that has not reached dispatch within 30 minutes is blocked
+for review. For a saved upload, the clock begins when its start is requested,
+not when the file was first uploaded. A failed delivery releases the printer's
+start reservation immediately; restart recovery also clears older failed rows.
+
 **One endpoint, one native access code, a choice for every print:** a four-color
 AMS job or an external-spool job. Keep the same printer entry in Orca for both;
 choose the source in **Print plate**, without changing the server connection.

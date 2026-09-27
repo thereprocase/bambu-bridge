@@ -44,6 +44,9 @@ DISPATCH_EXPIRY = 120
 # report already in flight when the start was published can still say IDLE.
 # Evidence that a start was lost only counts after this grace period.
 LOST_START_GRACE = 30
+# Reserved and queued starts should leave this state within one delivery and
+# claim. Revisit this bound if starts can wait for an idle printer in future.
+QUEUED_EXPIRY = 1800
 READY_STATES = ("IDLE", "FINISH", "FAILED")
 
 
@@ -173,13 +176,15 @@ class NativeInbox:
                           WHERE state IN ('receiving', 'delivering')""")
             db.execute("""UPDATE uploads SET start_state='unknown', code='BBSTART_UNKNOWN'
                           WHERE start_state='dispatching'""")
+            # A failed delivery cannot be claimed; release legacy owners before
+            # the ordinary reserved-start restart cancellation below.
+            db.execute(
+                "UPDATE uploads SET start_state='blocked' "
+                "WHERE state='failed' AND start_state IN ('reserved','queued')"
+            )
             db.execute(
                 "UPDATE uploads SET start_state='cancelled',code='BBSTART_NOT_DISPATCHED' "
                 "WHERE start_state='reserved'"
-            )
-            db.execute(
-                "UPDATE uploads SET start_state='blocked' WHERE replay_request_id IS NOT NULL "
-                "AND state='failed' AND start_state='queued'"
             )
 
     def reserve(
@@ -336,9 +341,11 @@ class NativeInbox:
         path = self.payload(identifier)
         size = path.stat().st_size if path.exists() else 0
         with self.connect() as db:
+            # claim_start requires delivered, so failed rows must not retain
+            # the printer's start mutex even when they are not library replays.
             db.execute(
                 "UPDATE uploads SET state='failed',code=?,"
-                "start_state=CASE WHEN replay_request_id IS NOT NULL AND start_state IN "
+                "start_state=CASE WHEN start_state IN "
                 "('reserved','queued') THEN 'blocked' ELSE start_state END,"
                 "bytes=CASE WHEN sha256 IS NULL THEN ? ELSE bytes END WHERE id=?",
                 (code, size, identifier),
@@ -671,6 +678,31 @@ class NativeInbox:
             )
             return rows
 
+    def expire_queued(self) -> list[dict[str, Any]]:
+        """Release stale starts that never reached dispatch.
+
+        A cached upload can be old when armed, so use its start-request time
+        when available; reserved rows and legacy receipts fall back to created.
+        """
+        with self.connect() as db:
+            rows = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM uploads WHERE start_state IN ('reserved','queued') "
+                    "AND dispatched_at IS NULL "
+                    "AND COALESCE(start_requested_at,created) < unixepoch()-?",
+                    (QUEUED_EXPIRY,),
+                )
+            ]
+            db.execute(
+                "UPDATE uploads SET start_state='blocked',code='BBSTART_QUEUE_EXPIRED' "
+                "WHERE start_state IN ('reserved','queued') "
+                "AND dispatched_at IS NULL "
+                "AND COALESCE(start_requested_at,created) < unixepoch()-?",
+                (QUEUED_EXPIRY,),
+            )
+            return rows
+
     def recoverable(self, printer: str) -> bool:
         """True when a fresh status report could let observe() release a lost start."""
         with self.connect() as db:
@@ -708,11 +740,11 @@ class NativeInbox:
         with self.connect() as db:
             changed = db.execute(
                 "UPDATE uploads SET start_state='cancelled',code='BBSTART_CANCELLED' "
-                "WHERE id=? AND start_state='queued'",
+                "WHERE id=? AND start_state IN ('reserved','queued')",
                 (identifier,),
             ).rowcount
             if changed != 1:
-                raise ValueError("Start is not queued; a dispatched print needs printer controls")
+                raise ValueError("Start is not pending; a dispatched print needs printer controls")
 
     def retry_delivery(self, identifier: str) -> None:
         row = self.get(identifier)
@@ -793,18 +825,38 @@ class NativeInbox:
                 (time.time(), identifier),
             )
 
-    def status(self) -> list[dict[str, Any]]:
+    def status(
+        self, *, printer: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
         with self.connect() as db:
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT id,CASE WHEN state='receiving' THEN 0 ELSE bytes END AS bytes,"
+                    "SELECT id,printer,logical,remote,kind,retained,"
+                    "sha256 IS NOT NULL AS complete,"
+                    "CASE WHEN state='receiving' THEN 0 ELSE bytes END AS bytes,"
                     "state,code,start_state,created,dispatched_at,"
                     + ",".join(TIMING_FIELDS)
-                    + " FROM uploads ORDER BY "
+                    + " FROM uploads WHERE (? IS NULL OR printer=?) ORDER BY "
                     "COALESCE(start_state IN "
                     "('reserved','queued','dispatching','sent','accepted','running','unknown'),0) "
                     "DESC,"
-                    "created DESC,rowid DESC LIMIT 100"
+                    "created DESC,rowid DESC LIMIT ? OFFSET ?",
+                    (printer, printer, limit, offset),
                 )
             ]
+
+    def queue_overview(self, printer: str) -> dict[str, Any]:
+        with self.connect() as db:
+            owner = db.execute(
+                "SELECT id FROM uploads WHERE printer=? AND start_state IN "
+                "('reserved','queued','dispatching','sent','accepted','running','unknown') "
+                "ORDER BY created DESC,rowid DESC LIMIT 1",
+                (printer,),
+            ).fetchone()
+            review_count = db.execute(
+                "SELECT COUNT(*) FROM uploads WHERE printer=? AND "
+                "(state='failed' OR start_state IN ('blocked','unknown'))",
+                (printer,),
+            ).fetchone()[0]
+            return {"start_owner": owner["id"] if owner else None, "review_count": review_count}

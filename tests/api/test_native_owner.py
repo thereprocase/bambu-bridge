@@ -1,4 +1,4 @@
-"""Native gateway setup remains owner-only and HTTPS-only."""
+"""Native gateway administration accepts owner keys and paired phones over HTTPS."""
 
 import asyncio
 from types import SimpleNamespace
@@ -92,19 +92,12 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         invitation, _ = app.state.pairing.invite()
         phone = app.state.pairing.claim(invitation, "Fixture phone")
         assert phone is not None
-        assert (
-            client.get(
-                "/api/v1/native/access-code", headers={"Authorization": "Bearer " + phone["token"]}
-            ).status_code
-            == 401
-        )
-        for path in ["/native/setup", "/native/setup-status"]:
-            assert (
-                client.get(
-                    "/api/v1" + path, headers={"Authorization": "Bearer " + phone["token"]}
-                ).status_code
-                == 401
-            )
+        paired = {"Authorization": "Bearer " + phone["token"]}
+        assert client.get("/api/v1/native/access-code", headers=paired).json() == {
+            "access_code": "FIXTURE1"
+        }
+        assert client.get("/api/v1/native/setup-status", headers=paired).status_code == 200
+        assert client.get("http://bridge.invalid/api/v1/native", headers=paired).status_code == 401
         assert client.delete("/api/v1/native", headers=owner).status_code == 204
         gateway.disable.assert_awaited_once()
         app.state.registry.get = lambda _: SimpleNamespace(model="A1")
@@ -126,6 +119,8 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         inbox.dispatched(identifier, "unknown")
         gateway.inbox = inbox
         gateway.config = {"printer_id": "FIXTURE"}
+        gateway.store = SimpleNamespace(directory=tmp_path / "recovery")
+        gateway.change_lock = asyncio.Lock()
         gateway.inbox_dispatch_lock = asyncio.Lock()
         gateway.inbox_wake = asyncio.Event()
         gateway.require_idle = Mock(side_effect=ValueError("BBSTART_NOT_IDLE"))
@@ -137,3 +132,47 @@ def test_native_owner_boundary_and_no_store(tmp_path):
         assert client.post(path, headers=owner, json={"action": "resolve"}).status_code == 422
         assert client.post(path, headers=owner, json=action).status_code == 200
         assert inbox.get(identifier)["start_state"] == "resolved"
+        second = inbox.claim_external(
+            "FIXTURE", {"print": {"command": "project_file", "url": "file:///sdcard/phone.3mf"}}
+        )
+        inbox.dispatched(second, "unknown")
+        phone_action = client.post("/api/v1/native/uploads/" + second, headers=paired, json=action)
+        assert phone_action.status_code == 200
+        assert inbox.get(second)["start_state"] == "resolved"
+        inbox.claim_external(
+            "OLDER_PRINTER",
+            {"print": {"command": "project_file", "url": "file:///sdcard/old.3mf"}},
+        )
+        queue = client.get("/api/v1/native/queue", headers=paired)
+        assert queue.status_code == 200
+        assert queue.json()["start_owner"] is None
+        assert {row["id"] for row in queue.json()["uploads"]} == {identifier, second}
+        first_page = client.get("/api/v1/native/queue?limit=1", headers=paired).json()
+        second_page = client.get("/api/v1/native/queue?limit=1&offset=1", headers=paired).json()
+        assert first_page["has_more"] and not second_page["has_more"]
+        assert first_page["uploads"][0]["id"] != second_page["uploads"][0]["id"]
+        backup = client.post("/api/v1/native/recovery/backups", headers=paired)
+        assert backup.status_code == 201
+        backup_id = backup.json()["id"]
+        listed = client.get("/api/v1/native/recovery/backups", headers=paired).json()
+        assert listed[0]["id"] == backup_id
+        exported = client.get(f"/api/v1/native/recovery/backups/{backup_id}", headers=paired)
+        assert exported.status_code == 200 and exported.content[:2] == b"PK"
+        imported = client.post(
+            "/api/v1/native/recovery/backups/import",
+            headers=paired,
+            files={"file": ("native.zip", exported.content, "application/zip")},
+        )
+        assert imported.status_code == 201
+        invalid = client.post(
+            "/api/v1/native/recovery/backups/import",
+            headers=paired,
+            files={"file": ("broken.zip", b"not a backup", "application/zip")},
+        )
+        assert invalid.status_code == 409
+        imported_id = imported.json()["id"]
+        assert client.delete(
+            f"/api/v1/native/recovery/backups/{imported_id}", headers=paired
+        ).status_code == 204
+        remaining = client.get("/api/v1/native/recovery/backups", headers=paired).json()
+        assert imported_id not in {row["id"] for row in remaining}

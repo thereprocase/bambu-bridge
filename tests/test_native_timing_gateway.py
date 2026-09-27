@@ -34,6 +34,7 @@ async def test_delivered_upload_without_start_skips_readiness():
 
     inbox = SimpleNamespace(
         expire_dispatch=lambda: [],
+        expire_queued=lambda: [],
         prune=lambda: None,
         pending=lambda _: [row],
         get=lambda _: row,

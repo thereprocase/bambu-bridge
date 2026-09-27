@@ -19,9 +19,13 @@ import aiomqtt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import HTTPException
 
+from bambu_bridge.api.native import RestoreAction, recovery_restore
 from bambu_bridge.config import Settings
 from bambu_bridge.native_gateway import NativeGateway, field, packet, read_packet
+from bambu_bridge.native_inbox import QUEUED_EXPIRY
+from bambu_bridge.native_recovery import create_backup
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.protocol.camera import build_auth_packet
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
@@ -618,6 +622,92 @@ async def test_common_service_gate_serializes_native_and_app_starts(gateway):
     assert service._mqtt.publish.await_count == 2
     with pytest.raises(ValueError, match="BBSTART_UNRESOLVED"):
         await gateway.disable()
+
+
+async def test_idle_sweep_handles_expired_row_without_command(gateway, monkeypatch):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    monkeypatch.setattr("bambu_bridge.native_gateway.INBOX_TICK", 0.01)
+    await gateway.start()
+    assert gateway.inbox is not None
+    row = gateway.inbox.reserve(SERIAL, "/stale.3mf", 1024)
+    with gateway.inbox.connect() as db:
+        db.execute(
+            "UPDATE uploads SET state='failed',start_state='queued',"
+            "created=unixepoch()-? WHERE id=?",
+            (QUEUED_EXPIRY + 1, row["id"]),
+        )
+        db.execute(
+            "UPDATE uploads SET start_requested_at=unixepoch()-? WHERE id=?",
+            (QUEUED_EXPIRY + 1, row["id"]),
+        )
+    # No inbox_wake signal: the worker must discover the row on its idle tick.
+    async with asyncio.timeout(2):
+        while gateway.inbox.get(row["id"])["start_state"] != "blocked":
+            await asyncio.sleep(0.01)
+    assert gateway.inbox.get(row["id"])["code"] == "BBSTART_QUEUE_EXPIRED"
+    assert gateway.inbox_task is not None and not gateway.inbox_task.done()
+
+
+async def test_restoring_inbox_never_replays_a_sent_start(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    assert gateway.inbox is not None and gateway.config is not None
+    identifier = gateway.inbox.claim_external(
+        SERIAL, {"print": {"command": "project_file", "url": "file:///sdcard/saved.3mf"}}
+    )
+    gateway.inbox.dispatched(identifier, "sent")
+    backup = create_backup(gateway.inbox, gateway.store.directory, SERIAL)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=gateway)))
+    result = await recovery_restore(
+        backup["id"],
+        RestoreAction(confirm="Restore native inbox and review every pending start"),
+        request,
+    )
+    assert result["restored"] == backup["id"]
+    assert result["safety_backup"] != backup["id"]
+    assert gateway.inbox is not None
+    restored = gateway.inbox.get(identifier)
+    assert restored["start_state"] == "unknown"
+    assert restored["code"] == "BBRESTORE_REVIEW"
+    assert gateway.inbox.claim_start(identifier) is None
+    gateway.service().send_raw.assert_not_awaited()
+    assert gateway.inbox_task is not None and not gateway.inbox_task.done()
+    assert not list((gateway.store.directory / "native-backups").glob("rollback-*"))
+
+
+async def test_failed_restore_reinstates_previous_inbox(gateway, monkeypatch):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    assert gateway.inbox is not None
+    row = gateway.inbox.reserve(SERIAL, "/before.3mf", 1024)
+    backup = create_backup(gateway.inbox, gateway.store.directory, SERIAL)
+    original_start = gateway.start
+    attempts = 0
+
+    async def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("synthetic restart failure")
+        await original_start()
+
+    monkeypatch.setattr(gateway, "start", fail_once)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=gateway)))
+    with pytest.raises(HTTPException) as caught:
+        await recovery_restore(
+            backup["id"],
+            RestoreAction(confirm="Restore native inbox and review every pending start"),
+            request,
+        )
+    assert "previous inbox was reinstated" in caught.value.detail
+    assert attempts == 2
+    assert gateway.inbox is not None
+    assert gateway.inbox.get(row["id"])["state"] == "failed"
+    assert gateway.inbox.get(row["id"])["code"] == "BBFTP_RESTART_REVIEW"
+    assert gateway.inbox_task is not None and not gateway.inbox_task.done()
 
 
 async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gateway):

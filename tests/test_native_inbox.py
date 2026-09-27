@@ -6,7 +6,13 @@ import hashlib
 import pytest
 
 from bambu_bridge.native_ftps import UploadReader
-from bambu_bridge.native_inbox import InboxError, NativeInbox, command_path, logical_path
+from bambu_bridge.native_inbox import (
+    QUEUED_EXPIRY,
+    InboxError,
+    NativeInbox,
+    command_path,
+    logical_path,
+)
 
 
 @pytest.mark.parametrize(
@@ -551,6 +557,89 @@ def age_dispatch(inbox, identifier, seconds):
         db.execute(
             "UPDATE uploads SET dispatched_at=unixepoch()-? WHERE id=?", (seconds, identifier)
         )
+
+
+def age_created(inbox, identifier, seconds):
+    with inbox.connect() as db:
+        db.execute("UPDATE uploads SET created=unixepoch()-? WHERE id=?", (seconds, identifier))
+
+
+def age_start_request(inbox, identifier, seconds):
+    with inbox.connect() as db:
+        db.execute(
+            "UPDATE uploads SET start_requested_at=unixepoch()-? WHERE id=?",
+            (seconds, identifier),
+        )
+
+
+async def test_failed_delivery_releases_native_start_owner(tmp_path):
+    # 2026-09-27: a failed FTPS delivery left queued owning the printer for 12 hours.
+    inbox = NativeInbox(tmp_path)
+    failed = await stored(inbox, "/failed.3mf")
+    inbox.hold_start("fixture-printer", start("file:///sdcard/failed.3mf"))
+    inbox.fail(failed["id"], "BBDELIVERY_FAILED")
+    assert inbox.get(failed["id"])["start_state"] == "blocked"
+    with pytest.raises(ValueError, match="BBDELIVERY_FAILED"):
+        inbox.hold_start("fixture-printer", start("file:///sdcard/failed.3mf"))
+    fresh = await stored(inbox, "/fresh.3mf")
+    armed = inbox.hold_start("fixture-printer", start("file:///sdcard/fresh.3mf"))
+    assert armed["id"] == fresh["id"]
+
+
+async def test_failed_delivery_releases_external_start_owner(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    failed = await stored(inbox)
+    inbox.hold_start("fixture-printer", start())
+    inbox.fail(failed["id"], "BBDELIVERY_FAILED")
+    identifier = inbox.claim_external("fixture-printer", start("file:///sdcard/other.3mf"))
+    assert inbox.get(identifier)["start_state"] == "dispatching"
+
+
+def test_manager_can_cancel_a_reserved_start_before_dispatch(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    identifier = inbox.claim_external("fixture-printer", start(), reserved=True)
+    inbox.cancel(identifier)
+    assert inbox.get(identifier)["start_state"] == "cancelled"
+    with pytest.raises(ValueError, match="BBSTART_ALREADY_DISPATCHED"):
+        inbox.activate_reserved(identifier, start())
+    assert not inbox.unresolved("fixture-printer")
+
+
+@pytest.mark.parametrize("start_state", ["reserved", "queued"])
+async def test_recover_releases_failed_delivery_from_existing_wedge(tmp_path, start_state):
+    inbox = NativeInbox(tmp_path)
+    failed = await stored(inbox)
+    with inbox.connect() as db:
+        db.execute(
+            "UPDATE uploads SET state='failed',start_state=?,code='BBDELIVERY_FAILED' WHERE id=?",
+            (start_state, failed["id"]),
+        )
+    resumed = NativeInbox(tmp_path)
+    resumed.recover()
+    assert resumed.get(failed["id"])["start_state"] == "blocked"
+    assert not resumed.unresolved("fixture-printer")
+
+
+async def test_expire_queued_only_releases_undispatched_stale_owner(tmp_path):
+    inbox = NativeInbox(tmp_path)
+    stale = await stored(inbox, "/stale.3mf")
+    inbox.hold_start("fixture-printer", start("file:///sdcard/stale.3mf"))
+    age_created(inbox, stale["id"], QUEUED_EXPIRY + 1)
+    # File age alone does not expire a newly armed start.
+    assert inbox.expire_queued() == []
+    age_start_request(inbox, stale["id"], QUEUED_EXPIRY + 1)
+    with inbox.connect() as db:
+        db.execute("UPDATE uploads SET dispatched_at=unixepoch() WHERE id=?", (stale["id"],))
+    assert inbox.expire_queued() == []
+    assert inbox.get(stale["id"])["start_state"] == "queued"
+    with inbox.connect() as db:
+        db.execute("UPDATE uploads SET dispatched_at=NULL WHERE id=?", (stale["id"],))
+    assert [row["id"] for row in inbox.expire_queued()] == [stale["id"]]
+    ended = inbox.get(stale["id"])
+    assert ended["start_state"] == "blocked" and ended["code"] == "BBSTART_QUEUE_EXPIRED"
+    fresh = await stored(inbox, "/after-expiry.3mf")
+    armed = inbox.hold_start("fixture-printer", start("file:///sdcard/after-expiry.3mf"))
+    assert armed["id"] == fresh["id"]
 
 
 async def test_power_cycle_after_ack_releases_start_never_seen_active(tmp_path):
