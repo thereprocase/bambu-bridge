@@ -73,7 +73,7 @@ export default function AddPrinter() {
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h1, { color: c.text }]}>Add a Bambu P1S</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          The bridge needs the printer&apos;s LAN IP and the 8-digit access code
+          The bridge needs the printer&apos;s LAN IP and the 8-character access code
           shown at Settings ▸ WLAN. LAN-Only Mode must be on
           (Settings ▸ Network).
         </Text>
@@ -83,14 +83,14 @@ export default function AddPrinter() {
           value={host}
           onChangeText={setHost}
           placeholder="192.168.1.50"
-          keyboardType="numeric"
+          keyboardType="default"
         />
         <Field
           label="Access code"
           value={code}
-          onChangeText={(t) => setCode(t.replace(/[^0-9]/g, "").slice(0, 8))}
+          onChangeText={(t) => setCode(t.replace(/[^A-Za-z0-9]/g, "").slice(0, 8))}
           placeholder="12345678"
-          keyboardType="number-pad"
+          keyboardType="default"
           maxLength={8}
         />
         <Field

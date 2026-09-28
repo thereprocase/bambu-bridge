@@ -40,7 +40,7 @@ Envelope = dict[str, Any]
 # the physical limit regardless of nozzle type.
 NOZZLE_MAX_C = 280             # default / stainless ceiling
 NOZZLE_MAX_HARDENED_C = 300   # conditional ceiling; requires nozzle_type=hardened
-BED_MAX_C = 120
+BED_MAX_C = 100  # Qualified adapter: P1S (manufacturer C12 profile).
 SPEED_LEVELS = {1: "silent", 2: "standard", 3: "sport", 4: "ludicrous"}
 # print.gcode_line fan index per Bambu convention.
 _FAN_PARTS = {"part": 1, "aux": 2, "chamber": 3}
@@ -116,7 +116,7 @@ EXTRUDE_MIN_TEMP_C = 170
 # and are rejected. 0 is also rejected (no-op that hides intent).
 # Valid mask for any P1S-safe value: v & ~0b111 == 0 and v > 0.
 # ---------------------------------------------------------------------------
-_CALIBRATION_P1S_MASK: int = 0b111  # bits 0-2 are P1S-confirmed
+_CALIBRATION_P1S_MASK: int = 0b110  # bed leveling=2, vibration=4; XCam=1 excluded
 
 # ---------------------------------------------------------------------------
 # Wave-3: raw G-code console gate.
@@ -124,8 +124,8 @@ _CALIBRATION_P1S_MASK: int = 0b111  # bits 0-2 are P1S-confirmed
 # ---------------------------------------------------------------------------
 
 def raw_gcode_enabled() -> bool:
-    """Return True only when BRIDGE_ENABLE_RAW_GCODE is non-empty in the env."""
-    return bool(os.environ.get("BRIDGE_ENABLE_RAW_GCODE", "").strip())
+    """Require an explicit true value for the diagnostic escape hatch."""
+    return os.environ.get("BRIDGE_ENABLE_RAW_GCODE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -696,37 +696,25 @@ def set_accessories_nozzle(
 def calibration(
     option: int,
     *,
-    bed_type: int = 1,
+    bed_type: int | None = None,
 ) -> Envelope:
-    """Run calibration routines specified by the bitmask ``option``.
+    """Manufacturer bits: XCam=1, bed=2, vibration=4, motor noise=8.
 
-    P1S-confirmed bit meanings (control matrix §8; source-conflict resolved):
-    * bit 0 (1) = vibration compensation  (NOT LIDAR — P1S has no LIDAR)
-    * bit 1 (2) = bed leveling (ABL)
-    * bit 2 (4) = first-layer / flow calibration (extrudes purge material)
-    * 7 = all three (1|2|4)
-
-    Any bitwise combination of bits 0-2 is accepted (i.e. 1..7); all three
-    individual bits and their combinations (3 = vibration+bed, 5 = vibration+flow,
-    6 = bed+flow, 7 = all three) are P1S-safe per docs/P1S-CONTROL-MATRIX.md §8.
-    0 is rejected (no-op that hides intent).  Bits 3+ are X1-only (LIDAR) and
-    are rejected with a 422 that names the control matrix as authority.
-
-    ``bed_type``: selects the leveling mesh profile (1 = textured plate,
-    default; documented in ha-bambulab but not independently confirmed on P1S).
+    This P1S builder accepts bed/vibration only. The HTTP capability gate
+    withholds calibration pending supervised validation. A bed_type wire
+    parameter remains unverified and is rejected instead of guessed.
     """
+    if bed_type is not None:
+        raise ValueError("Calibration bed-type parameter requires protocol verification")
     if option <= 0 or (option & ~_CALIBRATION_P1S_MASK) != 0:
         raise ValueError(
-            f"calibration option {option} is not a valid P1S bitmask "
-            f"(docs/P1S-CONTROL-MATRIX.md §8). "
-            "Accepted: any non-zero combination of bits 0-2 (values 1–7). "
-            "Bits 3+ may be X1-only (LIDAR); rejected to prevent firmware misbehaviour."
+            f"calibration option {option} requires support verification; "
+            "qualified builder bits: bed=2, vibration=4"
         )
     return build_command(
         "print",
         "calibration",
         option=option,
-        bed_type=bed_type,
     )
 
 

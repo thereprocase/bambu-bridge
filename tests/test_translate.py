@@ -614,9 +614,9 @@ def test_started_at_null_when_neither_raw_nor_ctx() -> None:
 
 
 def test_ams_environment_uses_raw_percent_not_category() -> None:
-    raw = {"ams": {"ams": [{"id": "0", "humidity": "5", "humidity_raw": "6", "temp": "36.4"}]}}
+    raw = {"ams": {"ams": [{"id": "0", "info": "1003", "humidity": "5", "humidity_raw": "6", "temp": "36.4"}]}}
     assert translate_snapshot(raw, _ctx())["ams"]["units"] == [
-        {"id": "0", "humidity_pct": 6.0, "temperature_c": 36.4}
+        {"id": "0", "humidity_pct": 6.0, "humidity_level": None, "temperature_c": 36.4}
     ]
 
 
@@ -629,8 +629,28 @@ def test_ams_invalid_humidity_is_unavailable(value: Any) -> None:
 
 
 def test_ams_zero_and_multiple_units() -> None:
-    raw = {"ams": {"ams": [{"id": "0", "humidity_raw": "0", "temp": "0"}, {"id": "1"}]}}
+    raw = {"ams": {"ams": [{"id": "0", "info": "1004", "humidity_raw": "0", "temp": "0"}, {"id": "1"}]}}
     units = translate_snapshot(raw, _ctx())["ams"]["units"]
-    assert units[0] == {"id": "0", "humidity_pct": 0.0, "temperature_c": 0.0}
+    assert units[0] == {"id": "0", "humidity_pct": 0.0, "humidity_level": None, "temperature_c": 0.0}
     assert units[1]["humidity_pct"] is None
     assert translate_snapshot({}, _ctx())["ams"]["units"] == []
+
+
+def test_original_ams_reports_humidity_level_and_percent_has_unknown_units() -> None:
+    raw = {"ams": {"ams": [{"id": "0", "info": "1001", "humidity": "5", "humidity_raw": "3"}]}}
+    unit = translate_snapshot(raw, _ctx())["ams"]["units"][0]
+    assert unit["humidity_pct"] is None
+    assert unit["humidity_level"] == 5
+
+
+def test_reordered_sparse_multi_ams_uses_hardware_ids() -> None:
+    raw = {"ams": {"tray_now": "7", "ams": [
+        {"id": "1", "tray": [{"id": "3", "tray_type": "PLA", "remain": 90}]},
+        {"id": "0", "tray": [{"id": "2", "tray_type": "PETG"}]},
+    ]}}
+    ams = translate_snapshot(raw, _ctx())["ams"]
+    assert [s["physical_slot"] for s in ams["slots"]] == [3, 8]
+    assert ams["engaged_slot"] == 8
+    assert ams["slots"][1]["remaining_g"] is None
+    assert ams["slots"][1]["ams_id"] == 1
+    assert ams["slots"][1]["tray_id"] == 3

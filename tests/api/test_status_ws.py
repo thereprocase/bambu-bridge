@@ -13,10 +13,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from bambu_bridge.api import status as status_api
 from tests.conftest import (
     ACCESS_CODE,
     API_KEY,
@@ -27,6 +30,41 @@ from tests.conftest import (
 )
 
 _AUTH = {"Authorization": f"Bearer {API_KEY}"}
+
+
+@pytest.mark.asyncio
+async def test_quiet_websocket_refreshes_telemetry_watermark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(status_api, "_HEARTBEAT_S", 0.01)
+    sent: list[dict[str, Any]] = []
+
+    class QuietSubscription:
+        async def get(self) -> None:
+            await asyncio.Event().wait()
+
+    class FakeSocket:
+        async def send_json(self, data: dict[str, Any]) -> None:
+            sent.append(data)
+
+    initial = {"session": {"last_telemetry_at": "2026-09-27T12:00:00Z"}}
+    current = {"session": {"last_telemetry_at": "2026-09-27T12:00:05Z"}}
+    service = SimpleNamespace(snapshot=lambda: current)
+    task = asyncio.create_task(
+        status_api._pump(FakeSocket(), QuietSubscription(), service, initial)
+    )
+    try:
+        async with asyncio.timeout(1):
+            while not any(message.get("type") == "delta" for message in sent):
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert {
+        "type": "delta",
+        "data": {"session": {"last_telemetry_at": "2026-09-27T12:00:05Z"}},
+    } in sent
 
 
 @pytest.fixture(autouse=True)
@@ -122,9 +160,7 @@ async def test_ws_rejects_bad_token(tmp_path: Path) -> None:
             )
             with (
                 pytest.raises(WebSocketDisconnect),
-                c.websocket_connect(
-                    f"/api/v1/printers/{SERIAL}/status?token=wrong"
-                ) as ws,
+                c.websocket_connect(f"/api/v1/printers/{SERIAL}/status?token=wrong") as ws,
             ):
                 ws.receive_json()
 

@@ -24,6 +24,8 @@
  *  10. Raw G-code  — gated console (shows 403 message verbatim if disabled)
  */
 
+import { CapabilityCard, CapabilityList } from "../../src/components/CapabilityCard";
+import { printerCapabilities } from "../../src/lib/capabilities";
 import { Alert, ScrollView, Text, TextInput, View } from "react-native";
 import { useState } from "react";
 
@@ -63,7 +65,7 @@ const XCAM_MODULES = [
 
 // ── Print-option flag list ────────────────────────────────────────────────────
 const PRINT_OPTIONS = [
-  { key: "auto_recovery",          label: "Auto recovery" },
+  { key: "auto_recovery",          label: "Step-loss recovery" },
   { key: "air_print_detect",       label: "Air-print detect" },
   { key: "filament_tangle_detect", label: "Filament tangle detect" },
   { key: "nozzle_blob_detect",     label: "Nozzle blob detect" },
@@ -79,6 +81,9 @@ export default function AdvancedScreen() {
   const showToast = useToastStore((s) => s.show);
   const selectedId = usePrintersStore((s) => s.selectedId);
   const live = useLiveStore((s) => (selectedId ? s.printers[selectedId] : undefined));
+
+  const registeredModel = usePrintersStore((s) => s.list.find((p) => p.serial === selectedId)?.model);
+  const capabilities = printerCapabilities(live?.snapshot, registeredModel);
 
   // ── XCam ──────────────────────────────────────────────────────────────────
   const [xcamHalt, setXcamHalt] = useState(true);
@@ -109,7 +114,6 @@ export default function AdvancedScreen() {
   const [skipInput, setSkipInput] = useState("");
 
   // ── Calibration ───────────────────────────────────────────────────────────
-  const [calBedType, setCalBedType] = useState("");
 
   // ── Nozzle accessories ────────────────────────────────────────────────────
   const [nozzleType, setNozzleType] = useState<"stainless_steel" | "hardened_steel">("stainless_steel");
@@ -139,7 +143,7 @@ export default function AdvancedScreen() {
   function safeCall(fn: () => Promise<unknown>, okMsg: string, after?: () => void) {
     fn()
       .then(() => {
-        showToast(okMsg, { severity: "success" });
+        showToast("Command sent", { severity: "success" });
         after?.();
       })
       .catch((e) => {
@@ -174,7 +178,9 @@ export default function AdvancedScreen() {
       style={{ flex: 1, backgroundColor: c.bg }}
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
     >
+      <CapabilityList>
       {/* 1. XCam AI --------------------------------------------------------- */}
+      <CapabilityCard title="XCam AI vision" availability={capabilities.get("vision")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>XCam AI vision</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -212,37 +218,27 @@ export default function AdvancedScreen() {
           </View>
         ))}
       </Surface>
+      </CapabilityCard>
 
-      {/* 2. Print options --------------------------------------------------- */}
-      <Surface padded style={{ gap: space.md }}>
-        <Text style={[type.h2, { color: c.text }]}>Print options</Text>
-        <Text style={[type.small, { color: c.muted }]}>
-          Each tap changes one setting on the printer. They can be combined —
-          this screen sends them one at a time so it&apos;s clear what changed.
-        </Text>
-        {PRINT_OPTIONS.map(({ key, label }) => (
-          <View key={key} style={{ flexDirection: "row", gap: space.sm }}>
-            <Button
-              label={`${label}: on`}
-              variant="secondary"
-              onPress={() => safeCall(
-                () => setPrintOption(selectedId, { [key]: true }),
-                `${label} on`,
-              )}
-            />
-            <Button
-              label="off"
-              variant="secondary"
-              onPress={() => safeCall(
-                () => setPrintOption(selectedId, { [key]: false }),
-                `${label} off`,
-              )}
-            />
-          </View>
-        ))}
-      </Surface>
+      {PRINT_OPTIONS.map(({ key, label }) => (
+        <CapabilityCard key={key} title={label} availability={capabilities.get(
+          key === "auto_recovery" ? "autoRecovery" : key === "air_print_detect" ? "airPrint" :
+          key === "filament_tangle_detect" ? "tangle" : key === "nozzle_blob_detect" ? "blob" : "sound"
+        )}>
+          <Surface padded style={{ gap: space.md }}>
+            <Text style={[type.h2, { color: c.text }]}>{label}</Text>
+            <View style={{ flexDirection: "row", gap: space.sm }}>
+              <Button label="Enable" variant="secondary"
+                onPress={() => safeCall(() => setPrintOption(selectedId, { [key]: true }), "Request sent")} />
+              <Button label="Disable" variant="secondary"
+                onPress={() => safeCall(() => setPrintOption(selectedId, { [key]: false }), "Request sent")} />
+            </View>
+          </Surface>
+        </CapabilityCard>
+      ))}
 
       {/* 3. AMS ops --------------------------------------------------------- */}
+      <CapabilityCard title="AMS — filament setting" availability={capabilities.get("ams")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>AMS — filament setting</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -283,11 +279,14 @@ export default function AdvancedScreen() {
           )}
         />
 
-        <View style={{ height: 1, backgroundColor: c.borderSoft, marginVertical: space.xs }} />
+      </Surface>
+      </CapabilityCard>
+      <CapabilityCard title="AMS — RFID re-read" availability={capabilities.get("ams")}>
+      <Surface padded style={{ gap: space.md }}>
 
         <Text style={[type.h2, { color: c.text }]}>AMS — RFID re-read</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Triggers a tag re-read for a specific slot. No physical motion.
+          Reads the filament tag in the selected AMS slot.
         </Text>
         <View style={{ flexDirection: "row", gap: space.sm }}>
           <View style={{ flex: 1 }}>
@@ -305,7 +304,10 @@ export default function AdvancedScreen() {
           )}
         />
 
-        <View style={{ height: 1, backgroundColor: c.borderSoft, marginVertical: space.xs }} />
+      </Surface>
+      </CapabilityCard>
+      <CapabilityCard title="AMS — drying" availability={capabilities.get("drying")}>
+      <Surface padded style={{ gap: space.md }}>
 
         <Text style={[type.h2, { color: c.text }]}>AMS — drying</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -342,7 +344,10 @@ export default function AdvancedScreen() {
           )}
         />
 
-        <View style={{ height: 1, backgroundColor: c.borderSoft, marginVertical: space.xs }} />
+      </Surface>
+      </CapabilityCard>
+      <CapabilityCard title="AMS — user settings" availability={capabilities.get("ams")}>
+      <Surface padded style={{ gap: space.md }}>
 
         <Text style={[type.h2, { color: c.text }]}>AMS — user settings</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -350,20 +355,22 @@ export default function AdvancedScreen() {
         </Text>
         <Field label="AMS id" value={usAmsId} onChangeText={setUsAmsId} keyboardType="number-pad" />
         <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
-          <Button label="Startup read: on" variant="secondary"
+          <Button label="Startup and insertion read: on" variant="secondary"
             onPress={() => safeCall(
               () => amsUserSetting(selectedId, Number(usAmsId), true, true),
               "AMS user settings sent",
             )} />
-          <Button label="Startup read: off" variant="secondary"
+          <Button label="Startup and insertion read: off" variant="secondary"
             onPress={() => safeCall(
               () => amsUserSetting(selectedId, Number(usAmsId), false, false),
               "AMS user settings sent",
             )} />
         </View>
       </Surface>
+      </CapabilityCard>
 
       {/* 4. Skip objects ---------------------------------------------------- */}
+      <CapabilityCard title="Skip objects" availability={capabilities.get("skipObjects")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Skip objects</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -381,11 +388,9 @@ export default function AdvancedScreen() {
           label="Skip objects"
           disabled={!skipInput.trim()}
           onPress={() => {
-            const ids = skipInput
-              .split(",")
-              .map((s) => parseInt(s.trim(), 10))
-              .filter((n) => !isNaN(n));
-            if (!ids.length) {
+            const tokens = skipInput.split(",").map((s) => s.trim());
+            const ids = tokens.map(Number);
+            if (!tokens.every((s) => /^\d+$/.test(s)) || !ids.every(Number.isSafeInteger)) {
               showToast("Enter at least one valid integer ID", { severity: "warn" });
               return;
             }
@@ -397,28 +402,21 @@ export default function AdvancedScreen() {
           }}
         />
       </Surface>
+      </CapabilityCard>
 
       {/* 5. Calibration ----------------------------------------------------- */}
+      <CapabilityCard title="Calibration" availability={capabilities.get("calibration")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Calibration</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          P1S-confirmed bits only (matrix §8). Runs motion — printer should
-          be idle. Vibration=1, Bed level=2, Flow=4, All=7.
+          Bed leveling and vibration calibration require an idle printer.
         </Text>
-        <Field
-          label="Bed type (optional, int)"
-          value={calBedType}
-          onChangeText={setCalBedType}
-          keyboardType="number-pad"
-          placeholder="leave blank for current"
-        />
         <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
-          {([1, 2, 4, 7] as const).map((opt) => {
+          {([2, 4, 6] as const).map((opt) => {
             const labels: Record<number, string> = {
-              1: "Vibration",
               2: "Bed level",
-              4: "Flow cali",
-              7: "All",
+              4: "Vibration",
+              6: "Bed + vibration",
             };
             return (
               <Button
@@ -426,9 +424,8 @@ export default function AdvancedScreen() {
                 label={labels[opt]}
                 variant="secondary"
                 onPress={() => {
-                  const bt = calBedType ? Number(calBedType) : undefined;
                   safeCall(
-                    () => calibrate(selectedId, opt, bt),
+                    () => calibrate(selectedId, opt),
                     `Calibration ${labels[opt]} started`,
                   );
                 }}
@@ -437,8 +434,10 @@ export default function AdvancedScreen() {
           })}
         </View>
       </Surface>
+      </CapabilityCard>
 
       {/* 6. Nozzle accessories ---------------------------------------------- */}
+      <CapabilityCard title="Nozzle type &amp; diameter" availability={capabilities.get("nozzleSetup")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Nozzle type & diameter</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -480,8 +479,10 @@ export default function AdvancedScreen() {
           )}
         />
       </Surface>
+      </CapabilityCard>
 
       {/* 7. Firmware / version info card ------------------------------------ */}
+      <CapabilityCard title="Firmware info" availability={capabilities.get("identity")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Firmware info</Text>
         <Button
@@ -508,8 +509,10 @@ export default function AdvancedScreen() {
           </Text>
         )}
       </Surface>
+      </CapabilityCard>
 
       {/* 8. Extrude / retract (RED) ----------------------------------------- */}
+      <CapabilityCard title="Extrude / Retract" availability={capabilities.get("motion")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.danger }]}>Extrude / Retract</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -566,8 +569,10 @@ export default function AdvancedScreen() {
           ))}
         </View>
       </Surface>
+      </CapabilityCard>
 
       {/* 9. Steppers off (RED) ---------------------------------------------- */}
+      <CapabilityCard title="Disable steppers" availability={capabilities.get("motion")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.danger }]}>Disable steppers</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -589,8 +594,10 @@ export default function AdvancedScreen() {
           }
         />
       </Surface>
+      </CapabilityCard>
 
       {/* 10. Raw G-code console (BLACK / gated) ----------------------------- */}
+      <CapabilityCard title="Raw G-code console" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Raw G-code console</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -610,10 +617,10 @@ export default function AdvancedScreen() {
             color: c.text,
             borderColor: rawGcodeError ? c.danger : c.border,
             borderWidth: 1,
-            borderRadius: 10,
+            borderRadius: 0,
             padding: 12,
             minHeight: 100,
-            fontFamily: "JetBrains Mono",
+            fontFamily: "IBMPlexMono_500Medium",
             fontSize: 14,
             textAlignVertical: "top",
           }}
@@ -666,6 +673,8 @@ export default function AdvancedScreen() {
             renders the bridge's verbatim message with the BRIDGE_ENABLE_RAW_GCODE
             instructions. The error persists until the user edits the input. */}
       </Surface>
+      </CapabilityCard>
+      </CapabilityList>
     </ScrollView>
   );
 }

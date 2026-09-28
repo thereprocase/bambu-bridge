@@ -230,11 +230,11 @@ def test_non_ip_host_rejected(tmp_path: Path) -> None:
         assert r.json()["error"] == "invalid_input"
 
 
-def test_access_code_must_be_8_digits(tmp_path: Path) -> None:
+def test_access_code_must_be_8_alphanumeric_characters(tmp_path: Path) -> None:
     """design review: format-constrain access_code to block 1MB-body
     DoS and obviously-malformed input."""
     with TestClient(build_app(tmp_path / "accode.db")) as c:
-        for bad in ("abcd1234", "1234567", "123456789", "12345 78"):
+        for bad in ("abcd!234", "1234567", "123456789", "12345 78"):
             r = c.post(
                 "/api/v1/printers",
                 headers=_AUTH,

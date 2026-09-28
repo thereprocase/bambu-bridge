@@ -1,3 +1,5 @@
+import { CapabilityCard } from "../../src/components/CapabilityCard";
+import { printerCapabilities } from "../../src/lib/capabilities";
 /**
  * Print — browse remote files on the printer's FTPS share and submit a
  * print. Real endpoints only (operator no-stubs directive):
@@ -16,9 +18,12 @@ import { listFiles, type RemoteFile } from "../../src/api/files";
 import { qaLog } from "../../src/lib/qalog";
 import { canStartStoredPrint, submitPrint } from "../../src/api/jobs";
 import { Button } from "../../src/components/Button";
+import { ChoiceTiles } from "../../src/components/ChoiceTiles";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
 import { viewOf } from "../../src/lib/snapshot";
+import { printerStateLabels } from "../../src/lib/printerState";
+import type { PrinterSnapshot } from "../../src/api/types";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
 import { useTheme } from "../../src/theme/ThemeProvider";
@@ -28,17 +33,29 @@ export default function PrintScreen() {
   const showToast = useToastStore((s) => s.show);
   const selectedId = usePrintersStore((s) => s.selectedId);
   const live = useLiveStore((s) => (selectedId ? s.printers[selectedId] : undefined));
+  const registeredModel = usePrintersStore((s) => s.list.find((p) => p.serial === selectedId)?.model);
+  const capabilities = printerCapabilities(live?.snapshot, registeredModel);
   const view = viewOf((live?.snapshot as any) ?? null);
+  const [, setClock] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, []);
+  const facts = printerStateLabels((live?.snapshot as unknown as PrinterSnapshot) ?? null,
+    live?.status ?? "closed");
 
   // Currently-printing job name from live store (§6 job.subtask_name).
   const activeJobName: string | null = (live?.snapshot as any)?.job?.subtask_name ?? null;
 
   const [files, setFiles] = useState<RemoteFile[]>([]);
+  const [filesPrinter, setFilesPrinter] = useState<string | null>(null);
+  const currentPrinter = useRef(selectedId);
+  currentPrinter.current = selectedId;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<string | null>(null);
   const submissionActive = useRef(false);
-  const canPrint = canStartStoredPrint(live?.snapshot ?? null, live?.status === "open");
+  const canPrint = facts.live && canStartStoredPrint(live?.snapshot ?? null, true);
   const [pickedSlot, setPickedSlot] = useState<number | null>(null);
 
   async function refresh() {
@@ -47,31 +64,37 @@ export default function PrintScreen() {
     setError(null);
     try {
       const arr = await listFiles(selectedId);
+      if (selectedId !== currentPrinter.current) return;
       // Server returns files newest-first; preserve that order — no re-sort.
       // Filter to .gcode and .3mf only (P1S can't print other formats).
       const filtered = arr.filter((f) => /\.3mf$/i.test(f.name));
       setFiles(filtered);
+      setFilesPrinter(selectedId);
       qaLog("files.order", {
         dir: "",
         count: filtered.length,
         dated_count: filtered.filter((f) => f.modified_at || f.sliced_at).length,
       });
     } catch (e) {
+      if (selectedId !== currentPrinter.current) return;
       const message = e instanceof BridgeError ? e.envelope.message : String(e);
       setError(message);
       qaLog("files.error", { code: e instanceof BridgeError ? e.code : "network_error" });
     } finally {
-      setLoading(false);
+      if (selectedId === currentPrinter.current) setLoading(false);
     }
   }
 
   useEffect(() => {
+    setFiles([]);
+    setFilesPrinter(null);
+    setPickedSlot(null);
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   async function submit(f: RemoteFile) {
-    if (!selectedId || !canPrint || submissionActive.current) return;
+    if (!selectedId || selectedId !== filesPrinter || !canPrint || submissionActive.current) return;
     submissionActive.current = true;
     setSubmitting(f.name);
     try {
@@ -106,27 +129,22 @@ export default function PrintScreen() {
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
       refreshControl={<RefreshControl refreshing={loading} tintColor={c.accent} onRefresh={refresh} />}
     >
+      <CapabilityCard title="Print" availability={capabilities.get("core")}>
       {/* AMS slot picker --------------------------------------------------- */}
       {view.ams.length > 0 && (
         <Surface padded style={{ gap: space.sm }}>
           <Text style={[type.h2, { color: c.text }]}>AMS slot</Text>
           <Text style={[type.small, { color: c.muted }]}>
-            &quot;Auto&quot; means the printer uses whatever filament is currently
-            loaded. Pick a slot to force load before printing.
+            External uses the external spool. Select an AMS slot for a compatible single-filament file.
           </Text>
-          <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
-            <SlotPill label="Auto" picked={pickedSlot == null} onPress={() => setPickedSlot(null)} />
-            {view.ams.map((slot) => (
-              <SlotPill
-                key={slot.physicalSlot}
-                label={`Slot ${slot.physicalSlot}`}
-                color={slot.color ?? undefined}
-                disabled={slot.empty}
-                picked={pickedSlot === slot.physicalSlot}
-                onPress={() => setPickedSlot(slot.physicalSlot)}
-              />
-            ))}
-          </View>
+          <ChoiceTiles label="AMS slot" value={pickedSlot == null ? "auto" : String(pickedSlot)}
+            onSelect={id => setPickedSlot(id === "auto" ? null : Number(id))}
+            options={[
+              { id: "auto", topLabel: "Spool", label: "External", accessibilityLabel: "External spool" },
+              ...view.ams.map(slot => ({ id: String(slot.physicalSlot), label: String(slot.physicalSlot),
+                topLabel: "AMS", color: slot.color ?? undefined, disabled: slot.empty || slot.physicalSlot > 4,
+                accessibilityLabel: `AMS slot ${slot.physicalSlot}${slot.empty ? ", empty" : ""}` })),
+            ]} />
         </Surface>
       )}
 
@@ -139,16 +157,16 @@ export default function PrintScreen() {
           </Pressable>
         </View>
         {!canPrint && <Text style={[type.small, { color: c.muted }]}>
-          The printer must be connected and ready before starting another print.
+          Printer: {facts.activity} · Connection: {facts.connection}
         </Text>}
         {error && <Text style={[type.small, { color: c.danger }]}>{error}</Text>}
         {!loading && !error && files.length === 0 && (
           <Text style={[type.small, { color: c.muted }]}>No .3mf files yet.</Text>
         )}
-        {sortedFiles(files, activeJobName).map((f, idx) => {
+        {sortedFiles(filesPrinter === selectedId ? files : [], activeJobName).map((f, idx) => {
           const fileBase = basename(f.name);
           const activeBase = activeJobName != null ? basename(activeJobName) : "";
-          const isPrinting = activeJobName != null && (
+          const isPrinting = facts.live && ["Printing", "Preparing", "Paused"].includes(facts.activity) && activeJobName != null && (
             fileBase === activeBase ||
             (stem(activeBase).length > 0 && stem(fileBase) === stem(activeBase))
           );
@@ -172,9 +190,9 @@ export default function PrintScreen() {
                       backgroundColor: c.accent,
                       paddingHorizontal: 6,
                       paddingVertical: 2,
-                      borderRadius: 999,
+                      borderRadius: 0,
                     }}>
-                      <Text style={{ color: "#0a0b0d", fontSize: 11, fontWeight: "600" }}>
+                      <Text style={{ color: c.onAccent, fontSize: 11, fontWeight: "600" }}>
                         printing now
                       </Text>
                     </View>
@@ -197,6 +215,7 @@ export default function PrintScreen() {
           );
         })}
       </Surface>
+      </CapabilityCard>
     </ScrollView>
   );
 }
@@ -243,32 +262,6 @@ function sortedFiles(files: RemoteFile[], activeJobName: string | null): RemoteF
   return out;
 }
 
-function SlotPill({ label, color, picked, disabled, onPress }: {
-  label: string; color?: string; picked: boolean; disabled?: boolean; onPress: () => void;
-}) {
-  const { c, space, radius } = useTheme();
-  return (
-    <Pressable
-      disabled={disabled}
-      onPress={onPress}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: space.sm,
-        paddingHorizontal: space.md,
-        paddingVertical: space.sm,
-        backgroundColor: picked ? c.accent : c.surface2,
-        borderRadius: radius.pill,
-        opacity: disabled ? 0.4 : 1,
-      }}
-    >
-      {color && (
-        <View style={{ width: 12, height: 12, backgroundColor: color, borderRadius: 6 }} />
-      )}
-      <Text style={{ color: picked ? "#0a0b0d" : c.text, fontSize: 13 }}>{label}</Text>
-    </Pressable>
-  );
-}
 
 /**
  * Returns a short secondary label for a file based on its sort_basis and

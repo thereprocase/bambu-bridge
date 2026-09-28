@@ -19,7 +19,7 @@
  */
 
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, View } from "react-native";
 
 import { BridgeError } from "../src/api/errors";
@@ -68,6 +68,8 @@ export default function FilamentMemoryEditor() {
   const [profile, setProfile] = useState(existing?.profile ?? "");
   const [saving, setSaving] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const dirty = useRef(false);
+  const editorTarget = useRef("");
 
   // expo-router reuses modal screen instances across navigations — the
   // component does NOT remount when the user closes slot 1 and opens slot 2.
@@ -76,11 +78,16 @@ export default function FilamentMemoryEditor() {
   // target slot changes (slotNum) so each slot always opens with its own
   // saved values, or empty fields when none exist.
   useEffect(() => {
+    const target = `${printerId}:${slotNum}`;
+    if (editorTarget.current !== target) {
+      editorTarget.current = target;
+      dirty.current = false;
+    }
+    if (dirty.current) return;
     setMake(existing?.make ?? "");
     setModel(existing?.model ?? "");
     setProfile(existing?.profile ?? "");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slotNum]);
+  }, [printerId, slotNum, existing?.make, existing?.model, existing?.profile]);
 
   const allEmpty = !make.trim() && !model.trim() && !profile.trim();
   // Reflect the bridge's per-field ≤120-char cap inline rather than via a 422.
@@ -178,7 +185,7 @@ export default function FilamentMemoryEditor() {
           <Field
             label="Make"
             value={make}
-            onChangeText={setMake}
+            onChangeText={value => { dirty.current = true; setMake(value); }}
             placeholder="Polymaker"
             autoCapitalize="words"
             maxLength={FILAMENT_MEMORY_MAX}
@@ -187,7 +194,7 @@ export default function FilamentMemoryEditor() {
           <Field
             label="Model"
             value={model}
-            onChangeText={setModel}
+            onChangeText={value => { dirty.current = true; setModel(value); }}
             placeholder="PolyLite"
             autoCapitalize="words"
             maxLength={FILAMENT_MEMORY_MAX}
@@ -196,7 +203,7 @@ export default function FilamentMemoryEditor() {
           <Field
             label="Profile"
             value={profile}
-            onChangeText={setProfile}
+            onChangeText={value => { dirty.current = true; setProfile(value); }}
             placeholder="ASA"
             autoCapitalize="characters"
             maxLength={FILAMENT_MEMORY_MAX}

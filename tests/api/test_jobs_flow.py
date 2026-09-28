@@ -62,6 +62,13 @@ def _register(c: TestClient, name: str = "Job P1S") -> None:
         ).status_code
         == 201
     )
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        snapshot = c.get(f"/api/v1/printers/{SERIAL}", headers=_AUTH).json()
+        if snapshot.get("_raw", {}).get("info", {}).get("module"):
+            return
+        time.sleep(0.02)
+    raise AssertionError("Printer identity discovery timed out")
 
 
 def _poll_terminal(

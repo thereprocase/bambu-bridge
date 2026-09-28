@@ -1,0 +1,48 @@
+/* Gridline adapter: thereprocase.github.io/public/gridline.
+ * Local fonts keep the authenticated dashboard independent of third parties.
+ * Preserve camera, filament swatches and scientific viewer colors.
+ */
+@font-face{font-family:"IBM Plex Sans";src:url("./fonts/IBMPlexSans_400Regular.ttf");font-weight:400;font-display:swap}
+@font-face{font-family:"IBM Plex Sans";src:url("./fonts/IBMPlexSans_600SemiBold.ttf");font-weight:600 900;font-display:swap}
+@font-face{font-family:"IBM Plex Mono";src:url("./fonts/IBMPlexMono_500Medium.ttf");font-weight:400 700;font-display:swap}
+:root{
+ --font:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",monospace;
+ --bg:#181818;--surface:#242424;--panel:#303030;--panel-edge:#666;
+ --text:#fff;--text-dim:#c6c6c6;--amber:#a6b8ff;--accent:#a6b8ff;
+ --signal:#b3261e;--ink:#101010;--state-printing:#a6b8ff;
+ --state-paused:#f0bd55;--state-failed:#ff8a82;--state-idle:#c6c6c6;
+ --state-finished:#7bd69a;--dot-live:#7bd69a;
+ --title:#0000a8;--radius:0px;--radius-sm:0px;--shadow-card:none;
+}
+[data-theme="light"]{
+ --bg:#c6c6c6;--surface:#fff;--panel:#e8e8e8;--panel-edge:#9a9a9a;
+ --text:#101010;--text-dim:#3d3d3d;--amber:#0000a8;--accent:#0000a8;
+ --state-printing:#0000a8;--state-paused:#885700;--state-failed:#b3261e;
+ --state-idle:#505050;--state-finished:#18743a;--state-disconnect:#885700;
+ --dot-live:#18743a;--dot-reconnecting:#885700;--dot-offline:#b3261e;
+}
+.nav,.actionbar,.sheet{backdrop-filter:none;-webkit-backdrop-filter:none}
+.nav__item[aria-current="page"],.nav__item.is-active{background:var(--title);color:white}
+.topbar{background:var(--title);color:white;padding:8px 12px;border:1px solid #000078;flex-wrap:wrap}
+.topbar .printer-picker,.topbar a,.topbar .btn,.topbar .conn{color:white}
+.topbar .printer-picker__chev{color:white}
+.btn--primary{background:var(--title);border-color:var(--title);color:white}
+.btn--danger{background:#b3261e;color:white}
+.card,.glance{background:var(--surface);border:1px solid var(--panel-edge);box-shadow:none}
+.glance{padding:16px;margin-bottom:16px}
+.t-section{font-family:var(--mono);color:var(--text);letter-spacing:.04em}
+.progress,.progress__fill,.native-toggle,.native-step,.native-manual{border-radius:0}
+.progress{background:var(--panel-edge)}
+.native-step__number{background:var(--title);color:white;border-radius:0}
+a:not(.nav__item):not(.btn){text-decoration:underline;text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--state-printing);outline-offset:3px}
+.bridge-strip{position:sticky;top:0;z-index:45;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:stretch;background:var(--panel);border-bottom:1px solid var(--panel-edge);padding-top:env(safe-area-inset-top);font:13px var(--font)}
+.bridge-strip[hidden]{display:none}
+.bridge-strip>span,.bridge-strip>a{display:flex;align-items:center;gap:7px;padding:10px 12px;min-height:44px;border-right:1px solid var(--panel-edge)}
+.bridge-strip>a{margin-left:auto;color:var(--text)}
+.bridge-strip .dot{width:8px;height:8px;border-radius:50%;background:var(--text-dim)}
+.bridge-strip .dot.live{background:var(--dot-live)}
+.camera__overlay{color:#e8e8e8}
+.camera__3d{color:white;background:#181818;border-color:#9a9a9a}
+@media(min-width:900px){.bridge-strip{margin-left:var(--rail-w)}}
+@media(prefers-reduced-motion:reduce){.conn__dot{animation:none}}

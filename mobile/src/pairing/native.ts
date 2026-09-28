@@ -8,6 +8,8 @@ interface NativeBridge {
   claim(base: string, pin: string, secret: string, name: string): Promise<string>;
   request(id: string, url: string, method: string, headers: Record<string, string>, body: string | null,
     timeout: number, binary: boolean): Promise<Result>;
+  downloadNativeBackup(url: string, token: string): Promise<string>;
+  importNativeBackup(url: string, token: string, uri: string): Promise<string>;
   cancelRequest(id: string): void;
   connect(id: string, url: string, token: string): void;
   send(id: string, data: string): void;
@@ -27,6 +29,10 @@ export const configureTransport = (p: PairedProfile | null) =>
   native().configure(p?.baseUrl ?? null, p?.spki ?? null, p?.remoteUrl ?? null);
 export const claimPairing = (base: string, pin: string, secret: string, name: string) =>
   native().claim(base, pin, secret, name);
+export const downloadNativeBackup = (url: string, token: string) =>
+  native().downloadNativeBackup(url, token);
+export const importNativeBackup = (url: string, token: string, uri: string) =>
+  native().importNativeBackup(url, token, uri);
 
 export class PairingSecurityError extends Error {
   constructor() { super("Couldn't verify the paired bridge. Check its identity and pair again."); }

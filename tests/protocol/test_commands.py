@@ -694,67 +694,23 @@ class TestSetAccessoriesNozzle:
 
 
 class TestCalibration:
-    """calibration: any non-zero combination of bits 0-2 accepted (matrix §8).
+    """Pinned Studio command meanings; HTTP controls remain withheld."""
 
-    Valid: 1 (vibration), 2 (bed), 3 (vibration+bed), 4 (flow),
-           5 (vibration+flow), 6 (bed+flow), 7 (all three).
-    Invalid: 0 (no-op), 8+ (bits 3+, X1-only LIDAR).
-    """
-
-    def test_vibration_only(self) -> None:
-        body = _body(commands.calibration(1), "print")
+    @pytest.mark.parametrize("option", [2, 4, 6])
+    def test_bed_vibration_mask(self, option: int) -> None:
+        body = _body(commands.calibration(option), "print")
         assert body["command"] == "calibration"
-        assert body["option"] == 1
+        assert body["option"] == option
+        assert "bed_type" not in body
 
-    def test_bed_level_only(self) -> None:
-        body = _body(commands.calibration(2), "print")
-        assert body["option"] == 2
+    @pytest.mark.parametrize("option", [0, 1, 3, 5, 7, 8, 16, 255])
+    def test_unqualified_bits(self, option: int) -> None:
+        with pytest.raises(ValueError, match="support verification"):
+            commands.calibration(option)
 
-    def test_vibration_and_bed(self) -> None:
-        """Combination 3 = vibration + bed leveling — previously rejected, now accepted."""
-        body = _body(commands.calibration(3), "print")
-        assert body["option"] == 3
-
-    def test_flow_calibration_only(self) -> None:
-        body = _body(commands.calibration(4), "print")
-        assert body["option"] == 4
-
-    def test_vibration_and_flow(self) -> None:
-        """Combination 5 = vibration + flow calibration — previously rejected, now accepted."""
-        body = _body(commands.calibration(5), "print")
-        assert body["option"] == 5
-
-    def test_bed_and_flow(self) -> None:
-        """Combination 6 = bed leveling + flow calibration — previously rejected, now accepted."""
-        body = _body(commands.calibration(6), "print")
-        assert body["option"] == 6
-
-    def test_all_calibrations(self) -> None:
-        body = _body(commands.calibration(7), "print")
-        assert body["option"] == 7
-
-    def test_bed_type_default_is_1(self) -> None:
-        body = _body(commands.calibration(2), "print")
-        assert body["bed_type"] == 1
-
-    def test_custom_bed_type(self) -> None:
-        body = _body(commands.calibration(2, bed_type=2), "print")
-        assert body["bed_type"] == 2
-
-    @pytest.mark.parametrize("bad_option", [0, 8, 16, 255])
-    def test_non_p1s_bits_rejected(self, bad_option: int) -> None:
-        with pytest.raises(ValueError, match="P1S-CONTROL-MATRIX"):
-            commands.calibration(bad_option)
-
-    def test_error_message_names_the_matrix(self) -> None:
-        with pytest.raises(ValueError, match="P1S-CONTROL-MATRIX"):
-            commands.calibration(8)
-
-    def test_zero_rejected(self) -> None:
-        """0 is a no-op and must be rejected explicitly."""
-        with pytest.raises(ValueError, match="P1S-CONTROL-MATRIX"):
-            commands.calibration(0)
-
+    def test_unverified_bed_type(self) -> None:
+        with pytest.raises(ValueError, match="bed-type"):
+            commands.calibration(2, bed_type=2)
 
 # ---------------------------------------------------------------------------
 # Wave-3: extrude/retract builder

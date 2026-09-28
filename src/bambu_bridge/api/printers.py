@@ -58,7 +58,7 @@ class RegisterPrinter(BaseModel):
     its own identity. We accept private IPv4 (the printer's actual home)
     + IPv6 ULA; reject loopback, link-local, multicast, reserved, unspecified.
 
-    `access_code` is bound to the printer's 8-digit format to prevent
+    `access_code` is bound to the printer's 8-character alphanumeric format to prevent
     1MB-body DoS and to refuse obviously-malformed input early.
     """
 
@@ -70,8 +70,8 @@ class RegisterPrinter(BaseModel):
         Field(
             min_length=8,
             max_length=8,
-            pattern=r"^\d{8}$",
-            description="8-digit code from printer Settings ▸ WLAN",
+            pattern=r"^[A-Za-z0-9]{8}$",
+            description="8-character access code from printer Settings ▸ WLAN",
         ),
     ]
     friendly_name: str | None = Field(default=None, min_length=1, max_length=64)
@@ -121,7 +121,7 @@ class UpdatePrinter(BaseModel):
 
     friendly_name: str | None = Field(default=None, min_length=1, max_length=64)
     ip: str | None = Field(default=None, min_length=1, max_length=64)
-    access_code: str | None = Field(default=None, min_length=8, max_length=8, pattern=r"^[0-9]{8}$")
+    access_code: str | None = Field(default=None, min_length=8, max_length=8, pattern=r"^[A-Za-z0-9]{8}$")
 
     @field_validator("ip")
     @classmethod

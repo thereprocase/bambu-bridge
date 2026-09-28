@@ -1,0 +1,56 @@
+name: Checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  bridge:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --frozen --extra dev --python 3.12
+      - run: uv run pytest
+      - run: python3 scripts/privacy_check.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/camera-stream.test.mjs tests/viewer_toolhead_motion.test.cjs tests/viewer_toolhead_state.test.cjs
+  mobile:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test -- --runInBand
+      - run: npx tsc --noEmit
+      - run: npm run lint
+  android:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: npm ci --ignore-scripts
+      - run: >-
+          keytool -genkeypair -keystore android/app/debug.keystore
+          -storepass android -alias androiddebugkey -keypass android
+          -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -validity 10000
+      - run: bash android/gradlew -p android :app:compileDebugKotlin :app:testDebugUnitTest --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a

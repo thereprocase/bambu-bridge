@@ -142,20 +142,13 @@ def _per_slot_types(state: dict[str, Any]) -> dict[int, str]:
     ams = state.get("ams")
     if not isinstance(ams, dict):
         return {}
-    # Try ams.ams[0].tray[] first (the standard P1S layout).
-    units = ams.get("ams")
-    trays: list[Any] = []
-    if isinstance(units, list) and units and isinstance(units[0], dict):
-        trays = units[0].get("tray") or []
-    elif isinstance(ams.get("tray"), list):
-        trays = ams["tray"]
-    result: dict[int, str] = {}
-    for i, t in enumerate(trays):
-        if isinstance(t, dict):
-            tt = t.get("tray_type")
-            if tt and isinstance(tt, str):
-                result[i + 1] = tt  # physical_slot = array_idx + 1
-    return result
+    from bambu_bridge.translate import _ams_slots
+
+    return {
+        slot["physical_slot"]: slot["type"]
+        for slot in _ams_slots(ams, None)
+        if isinstance(slot["type"], str) and slot["type"]
+    }
 
 
 def _deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:

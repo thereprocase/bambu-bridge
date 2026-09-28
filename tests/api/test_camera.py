@@ -42,6 +42,8 @@ def _register(c: TestClient) -> None:
         ).status_code
         == 201
     )
+    # Camera-only fixture has no MQTT peer; provide its known hardware identity.
+    c.app.state.registry.get(SERIAL).model = "P1S"
 
 
 @pytest.mark.asyncio
@@ -85,6 +87,7 @@ async def test_stream_endpoint_yields_framed_jpegs(
         ip="127.0.0.1",
         access_code=ACCESS_CODE,
         friendly_name="Cam",
+        model="P1S",
     )
     try:
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=None)))
@@ -143,7 +146,7 @@ async def test_http_camera_uses_shared_overlay_and_raw_opt_out():
         async def wait_for_frame(self, timeout):
             return b"raw-jpeg"
 
-    service = SimpleNamespace(camera=Raw())
+    service = SimpleNamespace(camera=Raw(), model="P1S")
     registry = SimpleNamespace(get=lambda _: service)
     response = await camera_stream(SERIAL, request, registry)
     assert response.headers["x-camera-overlay"] == "true"

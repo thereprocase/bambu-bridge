@@ -28,7 +28,7 @@ test("checks real read endpoints and reports a completed job without exposing id
     if (path === "/printers") return [];
     if (path.endsWith("/snapshot.jpg")) return { bytes: new Uint8Array([255,216,255,217]).buffer, contentType: "image/jpeg" };
     if (path.endsWith("/viz")) return { bytes: new ArrayBuffer(200), contentType: "text/html" };
-    return { session: { connected: true }, phase: "finished", job: { subtask_name: "private-file" } };
+    return { model: "P1S", session: { connected: true }, phase: "finished", job: { subtask_name: "private-file" } };
   });
   const result = await runDiagnostics("private-printer", () => {});
   expect(result.checks.every(check => check.state === "passed")).toBe(true);
@@ -53,4 +53,27 @@ test("a locally paired bridge cannot be reported as a verified remote route", as
   const result = await runDiagnostics(null, () => {});
   expect(result.checks.find(check => check.name === "Remote route")?.state).toBe("skipped");
   expect(requestExact).toHaveBeenCalledTimes(1);
+});
+
+test("home route timeout is inactive when remote access succeeds", async () => {
+  (requestExact as jest.Mock).mockImplementation(async base => {
+    if (base.includes("home.invalid")) throw new BridgeNetworkError(false);
+    return [];
+  });
+  (request as jest.Mock).mockResolvedValue({ version: "0.6.0" });
+  const report = await runDiagnostics(null, () => {});
+  expect(report.checks.find(check => check.name === "Home network route")).toMatchObject({
+    state: "inactive", detail: "Bridge available through the remote route.",
+  });
+  expect(report.checks.find(check => check.name === "Remote route")?.state).toBe("passed");
+});
+
+test("a working alternate route preserves identity failures for review", async () => {
+  (requestExact as jest.Mock).mockImplementation(async base => {
+    if (base.includes("home.invalid")) throw new PairingSecurityError();
+    return [];
+  });
+  (request as jest.Mock).mockResolvedValue({ version: "0.6.0" });
+  const report = await runDiagnostics(null, () => {});
+  expect(report.checks.find(check => check.name === "Home network route")?.state).toBe("failed");
 });

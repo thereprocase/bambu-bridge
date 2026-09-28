@@ -238,6 +238,7 @@ export default function SettingsScreen() {
     >
       {baseUrl && bearer && <>
         <Link href="/(tabs)/status" replace asChild><Button label="Open dashboard" onPress={() => {}} fullWidth /></Link>
+        <Link href="/native-recovery" asChild><Button label="Bridge queue and recovery" variant="secondary" onPress={() => {}} fullWidth /></Link>
         <ViewingSettings />
       </>}
       {/* Bridge connection ------------------------------------------------ */}
@@ -425,9 +426,8 @@ export default function SettingsScreen() {
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h1, { color: c.text }]}>Printers</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Each printer is added separately. The bridge checks the connection
-          and access code before saving — a wrong IP or access code is caught
-          here, not later.
+          Add each printer with its address and access code. The bridge verifies
+          the connection before saving.
         </Text>
         <Link href="/add-printer" asChild>
           <Button label="Add a printer" onPress={() => {}} fullWidth />

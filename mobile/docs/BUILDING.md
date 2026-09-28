@@ -33,7 +33,7 @@ The keystore file `android/app/release.keystore` must be present on disk but is 
 ## Building a signed release APK
 
 ```sh
-cd /path/to/bambu-bridge-app/android
+cd /path/to/bambu-bridge/mobile/android
 ./gradlew assembleRelease
 ```
 

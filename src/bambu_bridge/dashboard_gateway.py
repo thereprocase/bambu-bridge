@@ -42,12 +42,31 @@ class DashboardGateway:
         headers = {k.lower(): v.decode("latin-1") for k, v in scope["headers"]}
         peer = scope.get("client")
         origin = headers.get(b"origin")
-        trusted = (
+        trusted_transport = (
             peer is not None
             and peer[0] in ("127.0.0.1", "::1")
             and headers.get(b"host") == self.host
-            and headers.get(b"tailscale-user-login") == self.login
             and headers.get(b"x-forwarded-proto") == "https"
+        )
+        authorization = headers.get(b"authorization", "")
+        if (
+            trusted_transport
+            and origin is None
+            and b"sec-fetch-site" not in headers
+            and scope["path"].startswith("/api/v1/")
+            and authorization.lower().startswith("bearer ")
+            and authorization[7:].strip()
+        ):
+            # Native clients carry their own credentials. Let the API validate
+            # them (including revocation); preserve the token and its authority.
+            # Browser identity elevation below remains protected by Origin.
+            child = dict(scope)
+            child["scheme"] = "wss" if scope["type"] == "websocket" else "https"
+            await self.app(child, receive, send)
+            return
+        trusted = (
+            trusted_transport
+            and headers.get(b"tailscale-user-login") == self.login
             and (origin is None or origin == self.origin)
             and (
                 headers.get(b"sec-fetch-site") != "cross-site"

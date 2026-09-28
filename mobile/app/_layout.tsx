@@ -10,6 +10,12 @@ import { Stack, usePathname } from "expo-router";
 import { useEffect, useRef } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { useFonts } from "expo-font";
+import { IBMPlexSans_400Regular } from "@expo-google-fonts/ibm-plex-sans/400Regular";
+import { IBMPlexSans_600SemiBold } from "@expo-google-fonts/ibm-plex-sans/600SemiBold";
+import { IBMPlexSans_700Bold } from "@expo-google-fonts/ibm-plex-sans/700Bold";
+import { IBMPlexMono_500Medium } from "@expo-google-fonts/ibm-plex-mono/500Medium";
+import { StatusBar } from "expo-status-bar";
 
 import { ToastHost } from "../src/components/Toast";
 import { qaLog } from "../src/lib/qalog";
@@ -18,6 +24,8 @@ import { ThemeProvider, useTheme } from "../src/theme/ThemeProvider";
 import { useConnectionLifecycle } from "../src/viewing/lifecycle";
 
 export default function RootLayout() {
+  const [fontsLoaded, fontError] = useFonts({ IBMPlexSans_400Regular, IBMPlexSans_600SemiBold, IBMPlexSans_700Bold, IBMPlexMono_500Medium });
+  if (!fontsLoaded && !fontError) return null;
   return (
     <SafeAreaProvider>
       <ThemeProvider>
@@ -29,7 +37,7 @@ export default function RootLayout() {
 
 function Bootstrap() {
   useConnectionLifecycle();
-  const { c } = useTheme();
+  const { c, mode } = useTheme();
   const bootstrap = useBridgeStore((s) => s.bootstrap);
   const bootstrapped = useBridgeStore((s) => s.bootstrapped);
   const pathname = usePathname();
@@ -60,11 +68,12 @@ function Bootstrap() {
 
   return (
     <View style={{ flex: 1, backgroundColor: c.bg }}>
+      <StatusBar style={mode === "light" ? "dark" : "light"} />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: c.bg },
-          headerTintColor: c.text,
-          headerTitleStyle: { fontFamily: "Inter Tight", fontWeight: "600" },
+          headerStyle: { backgroundColor: c.title },
+          headerTintColor: c.onTitle,
+          headerTitleStyle: { fontFamily: "IBMPlexSans_600SemiBold" },
           contentStyle: { backgroundColor: c.bg },
         }}
       >

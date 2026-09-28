@@ -263,13 +263,13 @@ export function amsUserSetting(
   );
 }
 
-/** Run a calibration routine. option bitmask: 1=vibration, 2=bed level, 4=flow, 7=all. */
-export function calibrate(id: string, option: 1 | 2 | 4 | 7, bed_type?: number) {
+/** Manufacturer bits: 2=bed level, 4=vibration. HTTP availability is gated. */
+export function calibrate(id: string, option: 2 | 4 | 6) {
   return tracked(
     `calibration_${option}`,
     request<{ sent: unknown }>(`/printers/${id}/calibration`, {
       method: "POST",
-      body: bed_type !== undefined ? { option, bed_type } : { option },
+      body: { option },
     }),
   );
 }

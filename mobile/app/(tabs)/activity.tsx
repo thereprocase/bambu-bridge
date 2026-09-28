@@ -12,7 +12,7 @@
  * crash. Same screen post-PR-B will pull both.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 
 import { dismissEvent, listEvents } from "../../src/api/events";
@@ -34,32 +34,46 @@ export default function ActivityScreen() {
   const [persisted, setPersisted] = useState<EventRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [endpointMissing, setEndpointMissing] = useState(false);
+  const requestId = useRef(0);
+  const currentPrinter = useRef(selectedId);
+  currentPrinter.current = selectedId;
+  const [historyPrinter, setHistoryPrinter] = useState<string | null>(null);
 
   async function refresh() {
     if (!selectedId) return;
+    const id = ++requestId.current;
+    const current = () => id === requestId.current && selectedId === currentPrinter.current;
     setLoading(true);
     try {
       const got = await listEvents(selectedId, { limit: 100 });
+      if (!current()) return;
       setPersisted(got);
+      setHistoryPrinter(selectedId);
       setEndpointMissing(false);
     } catch (e) {
+      if (!current()) return;
       if (e instanceof BridgeError && (e.code === "not_found" || e.status === 404)) {
         setEndpointMissing(true);
       } else if (!(e instanceof BridgeNetworkError)) {
         showToast(e instanceof BridgeError ? e.envelope.message : String(e), { severity: "danger" });
       }
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }
 
   useEffect(() => {
+    const requests = requestId;
+    setPersisted([]);
+    setHistoryPrinter(null);
+    setEndpointMissing(false);
     refresh();
+    return () => { requests.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   async function dismiss(ev: EventRow) {
-    if (!selectedId) return;
+    if (!selectedId || selectedId !== historyPrinter) return;
     try {
       await dismissEvent(selectedId, ev.id);
       await refresh();
@@ -120,7 +134,7 @@ export default function ActivityScreen() {
         {!endpointMissing && persisted.length === 0 && !loading && (
           <Text style={[type.small, { color: c.muted }]}>No saved events yet.</Text>
         )}
-        {persisted.map((ev) => (
+        {(historyPrinter === selectedId ? persisted : []).map((ev) => (
           <Pressable
             key={ev.id}
             onLongPress={() => dismiss(ev)}

@@ -1,3 +1,5 @@
+import { CapabilityCard } from "../../src/components/CapabilityCard";
+import { printerCapabilities } from "../../src/lib/capabilities";
 /**
  * Status — live dashboard. The single screen most users open.
  *
@@ -12,7 +14,7 @@
 
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Linking,
@@ -24,19 +26,21 @@ import {
 } from "react-native";
 
 import { printAction, setLight } from "../../src/api/control";
+import { nativeQueue, type NativeQueuePage } from "../../src/api/native";
 import { BridgeError } from "../../src/api/errors";
 import { Button } from "../../src/components/Button";
 import { ProgressBar } from "../../src/components/ProgressBar";
-import { StatusDot } from "../../src/components/StatusDot";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
 import { isSafeBambuWikiUrl, viewOf } from "../../src/lib/snapshot";
+import { printerStateLabels } from "../../src/lib/printerState";
+import { ownerLabel } from "../../src/lib/nativeState";
+import type { PrinterSnapshot } from "../../src/api/types";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
 import { useTheme } from "../../src/theme/ThemeProvider";
 
 import { Camera } from "../../src/viewing/Camera";
-import { useNetStore } from "../../src/store/net";
 import { canViewJob } from "../../src/viewing/job";
 import { MonitorControls } from "../../src/viewing/MonitorControls";
 
@@ -52,19 +56,27 @@ export default function StatusScreen() {
   const printersLoading = usePrintersStore((s) => s.loading);
   const lastFetched = usePrintersStore((s) => s.lastFetched);
   const live = useLiveStore((s) => (selectedId ? s.printers[selectedId] : undefined));
+  const registeredModel = usePrintersStore((s) => s.list.find((p) => p.serial === selectedId)?.model);
+  const capabilities = printerCapabilities(live?.snapshot, registeredModel);
   const status = live?.status ?? "closed";
+  const [, setClock] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, []);
   // `snapshot` is the bridge's §6 translated snapshot, stored at its root by
   // the WS layer. `viewOf` reads the root blocks (`phase`, `headline`,
   // `temps`, `job`, `ams.slots`, …) directly — no `.state` wrapper.
   const view = viewOf((live?.snapshot as any) ?? null);
+  const facts = printerStateLabels((live?.snapshot as unknown as PrinterSnapshot) ?? null, status);
 
   // Fail-safe: if the WS is not open we cannot reliably know the actual phase,
   // so all print-control buttons must be disabled (§G2 requirement). This also
   // handles the cold-launch MMKV-cached state where `status` is "connecting".
-  const wsConnected = status === "open";
+  const wsConnected = facts.live;
 
-  const activePath = useNetStore(s => s.reach);
   const [issuesExpanded, setIssuesExpanded] = useState(true);
+  const [nativeOverview, setNativeOverview] = useState<NativeQueuePage | null>(null);
   const viewAvailable = canViewJob(live?.snapshot ?? null);
 
   // Refresh the registered-printers list on focus — non-blocking, mirroring
@@ -87,6 +99,16 @@ export default function StatusScreen() {
       }
     }, [refreshPrinters]),
   );
+
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    const load = () => { void nativeQueue().then((value) => {
+      if (active) setNativeOverview(value);
+    }).catch(() => { if (active) setNativeOverview(null); }); };
+    load();
+    const timer = setInterval(load, 60_000);
+    return () => { active = false; clearInterval(timer); };
+  }, []));
 
   // Empty list. This is genuinely "none registered" only if we've actually
   // fetched at least once; before that (or if the first fetch failed on a
@@ -136,24 +158,6 @@ export default function StatusScreen() {
   }
 
   const selected = list.find((p) => p.serial === selectedId) ?? list[0];
-  const pathSuffix =
-    status === "open" && (activePath === "lan" || activePath === "remote")
-      ? activePath === "lan" ? " · via LAN" : " · via Tailscale"
-      : "";
-  const statusLabel =
-    status === "open"
-      ? `Connected · ${view.phase}${pathSuffix}`
-      : status === "connecting"
-        ? "Connecting…"
-        : status === "error"
-          ? `Error: ${live?.statusDetail ?? "unknown"}`
-          : "Disconnected";
-  const dot =
-    view.phase === "failed" || status === "error" ? "danger"
-      : view.phase === "paused" ? "warn"
-        : status === "open" ? "ok"
-          : "neutral";
-
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: c.bg }}
@@ -178,10 +182,10 @@ export default function StatusScreen() {
                   paddingHorizontal: space.md,
                   paddingVertical: space.sm,
                   backgroundColor: p.serial === selectedId ? c.accent : c.surface2,
-                  borderRadius: 999,
+                  borderRadius: 0,
                 }}
               >
-                <Text style={{ color: p.serial === selectedId ? "#0a0b0d" : c.text, fontSize: 13 }}>
+                <Text style={{ color: p.serial === selectedId ? c.onAccent : c.text, fontSize: 13 }}>
                   {p.friendly_name}
                 </Text>
               </Pressable>
@@ -189,45 +193,6 @@ export default function StatusScreen() {
           </View>
         </ScrollView>
       )}
-
-      {/* Headline ----------------------------------------------------------- */}
-      <Surface padded style={{ gap: space.md }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-          <StatusDot state={dot} />
-          <Text style={[type.caption, { color: c.muted, textTransform: "uppercase", flex: 1 }]}>
-            {selected.friendly_name} · {statusLabel}
-          </Text>
-        </View>
-        <Text style={[type.h1, { color: c.text }]}>{view.statusLine}</Text>
-        {view.subtitle && (
-          <Text style={[type.body, { color: c.muted }]}>{view.subtitle}</Text>
-        )}
-        {view.progress != null && (
-          <View style={{ gap: space.sm }}>
-            <ProgressBar value={view.progress} />
-            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-              <Text style={[type.caption, { color: c.muted }]}>
-                {view.progress.toFixed(1)}%
-              </Text>
-              {view.layer != null && view.totalLayers != null && (
-                <Text style={[type.caption, { color: c.muted }]}>
-                  layer {view.layer}/{view.totalLayers}
-                </Text>
-              )}
-              {view.timeLeftMin != null && (
-                <Text style={[type.caption, { color: c.muted }]}>
-                  {formatMin(view.timeLeftMin)} left
-                </Text>
-              )}
-              {view.etaTimeStr != null && (
-                <Text style={[type.caption, { color: c.muted }]}>
-                  done ~{view.etaTimeStr}
-                </Text>
-              )}
-            </View>
-          </View>
-        )}
-      </Surface>
 
       {/* Issues card — HMS warnings + print_error + job_anomaly, shown only
           when at least one of these is present. job_anomaly is always warn
@@ -248,7 +213,7 @@ export default function StatusScreen() {
               }
             />
             <Text style={[type.h2, { color: c.text, flex: 1 }]}>
-              Issues ({view.hms.length + (view.printErrorFull ? 1 : 0) + (view.jobAnomaly ? 1 : 0)})
+              {facts.live ? "Issues" : "Last reported issues"} ({view.hms.length + (view.printErrorFull ? 1 : 0) + (view.jobAnomaly ? 1 : 0)})
             </Text>
             <Ionicons
               name={issuesExpanded ? "chevron-up" : "chevron-down"}
@@ -302,12 +267,53 @@ export default function StatusScreen() {
           <Button label="Open fullscreen camera" onPress={() => router.push({ pathname: "/camera", params: { printer: selected.serial } })} />
         </View>
       </Surface>
-      {selectedId && <MonitorControls printer={selectedId} />}
+      {facts.live && ["printing", "paused", "preparing"].includes(view.phase) && view.progress != null && (
+        <Surface padded style={{ gap: space.sm }}>
+          <Text style={[type.h2, { color: c.text }]}>Print progress</Text>
+          <View style={{ gap: space.sm }}>
+            <ProgressBar value={view.progress} />
+            <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+              <Text style={[type.caption, { color: c.muted }]}>
+                {view.progress.toFixed(1)}%
+              </Text>
+              {view.layer != null && view.totalLayers != null && (
+                <Text style={[type.caption, { color: c.muted }]}>
+                  layer {view.layer}/{view.totalLayers}
+                </Text>
+              )}
+              {view.timeLeftMin != null && (
+                <Text style={[type.caption, { color: c.muted }]}>
+                  {formatMin(view.timeLeftMin)} left
+                </Text>
+              )}
+              {view.etaTimeStr != null && (
+                <Text style={[type.caption, { color: c.muted }]}>
+                  done ~{view.etaTimeStr}
+                </Text>
+              )}
+            </View>
+          </View>
+        </Surface>
+      )}
 
-      {/* 3D viewer — sits with the camera as the other "see the print" view.
-          Enabled for available current or completed job data; the
-          disabled state matches the Quick-actions dimmed-button idiom. Opens
-          the bridge's WebGL viewer in-app (native WebView, app/viewer.tsx). */}
+      {/* Temps + fans ------------------------------------------------------- */}
+      <Surface padded style={{ gap: space.md }}>
+        <Text style={[type.h2, { color: c.text }]}>Temperatures &amp; fans</Text>
+        <Row label="Nozzle" actual={view.nozzleActual} target={view.nozzleTarget} unit="°C" />
+        <Row label="Bed" actual={view.bedActual} target={view.bedTarget} unit="°C" />
+        {capabilities.model !== "P1S" && view.chamberTemp != null && (
+          <Row label="Chamber" actual={view.chamberTemp} target={null} unit="°C" />
+        )}
+        {view.fanPart != null && (
+          <Row label="Part fan" actual={view.fanPart} target={null} unit="%" />
+        )}
+        {view.fanAux != null && (
+          <Row label="Aux fan" actual={view.fanAux} target={null} unit="%" />
+        )}
+        {view.fanChamber != null && <Row label="Chamber fan" actual={view.fanChamber} target={null} unit="%" />}
+      </Surface>
+
+      {/* 3D viewer ---------------------------------------------------------- */}
       <Surface padded style={{ gap: space.sm }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <Ionicons name="cube-outline" size={18} color={viewAvailable ? c.text : c.muted} />
@@ -321,34 +327,20 @@ export default function StatusScreen() {
         )}
       </Surface>
 
-      {/* Temps + fans ------------------------------------------------------- */}
-      <Surface padded style={{ gap: space.md }}>
-        <Text style={[type.h2, { color: c.text }]}>Temperatures &amp; fans</Text>
-        <Row label="Nozzle" actual={view.nozzleActual} target={view.nozzleTarget} unit="°C" />
-        <Row label="Bed" actual={view.bedActual} target={view.bedTarget} unit="°C" />
-        {view.chamberTemp != null && (
-          <Row label="Chamber" actual={view.chamberTemp} target={null} unit="°C" />
-        )}
-        {view.fanPart != null && (
-          <Row label="Part fan" actual={view.fanPart} target={null} unit="%" />
-        )}
-        {view.fanAux != null && (
-          <Row label="Aux fan" actual={view.fanAux} target={null} unit="%" />
-        )}
-      </Surface>
-
       {view.amsPresent && (
         <Surface padded style={{ gap: space.sm }}>
           <Text style={[type.h2, { color: c.text }]}>AMS environment</Text>
           {view.amsUnits.map((unit, i) => (
             <Text key={unit.id} style={[type.small, { color: c.muted }]}>
-              {live?.status !== "open" ? "Last known · " : ""}AMS {Number(unit.id) + 1 || i + 1} · {unit.humidityPct == null ? "Humidity unavailable" : `${unit.humidityPct}% RH`} · {unit.temperatureC == null ? "Temperature unavailable" : `${unit.temperatureC.toFixed(1)} °C`}
+              {live?.status !== "open" ? "Last known · " : ""}AMS {Number(unit.id) + 1 || i + 1} · {unit.humidityPct != null ? `${unit.humidityPct}% RH` : unit.humidityLevel != null ? `Humidity level ${unit.humidityLevel}/5` : "Humidity unknown"} · {unit.temperatureC == null ? "Temperature unavailable" : `${unit.temperatureC.toFixed(1)} °C`}
             </Text>
           ))}
         </Surface>
       )}
 
       {/* Quick actions ------------------------------------------------------ */}
+      {capabilities.get("core").available && (
+      <CapabilityCard title="Quick actions" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.sm }}>
         <Text style={[type.h2, { color: c.text }]}>Quick actions</Text>
         <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
@@ -417,12 +409,28 @@ export default function StatusScreen() {
             </Text>
           )}
       </Surface>
+      </CapabilityCard>
+      )}
+
+      {selectedId && <MonitorControls printer={selectedId} />}
+
+      <Surface padded style={{ gap: space.sm }}>
+        <Text style={[type.h2, { color: c.text }]}>Bridge print starts</Text>
+        {nativeOverview && nativeOverview.printer_id === selectedId ? (
+          <Text style={[type.body, { color: nativeOverview.review_count ? c.danger : c.muted }]}>
+            {ownerLabel(nativeOverview)}. {" "}
+            {nativeOverview.review_count} receipts need review.
+          </Text>
+        ) : <Text style={[type.body, { color: c.muted }]}>Queue status unavailable. Open it to retry.</Text>}
+        <Button label="Open Bridge queue" variant="secondary" onPress={() => router.push("/native-recovery")} />
+      </Surface>
+      {!capabilities.get("core").available && <CapabilityCard title="Quick actions" availability={capabilities.get("core")}>{null}</CapabilityCard>}
     </ScrollView>
   );
 
   function safeCall(fn: () => Promise<unknown>, okMsg: string) {
     fn()
-      .then(() => showToast(okMsg, { severity: "success" }))
+      .then(() => showToast("Command sent", { severity: "success" }))
       .catch((e) =>
         showToast(e instanceof BridgeError ? e.envelope.message : String(e), { severity: "danger" })
       );

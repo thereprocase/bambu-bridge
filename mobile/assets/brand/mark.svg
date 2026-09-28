@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+  <title>Bambu Bridge — Gridline printer mark</title>
+  <path fill="#C6C6C6" fill-rule="evenodd" d="M32 30h44v48H32z M36 40v34h36V40z"/>
+  <path fill="#FFFFFF" d="M50 40h8v7l-4 4-4-4z M40 67h28v4H40z"/>
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M43 54h22v10h-6v-5H49v5h-6z"/>
+  <path fill="#0000A8" d="M36 34h16v2H36z M68 34h4v2h-4z"/>
+</svg>

@@ -66,7 +66,11 @@ def _slice_info_arity(xml_bytes: bytes) -> tuple[int, int, set[int]]:
 
 
 def validate(
-    container: bytes, *, expected_ams_mapping: list[int] | None = None
+    container: bytes,
+    *,
+    expected_ams_mapping: list[int] | None = None,
+    expected_model: str | None = None,
+    expected_nozzle: float | None = None,
 ) -> ValidationReport:
     r = ValidationReport()
 
@@ -125,7 +129,21 @@ def validate(
     fil_n: int | None = None
     if slice_xml:
         try:
+            meta = {m.get("key"): m.get("value") for m in ET.fromstring(slice_xml).iter("metadata")}
+            if expected_model is not None and meta.get("printer_model_id") != expected_model:
+                r.issues.append("G6 requires P1S (C12) slice metadata")
+            if expected_model is not None and meta.get("nozzle_diameters") not in {
+                "0.2",
+                "0.4",
+                "0.6",
+                "0.8",
+            }:
+                r.issues.append("G6 requires single-nozzle slice metadata")
+            if expected_nozzle is not None and meta.get("nozzle_diameters") != str(expected_nozzle):
+                r.issues.append("G6 sliced nozzle diameter differs from the reported nozzle")
             maps_n, fil_n, fl_idxs = _slice_info_arity(slice_xml)
+            if expected_model is not None and expected_ams_mapping is None and fil_n > 1:
+                r.issues.append("G6 multi-filament files require a complete filament mapping")
         except ET.ParseError as exc:
             r.issues.append(f"G5 slice_info.config not parseable: {exc}")
             fil_n = None

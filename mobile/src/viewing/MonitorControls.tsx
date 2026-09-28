@@ -28,13 +28,14 @@ export function MonitorControls({ printer }: { printer: string }) {
     } catch (e) { setError(e instanceof Error ? e.message : "Couldn't change monitoring. Try again."); }
     finally { setBusy(false); }
   }
-  const state = !status?.running ? "Off" : status.printer !== printer ? "Monitoring another printer"
+  const state = status?.running && !status.alertsAllowed ? "Notification permission required"
+    : !status?.running ? "Off" : status.printer !== printer ? `Monitoring ${status.printer}`
     : status.state === "connected" ? "On · connected" : status.state === "printer_offline" ? "On · printer offline"
     : "On · reconnecting; alerts may be delayed";
   return <Surface padded style={{ gap: space.sm }}>
     <Text style={[type.h2, { color: c.text }]}>Print alerts · {state}</Text>
-    <Text style={[type.small, { color: c.muted }]}>Get notified when a print finishes, pauses, or reports an error—even with the app in the background. Monitoring uses a persistent notification; the camera stays off.</Text>
-    <Button label={busy ? "Updating…" : status?.running ? "Stop monitoring" : "Enable print alerts"} disabled={busy} onPress={() => { void toggle(); }} />
+    <Text style={[type.small, { color: c.muted }]}>Print completion, pause and error alerts. Background monitoring uses a persistent notification.</Text>
+    <Button label={busy ? "Updating…" : status?.running ? `Stop monitoring ${status.printer}` : "Enable print alerts"} disabled={busy} onPress={() => { void toggle(); }} />
     {status?.running && status.batteryRestricted && <>
       <Text style={[type.small, { color: c.muted }]}>Android may delay alerts during deep sleep. Allow the background connection for more reliable alerts while locked.</Text>
       <Button label="Allow background connection" variant="secondary" onPress={() => viewingNative.batterySettings()} />

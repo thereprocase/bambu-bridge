@@ -52,7 +52,7 @@ def _wait_connected(c: TestClient, timeout: float = 10.0) -> None:
     while time.time() < deadline:
         r = c.get(f"/api/v1/printers/{SERIAL}", headers=_AUTH)
         # PR B: `connected` moved under the translated `session` block.
-        if r.status_code == 200 and r.json().get("session", {}).get("connected"):
+        if r.status_code == 200 and r.json().get("session", {}).get("connected") and r.json().get("_raw", {}).get("info", {}).get("module"):
             return
         time.sleep(0.05)
     raise AssertionError("printer never connected")
@@ -72,8 +72,9 @@ def _wait_request(
 
 @pytest.mark.asyncio
 async def test_typed_and_raw_commands_reach_the_printer(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
+    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BRIDGE_ENABLE_RAW_GCODE", "1")
     app = build_app(tmp_path / "ctl.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
@@ -223,6 +224,11 @@ async def test_work_light_reaches_printer(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
     app = build_app(tmp_path / "wl.db", mqtt_port=mqtt_broker)
+    # Explicitly simulate an advertised work-light node; absent-node refusal
+    # is covered by test_capability_gate.
+    mock_printer._report = {**mock_printer._report, "print": {
+        **mock_printer._report["print"], "lights_report": [{"node": "work_light", "mode": "off"}]
+    }}
 
     def run() -> None:
         with TestClient(app) as c:
@@ -448,9 +454,10 @@ async def test_nozzle_clamp_hardened_steel(
 
 @pytest.mark.asyncio
 async def test_gcode_line_4kb_cap(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
+    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Lines over 4 KB are rejected at the API layer with 422."""
+    monkeypatch.setenv("BRIDGE_ENABLE_RAW_GCODE", "1")
     app = build_app(tmp_path / "gcap.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
@@ -481,8 +488,9 @@ async def test_gcode_line_4kb_cap(
 
 @pytest.mark.asyncio
 async def test_raw_command_params_guard(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
+    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("BRIDGE_ENABLE_RAW_GCODE", "1")
     """_check_raw_params rejects oversized or too-deeply-nested params with 422."""
     app = build_app(tmp_path / "rawguard.db", mqtt_port=mqtt_broker)
 

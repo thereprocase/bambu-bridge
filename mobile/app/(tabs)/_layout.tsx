@@ -12,6 +12,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { Link, Redirect, Tabs } from "expo-router";
 import { useEffect } from "react";
 import { Pressable, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { ConnectionStrip } from "../../src/components/ConnectionStrip";
 
 import { ReachabilityBanner } from "../../src/components/ReachabilityBanner";
 import { useBridgeStore } from "../../src/store/bridge";
@@ -43,26 +45,38 @@ export default function TabsLayout() {
   if (!baseUrl || !bearer) return <Redirect href="/settings" />;
 
   return (
-    <View style={{ flex: 1 }}>
+    <SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: c.surface2 }}>
+      <ConnectionStrip />
       <ReachabilityBanner />
     <Tabs
       screenOptions={{
-        headerStyle: { backgroundColor: c.bg },
-        headerTintColor: c.text,
+        headerStyle: { backgroundColor: c.title },
+        headerStatusBarHeight: 0,
+        headerTintColor: c.onTitle,
+        headerTitleStyle: { fontFamily: "IBMPlexSans_600SemiBold" },
+        tabBarLabelStyle: { fontFamily: "IBMPlexSans_600SemiBold" },
         headerShadowVisible: false,
         tabBarStyle: {
-          backgroundColor: c.surface,
+          backgroundColor: c.surface2,
           borderTopColor: c.borderSoft,
         },
-        tabBarActiveTintColor: c.accent,
+        tabBarActiveTintColor: c.onTitle,
+        tabBarActiveBackgroundColor: c.title,
         tabBarInactiveTintColor: c.muted,
-        headerRight: () => (
-          <Link href="/settings" asChild>
-            <Pressable hitSlop={12} style={{ paddingHorizontal: 16 }}>
-              <Ionicons name="settings-outline" size={22} color={c.text} />
+        headerRight: () => <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Link href="/native-recovery" asChild>
+            <Pressable accessibilityRole="button" accessibilityLabel="Bridge queue" hitSlop={12}
+              style={{ paddingHorizontal: 12 }}>
+              <Ionicons name="list-outline" size={24} color={c.onTitle} />
             </Pressable>
           </Link>
-        ),
+          <Link href="/settings" asChild>
+            <Pressable accessibilityRole="button" accessibilityLabel="Settings" hitSlop={12}
+              style={{ paddingHorizontal: 16 }}>
+              <Ionicons name="settings-outline" size={22} color={c.onTitle} />
+            </Pressable>
+          </Link>
+        </View>,
       }}
     >
       <Tabs.Screen
@@ -108,6 +122,6 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
-    </View>
+    </SafeAreaView>
   );
 }

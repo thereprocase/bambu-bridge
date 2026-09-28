@@ -91,7 +91,7 @@ def test_delete_unknown_printer_404(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("slot", [0, 5, 99, -1])
+@pytest.mark.parametrize("slot", [0, 17, 99, -1])
 def test_put_invalid_slot_422(tmp_path: Path, slot: int) -> None:
     with TestClient(build_app(tmp_path / f"fil-s{slot}.db")) as c:
         _register(c)
@@ -99,7 +99,7 @@ def test_put_invalid_slot_422(tmp_path: Path, slot: int) -> None:
         assert r.status_code == 422
 
 
-@pytest.mark.parametrize("slot", [0, 5])
+@pytest.mark.parametrize("slot", [0, 17])
 def test_delete_invalid_slot_422(tmp_path: Path, slot: int) -> None:
     with TestClient(build_app(tmp_path / f"fil-d{slot}.db")) as c:
         _register(c)

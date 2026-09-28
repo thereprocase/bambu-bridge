@@ -49,11 +49,11 @@ def _parse_ams(raw: str | None) -> list[int] | None:
 
 
 _GATE_CATEGORY = {
-    "G1": "container",   # zip / file format
-    "G2": "members",     # required entries present
-    "G3": "checksum",    # md5 integrity
-    "G4": "thermal",     # safe temperature range
-    "G5": "ams",         # filament / AMS mapping coherence
+    "G1": "container",  # zip / file format
+    "G2": "members",  # required entries present
+    "G3": "checksum",  # md5 integrity
+    "G4": "thermal",  # safe temperature range
+    "G5": "ams",  # filament / AMS mapping coherence
 }
 
 
@@ -65,9 +65,7 @@ def _structure_issues(raw_issues: list[str]) -> list[dict[str, str]]:
     for line in raw_issues:
         head, _, rest = line.partition(" ")
         if head in _GATE_CATEGORY:
-            out.append(
-                {"code": head, "category": _GATE_CATEGORY[head], "message": rest}
-            )
+            out.append({"code": head, "category": _GATE_CATEGORY[head], "message": rest})
         else:
             out.append({"code": "unknown", "category": "validate", "message": line})
     return out
@@ -91,9 +89,23 @@ async def submit_job(
     belt-and-suspenders against any future async re-entry.)
     """
     name = file.filename or "upload.3mf"
+    from bambu_bridge.api.capabilities import fresh_state, reported_nozzle, require_p1s, unavailable
+
+    try:
+        service = registry.get(printer_id)
+    except PrinterNotFoundError:
+        return api_errors.not_found("printer", printer_id)  # type: ignore[return-value]
+    require_p1s(service)
+    if fresh_state(service) not in {"IDLE", "FINISH"}:
+        unavailable("Printer must be idle before starting a file")
     data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
-    report = slice_validate(data, expected_ams_mapping=ams)
+    report = slice_validate(
+        data,
+        expected_ams_mapping=ams,
+        expected_model="C12",
+        expected_nozzle=reported_nozzle(service),
+    )
     if not report.ok:
         return api_errors.envelope(  # type: ignore[return-value]
             error=api_errors.ERR_INVALID_3MF,
@@ -132,15 +144,11 @@ async def list_jobs(
 
 
 @router.get("/jobs/{job_id}")
-async def get_job(
-    job_id: str, jobs: JobManager = Depends(get_jobs)
-) -> dict[str, Any]:
+async def get_job(job_id: str, jobs: JobManager = Depends(get_jobs)) -> dict[str, Any]:
     """Job detail with its full event log."""
     job = await jobs.get(job_id)
     if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found")
     return {
         "job": job.model_dump(mode="json"),
         "events": await jobs.events_for(job_id),
@@ -148,9 +156,7 @@ async def get_job(
 
 
 @router.post("/jobs/{job_id}/cancel")
-async def cancel_job(
-    job_id: str, jobs: JobManager = Depends(get_jobs)
-) -> dict[str, Any]:
+async def cancel_job(job_id: str, jobs: JobManager = Depends(get_jobs)) -> dict[str, Any]:
     try:
         job = await jobs.cancel(job_id)
     except JobNotFoundError as exc:

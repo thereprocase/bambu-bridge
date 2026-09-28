@@ -60,7 +60,7 @@ export default function PairScreen() {
   return <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, gap: space.lg }}>
     <Stack.Screen options={{ title: "Pair your bridge" }} />
     <Surface padded style={{ gap: space.md }}>
-      <Text style={[type.h1, { color: c.text }]}>Connect once. Stay private.</Text>
+      <Text style={[type.h1, { color: c.text }]}>Pair this phone</Text>
       <Text style={[type.body, { color: c.muted }]}>Connect to your home Wi-Fi and scan the pairing code displayed by your bridge installer. Your phone will verify the bridge before connecting.</Text>
       {!invitation && <>
         <Button label="Scan QR code" onPress={async () => {

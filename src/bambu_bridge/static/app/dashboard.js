@@ -23,6 +23,7 @@
 
 import { el, clear, fmtMinutes, slotLabel, confirmSheet, toast, banner } from './ui.js';
 import { mountInto as mountCamera, open3dViewer } from './camera.js';
+import { printerStateLabels } from './printer-state.js';
 
 export function mount(root, app) {
   const { store, ws, api } = app;
@@ -100,7 +101,7 @@ export function mount(root, app) {
   // ── live state ──────────────────────────────────────────────────────────────
   let conn = null;
   let unsub = null;
-  let staleTimer = null;        // ticks "last update Xs ago" while disconnected
+  let statusTick = null;        // refresh freshness labels even without new telemetry
   let busy = false;             // an action POST is in flight (debounce taps)
 
   // ── connection dot + banner (§7.1) ──────────────────────────────────────────
@@ -118,9 +119,9 @@ export function mount(root, app) {
     if (lbl) lbl.textContent = labelText;
   }
 
-  function renderBanner(vm) {
+  function renderBanner(vm, facts) {
     clear(bannerHost);
-    if (vm.connected) return;
+    if (facts.live) return;
     const ago = vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt) : null;
     if (!everConnected && !vm.hasData) {
       // never reached: treat as no-bridge until we prove otherwise.
@@ -129,7 +130,7 @@ export function mount(root, app) {
       return;
     }
     // reconnecting: WS dropped, retrying. Keep last-known values dimmed.
-    const msg = ago != null ? `Reconnecting… Last update ${ago} s ago` : 'Reconnecting…';
+    const msg = ago != null ? `${facts.connection} · Last update ${ago} s ago` : facts.connection;
     bannerHost.appendChild(banner(msg, 'amber', { label: 'Retry', onClick: reconnect }));
   }
 
@@ -146,17 +147,19 @@ export function mount(root, app) {
 
   function renderGlance(vm) {
     clear(glance);
+    const facts = printerStateLabels(store.current(pid), vm.connected);
 
     // status word — color by phase, but only when connected (disconnected
     // override shows "Reconnecting…" with no phase color).
-    const statusCls = vm.connected ? (PHASE_STATUS_CLASS[vm.phase] || '') : '';
-    glance.appendChild(el('div', { class: 'glance__status ' + statusCls, text: vm.statusTitle }));
-    if (vm.statusSubtitle) {
-      glance.appendChild(el('div', { class: 'glance__subtask', text: vm.statusSubtitle }));
-    }
+    const statusCls = facts.live ? (PHASE_STATUS_CLASS[vm.phase] || '') : '';
+    glance.appendChild(el('div', { class: 'glance__status ' + statusCls, text: facts.activity }));
+    glance.appendChild(el('div', { class: 'glance__subtask',
+      text: `Power: ${facts.power} · Connection: ${facts.connection}` }));
+    glance.appendChild(el('div', { class: 'glance__subtask',
+      text: `Issues: ${facts.live ? facts.issues.join(' · ') || 'None' : 'Unknown'}` }));
 
     // hero percent + time-left — ONLY when printing (showPercent gates it).
-    if (vm.showPercent) {
+    if (facts.live && vm.showPercent) {
       const pctText = vm.percent == null ? '—' : `${Math.round(vm.percent)} %`;
       glance.appendChild(el('div', { class: 'glance__hero' }, [
         el('div', { class: 'glance__pct live-num', text: pctText }),
@@ -175,11 +178,11 @@ export function mount(root, app) {
     // progress bar gated on the indicator (§3.1 mapping):
     //   progress -> filled bar; indeterminate -> shimmer; amber/green/red ->
     //   color token w/ a thin filled bar; none -> no bar.
-    const bar = buildProgressBar(vm);
+    const bar = facts.live ? buildProgressBar(vm) : null;
     if (bar) glance.appendChild(bar);
 
     // grey live numbers when not connected (never-show-stale).
-    glance.classList.toggle('is-stale', !vm.connected);
+    glance.classList.toggle('is-stale', !facts.live);
   }
 
   function buildProgressBar(vm) {
@@ -479,30 +482,31 @@ export function mount(root, app) {
   // ── the render pass (subscribed to the store) ────────────────────────────────
   function render() {
     const vm = store.viewModel(pid);
+    const facts = printerStateLabels(store.current(pid), vm.connected);
+    const safeVm = facts.live ? vm : { ...vm, connected: false, showPercent: false };
 
     // header title (friendly name from the snapshot, or the picker).
     renderHeader(vm);
 
     // connection dot.
-    if (vm.connected) {
+    if (facts.live) {
       everConnected = true;
       setConn('live', 'live');
+    } else if (vm.connected) {
+      everConnected = true;
+      setConn('offline', facts.connection.toLowerCase());
     } else if (everConnected || vm.hasData) {
       setConn('reconnecting', 'reconnecting');
     } else {
       setConn('nobridge', 'no bridge');
     }
 
-    renderBanner(vm);
+    renderBanner(vm, facts);
     renderGlance(vm);
-    renderTemps(vm);
-    renderFans(vm);
-    renderAms(vm);
-    renderActionBar(vm);
-
-    // keep the "last update Xs ago" ticking while disconnected.
-    if (!vm.connected) startStaleTicker();
-    else stopStaleTicker();
+    renderTemps(safeVm);
+    renderFans(safeVm);
+    renderAms(safeVm);
+    renderActionBar(safeVm);
   }
 
   function renderHeader(vm) {
@@ -561,24 +565,6 @@ export function mount(root, app) {
     location.reload();
   }
 
-  // ── stale ticker ─────────────────────────────────────────────────────────────
-  function startStaleTicker() {
-    if (staleTimer) return;
-    staleTimer = setInterval(() => {
-      const vm = store.viewModel(pid);
-      if (vm.connected) { stopStaleTicker(); return; }
-      renderBanner(vm);
-      // also refresh the disconnected subtitle in the glance.
-      const sub = glance.querySelector('.glance__subtask');
-      if (sub && !vm.connected && vm.lastTelemetryAt) {
-        sub.textContent = `Last update ${store.secsAgo(vm.lastTelemetryAt)} s ago`;
-      }
-    }, 1000);
-  }
-  function stopStaleTicker() {
-    if (staleTimer) { clearInterval(staleTimer); staleTimer = null; }
-  }
-
   // ── WS lifecycle ─────────────────────────────────────────────────────────────
   function openWs() {
     conn = ws.connectStatus(pid, {
@@ -616,6 +602,7 @@ export function mount(root, app) {
   unsub = store.subscribe(render);
   openWs();
   render();
+  statusTick = setInterval(render, 5000);
   loadRecent();
 
   // refresh the printer list so the picker shows up if >1 (best-effort).
@@ -626,7 +613,7 @@ export function mount(root, app) {
   return function unmount() {
     if (conn) { try { conn.close(); } catch { /* */ } conn = null; }
     if (unsub) { unsub(); unsub = null; }
-    stopStaleTicker();
+    if (statusTick) clearInterval(statusTick);
     camera.destroy();
   };
 }

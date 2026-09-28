@@ -10,13 +10,18 @@ The redesigned guard dead-reckons position in the bridge:
   * unknown position  → REJECT every jog (fail closed; re-home to recover).
   * known position    → clamp the dead-reckoned result to the envelope.
 
+These tests isolate the dormant handler's inner guards. The public HTTP
+capability gate withholds motion; test_capability_gate.py exercises that gate
+without overrides. Injected positions below are test assumptions, not a claim
+that publishing a command establishes physical position.
+
 Invariants exercised here:
   1. ``jog_step_not_allowed`` — 422 when distance_mm ∉ {1, 10, 50}.
   2. ``jog_not_homed``        — 409 when home_flag absent / axis bit unset.
   3. unknown-position fail-closed — 409 even when homed, for *any* direction,
      including the gap-closing Z- jog that crashed the bed.
-  4. dead-reckon — a successful ``/home`` seeds position; jogs advance it and
-     clamp to [SAFE_Z_FLOOR, 256]; the exact 4×Z-50 crash sequence is stopped.
+  4. dead-reckon — ``/home`` publication leaves position unknown. Tests inject
+     an estimate to exercise clamping and stop the exact 4×Z-50 crash sequence.
   5. desync — a disconnect resets the estimate → subsequent jog rejected.
 
 State injection strategy: ``home_flag`` is injected directly into ``_state``
@@ -46,11 +51,18 @@ from tests.conftest import (
     API_KEY,
     SERIAL,
     MockPrinter,
-    build_app,
+    build_app as _build_app,
     patch_discovery_ok,
 )
 
 _AUTH = {"Authorization": f"Bearer {API_KEY}"}
+
+
+def build_app(*args: Any, **kwargs: Any) -> Any:
+    from bambu_bridge.api.capabilities import control_capability_gate
+    app = _build_app(*args, **kwargs)
+    app.dependency_overrides[control_capability_gate] = lambda: None
+    return app
 
 
 @pytest.fixture(autouse=True)
@@ -332,17 +344,17 @@ async def test_unknown_position_xy_rejected(
 
 
 # --------------------------------------------------------------------------- #
-# 4. Dead-reckon: /home seeds position, jogs advance & clamp it
+# 4. Publication leaves position unknown; injected estimates test the envelope
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_home_seeds_known_position(
+async def test_home_publish_leaves_position_unknown(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """A successful POST /home sets the bridge's dead-reckon estimate to known.
+    """A successful POST /home leaves the position estimate unknown.
 
-    Post-home Z is the most-pessimistic safe value (gap closed, Z=0). A
+    An injected Z estimate uses the most-pessimistic value (gap closed, Z=0). A
     gap-opening Z+ jog is then allowed; a gap-closing Z- jog from Z=0 is
     refused (would drive below the bed-crash floor).
     """
@@ -357,7 +369,10 @@ async def test_home_seeds_known_position(
             assert _service(app).tracked_position("Z") is None
             r = c.post(f"/api/v1/printers/{SERIAL}/home", headers=_AUTH)
             assert r.status_code == 200, r.text
-            assert _service(app).tracked_position("Z") == 0.0
+            assert _service(app).tracked_position("Z") is None
+            # Explicit fixture injection for the remaining envelope assertions.
+            # A publish response above intentionally leaves position unknown.
+            _service(app).mark_homed()
 
             # Gap-opening Z+ from the floor is allowed (0 → 10, inside [0,256]).
             r = c.post(

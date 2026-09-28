@@ -105,9 +105,7 @@ async def list_queue(
     return [i.model_dump(mode="json") for i in items]
 
 
-@router.post(
-    "/printers/{printer_id}/queue", status_code=status.HTTP_201_CREATED
-)
+@router.post("/printers/{printer_id}/queue", status_code=status.HTTP_201_CREATED)
 async def add_to_queue(
     printer_id: str,
     body: AddQueueItem,
@@ -152,9 +150,7 @@ async def get_queue_item(item_id: str, request: Request) -> Any:
 
 
 @router.patch("/queue/{item_id}")
-async def reorder_queue_item(
-    item_id: str, body: ReorderQueueItem, request: Request
-) -> Any:
+async def reorder_queue_item(item_id: str, body: ReorderQueueItem, request: Request) -> Any:
     updated = await _queue_repo(request).reorder(item_id, body.position)
     if updated is None:
         return errors.not_found("queue item", item_id)
@@ -169,9 +165,7 @@ async def delete_queue_item(item_id: str, request: Request) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post(
-    "/queue/{item_id}/start", status_code=status.HTTP_201_CREATED
-)
+@router.post("/queue/{item_id}/start", status_code=status.HTTP_201_CREATED)
 async def start_queue_item(
     item_id: str,
     request: Request,
@@ -189,6 +183,11 @@ async def start_queue_item(
         await repo.delete(item_id)
         return errors.not_found("printer", item.printer_id)
     # Re-validate ams_mapping at start time in case slot range tightened.
+    from bambu_bridge.api.capabilities import fresh_state, reported_nozzle, require_p1s, unavailable
+
+    require_p1s(service)
+    if fresh_state(service) not in {"IDLE", "FINISH"}:
+        unavailable("Printer must be idle before starting a stored file")
     try:
         _validate_ams(item.ams_mapping)
     except _SlotError as exc:
@@ -221,6 +220,16 @@ async def start_queue_item(
             context={"printer_id": item.printer_id, "file_name": item.file_name},
             raw={"exc_type": type(exc).__name__, "exc_str": str(exc) or repr(exc)},
         )
+    from bambu_bridge.slicedoc import validate
+
+    report = validate(
+        data,
+        expected_ams_mapping=item.ams_mapping,
+        expected_model="C12",
+        expected_nozzle=reported_nozzle(service),
+    )
+    if not report.ok:
+        return errors.invalid_input("; ".join(report.issues))
     job = await _job_manager(request).submit(
         item.printer_id,
         data,

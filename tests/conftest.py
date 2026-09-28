@@ -172,6 +172,7 @@ SAMPLE_PUSH_STATUS: dict[str, Any] = {
         "layer_num": 120,
         "total_layer_num": 285,
         "nozzle_temper": 219.8,
+        "nozzle_diameter": "0.4",
         "nozzle_target_temper": 220.0,
         "bed_temper": 59.9,
         "bed_target_temper": 60.0,
@@ -272,6 +273,12 @@ class MockPrinter:
         )
 
     async def _react(self, payload: dict[str, Any]) -> None:
+        if payload.get("info", {}).get("command") == "get_version":
+            assert self._client is not None
+            await self._client.publish(self.report_topic, json.dumps({"info": {
+                "command": "get_version", "module": [{"name": "ota", "product_name": "P1S", "sw_ver": "01.09.01.00"}]
+            }}), qos=0)
+            return
         if payload.get("pushing", {}).get("command") == "pushall":
             assert self._client is not None
             await self._client.publish(
@@ -364,6 +371,7 @@ IDLE_PUSH_STATUS: dict[str, Any] = {
         "gcode_state": "IDLE",
         "mc_percent": 0,
         "nozzle_temper": 25.0,
+        "nozzle_diameter": "0.4",
         "bed_temper": 24.0,
     }
 }

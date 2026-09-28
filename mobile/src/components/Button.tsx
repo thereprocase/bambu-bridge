@@ -34,9 +34,9 @@ export function Button({
 
   const palette =
     variant === "primary"
-      ? { bg: c.accent, fg: "#0a0b0d", border: c.accent }
+      ? { bg: c.accent, fg: c.onAccent, border: c.accent }
       : variant === "danger"
-        ? { bg: c.danger, fg: "#0a0b0d", border: c.danger }
+        ? { bg: c.danger, fg: c.onDanger, border: c.danger }
         : { bg: c.surface2, fg: c.text, border: c.border };
 
   return (

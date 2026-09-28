@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from bambu_bridge.native_inbox import NativeInbox
 
 log = structlog.get_logger(__name__)
+# Wake an idle delivery worker so stale start owners are swept without traffic.
+INBOX_TICK = 60
 
 
 def field(value: bytes) -> bytes:
@@ -586,11 +588,16 @@ class NativeGateway:
         inbox = self.inbox
         printer_id = self.config["printer_id"]
         while True:
-            await self.inbox_wake.wait()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.inbox_wake.wait(), INBOX_TICK)
             self.inbox_wake.clear()
             for expired in await asyncio.to_thread(inbox.expire_dispatch):
                 log.warning("native.start_unknown", upload_id=expired["id"])
                 self.inbox_failure(expired, "BBSTART_UNKNOWN")
+            for expired in await asyncio.to_thread(inbox.expire_queued):
+                log.warning("native.start_queue_expired", upload_id=expired["id"])
+                if expired["command"]:
+                    self.inbox_failure(expired, "BBSTART_QUEUE_EXPIRED")
             async with self.inbox_dispatch_lock:
                 await self.recover_lost_start()
             await asyncio.to_thread(inbox.prune)

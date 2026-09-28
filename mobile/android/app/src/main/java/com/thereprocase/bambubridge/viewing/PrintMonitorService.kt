@@ -185,7 +185,7 @@ class PrintMonitorService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, if (ongoing) "print-monitor" else "print-alerts")
             else Notification.Builder(this)
-        builder.setSmallIcon(android.R.drawable.stat_notify_sync).setContentTitle("Bambu Bridge")
+        builder.setSmallIcon(com.thereprocase.bambubridge.R.drawable.ic_bridge_notification).setContentTitle("Bambu Bridge")
             .setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open).setVisibility(Notification.VISIBILITY_PRIVATE)
             .setOngoing(ongoing).setOnlyAlertOnce(ongoing).setAutoCancel(!ongoing)

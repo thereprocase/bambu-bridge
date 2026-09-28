@@ -36,7 +36,7 @@ from bambu_bridge.slicedoc.errors import (
 
 # Physical-safety envelope (design review §5 gates 4/5).
 MAX_NOZZLE_C = 280
-MAX_BED_C = 120
+MAX_BED_C = 100  # P1S manufacturer limit; other adapters require separate policy.
 
 EXTERNAL_SENTINEL = 255  # M620 S255 / T255 = external/virtual spool, not a bind
 _MAX_REAL_TRAY = 15  # 4 AMS units × 4 trays; >this = flush/external pseudo-tool

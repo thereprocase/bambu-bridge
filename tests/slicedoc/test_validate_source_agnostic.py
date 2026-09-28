@@ -118,3 +118,32 @@ def test_gate_required_members_are_the_three_it_reads(missing: str) -> None:
     r = validate(_mk(members))
     assert not r.ok
     assert any(i.startswith("G2") for i in r.issues)
+
+
+@pytest.mark.parametrize(
+    ("model", "nozzle", "issue"),
+    [
+        ("C12", "0.4", None),
+        ("C11", "0.4", "requires P1S"),
+        ("C12", "0.6", "differs from the reported nozzle"),
+        ("C12", "0.4,0.4", "single-nozzle"),
+        ("", "", "requires P1S"),
+    ],
+)
+def test_target_model_and_nozzle_qualification(model, nozzle, issue) -> None:
+    metadata = (
+        f'<metadata key="printer_model_id" value="{model}"/>'
+        f'<metadata key="nozzle_diameters" value="{nozzle}"/>'
+    )
+    xml = _SINGLE_PETG.replace("<plate>", "<plate>" + metadata)
+    result = validate(
+        _container(xml, b"M620 S0A\nT0\nM621 S0A\n"),
+        expected_model="C12",
+        expected_nozzle=0.4,
+        expected_ams_mapping=[0],
+    )
+    if issue is None:
+        assert result.ok, result.issues
+    else:
+        assert not result.ok
+        assert any(issue in item for item in result.issues)

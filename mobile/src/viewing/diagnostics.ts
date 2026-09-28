@@ -5,8 +5,9 @@ import { PairingSecurityError } from "../pairing/native";
 import { useBridgeStore } from "../store/bridge";
 import { useNetStore } from "../store/net";
 import { canViewJob } from "./job";
+import { printerCapabilities } from "../lib/capabilities";
 
-export type Check = { name: string; state: "passed" | "failed" | "skipped"; detail: string; ms?: number };
+export type Check = { name: string; state: "passed" | "failed" | "skipped" | "inactive"; detail: string; ms?: number };
 export type DiagnosticReport = { appVersion: string; serverVersion: string; route: string; checks: Check[] };
 export function diagnosticError(error: unknown): string {
   if (error instanceof PairingSecurityError) return "Bridge identity could not be verified. Check pairing.";
@@ -34,13 +35,27 @@ export async function runDiagnostics(printer: string | null, changed: (report: D
   }
   const { baseUrl, baseUrlLan, pairing } = useBridgeStore.getState();
   const remoteBase = pairing ? pairing.remoteUrl : baseUrl === baseUrlLan ? null : baseUrl;
+  const networkFailures = new Set<Check>();
   for (const [label, base] of [["Home network route", baseUrlLan], ["Remote route", remoteBase]] as const) {
     if (!base) { report.checks.push({ name: label, state: "skipped", detail: "Not configured." }); continue; }
-    await check(label, async () => {
+    const started = Date.now();
+    try {
       await requestExact(base, "/printers", { timeoutMs: 6000 });
-      return "Bridge reachable and authentication accepted.";
-    });
+      report.checks.push({ name: label, state: "passed", detail: "Bridge reachable and authentication accepted.", ms: Date.now()-started });
+    } catch (error) {
+      const result: Check = { name: label, state: "failed", detail: diagnosticError(error), ms: Date.now()-started };
+      report.checks.push(result);
+      if (error instanceof BridgeNetworkError) networkFailures.add(result);
+    }
   }
+  const workingRoute = report.checks.find(result => result.state === "passed");
+  if (workingRoute) {
+    for (const result of networkFailures) {
+      result.state = "inactive";
+      result.detail = workingRoute.name === "Remote route" ? "Bridge available through the remote route." : "Bridge available through the home network route.";
+    }
+  }
+  update();
   await check("Bridge version", async () => {
     const health = await request<{ version?: string }>("/version", { timeoutMs: 6000 });
     report.serverVersion = version(health.version);
@@ -59,7 +74,10 @@ export async function runDiagnostics(printer: string | null, changed: (report: D
       if (session?.connected !== true) throw new BridgeError({ error: "printer_offline", message: "" }, 503);
       return "Printer is connected to the bridge.";
     });
-    await check("Camera frame", async () => {
+    if (!printerCapabilities(snapshot).get("camera").available) {
+      report.checks.push({ name: "Camera frame", state: "skipped", detail: printerCapabilities(snapshot).get("camera").reason });
+      update();
+    } else await check("Camera frame", async () => {
       const image = await request<RawResponse>(`${root}/camera/snapshot.jpg`, { timeoutMs: 10000, rawBytes: true });
       const bytes = new Uint8Array(image.bytes);
       if (bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes[bytes.length-2] !== 255 || bytes[bytes.length-1] !== 217) throw new Error();

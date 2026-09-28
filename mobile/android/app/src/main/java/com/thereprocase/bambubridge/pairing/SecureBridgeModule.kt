@@ -1,5 +1,6 @@
 package com.thereprocase.bambubridge.pairing
 
+import android.net.Uri
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import okhttp3.*
@@ -7,7 +8,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okio.ByteString.Companion.toByteString
+import okio.BufferedSink
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -124,6 +127,70 @@ class SecureBridgeModule(private val context: ReactApplicationContext) : ReactCo
     }
 
     @ReactMethod fun cancelRequest(id: String) { calls.remove(id)?.cancel() }
+
+    /** Stream a backup into app-private cache; avoid a huge base64 bridge response. */
+    @ReactMethod fun downloadNativeBackup(url: String, token: String, promise: Promise) {
+        executor.execute {
+            var file: File? = null
+            try {
+                val transport = active ?: throw SecurityException()
+                val target = url.toHttpUrl()
+                val client = transport.clientForRequest(target, "GET").newBuilder()
+                    .callTimeout(10, TimeUnit.MINUTES).readTimeout(2, TimeUnit.MINUTES).build()
+                val request = Request.Builder().url(target)
+                    .header("Authorization", "Bearer $token").get().build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        promise.reject("BACKUP_HTTP", "Backup download refused (HTTP ${response.code})")
+                        return@execute
+                    }
+                    context.cacheDir.listFiles()?.filter {
+                        it.name.startsWith("native-backup-") &&
+                            System.currentTimeMillis() - it.lastModified() > TimeUnit.DAYS.toMillis(1)
+                    }?.forEach { it.delete() }
+                    file = File.createTempFile("native-backup-", ".zip", context.cacheDir)
+                    val source = response.body?.byteStream() ?: throw IOException("Empty backup response")
+                    source.use { input -> file!!.outputStream().use { input.copyTo(it) } }
+                    if (active !== transport) throw SecurityException()
+                    promise.resolve(Uri.fromFile(file!!).toString())
+                }
+            } catch (e: Exception) { file?.delete(); reject(promise, e) }
+        }
+    }
+
+    /** Upload a document through the same pinned paired transport. */
+    @ReactMethod fun importNativeBackup(url: String, token: String, uri: String, promise: Promise) {
+        executor.execute {
+            try {
+                val transport = active ?: throw SecurityException()
+                val target = url.toHttpUrl()
+                val client = transport.clientForRequest(target, "POST").newBuilder()
+                    .callTimeout(10, TimeUnit.MINUTES).writeTimeout(2, TimeUnit.MINUTES).build()
+                val sourceUri = Uri.parse(uri)
+                val body = object : RequestBody() {
+                    override fun contentType() = "application/zip".toMediaType()
+                    override fun writeTo(sink: BufferedSink) {
+                        val input = context.contentResolver.openInputStream(sourceUri)
+                            ?: throw IOException("Cannot read selected backup")
+                        input.use { it.copyTo(sink.outputStream()) }
+                    }
+                }
+                val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart("file", "native-inbox.zip", body).build()
+                val request = Request.Builder().url(target)
+                    .header("Authorization", "Bearer $token").post(multipart).build()
+                client.newCall(request).execute().use { response ->
+                    val result = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        promise.reject("BACKUP_HTTP", "Backup import refused (HTTP ${response.code})")
+                        return@execute
+                    }
+                    if (active !== transport) throw SecurityException()
+                    promise.resolve(result)
+                }
+            } catch (e: Exception) { reject(promise, e) }
+        }
+    }
 
     @ReactMethod fun connect(id: String, url: String, token: String) {
         try {

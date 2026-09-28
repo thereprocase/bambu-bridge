@@ -55,6 +55,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
+from bambu_bridge.api.capabilities import control_capability_gate
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol import commands
 from bambu_bridge.protocol.models import build_command
@@ -81,7 +82,9 @@ SAFE_Z_FLOOR: float = 0.0
 _HOME_BIT: dict[str, int] = {"X": 0x01, "Y": 0x02, "Z": 0x04}
 
 router = APIRouter(
-    prefix="/printers", tags=["control"], dependencies=[Depends(require_auth)]
+    prefix="/printers",
+    tags=["control"],
+    dependencies=[Depends(require_auth), Depends(control_capability_gate)],
 )
 
 
@@ -104,6 +107,7 @@ def _online(registry: Registry, printer_id: str) -> PrinterService:
         # Reuse the same body — JSONResponse stores bytes; re-decode for the
         # HTTPException detail so the handler can pass it through verbatim.
         import json as _json
+
         body = _json.loads(bytes(gate.body).decode("utf-8"))
         raise HTTPException(status_code=gate.status_code, detail=body)
     if not service.connected:
@@ -118,10 +122,8 @@ async def _send(service: PrinterService, envelope: dict[str, Any]) -> dict[str, 
     try:
         await service.send_raw(envelope)
     except ConnectionError as exc:  # dropped between the check and the publish
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-        ) from exc
-    return {"sent": envelope}
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return {"sent": envelope, "confirmation": "pending"}
 
 
 def _build(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -151,9 +153,7 @@ class RawCommand(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    category: Literal["print", "system", "info"] = Field(
-        description="P1S protocol category"
-    )
+    category: Literal["print", "system", "info"] = Field(description="P1S protocol category")
     command: str = Field(min_length=1, max_length=64, examples=["pause", "ledctrl"])
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -203,9 +203,7 @@ async def raw_command(
     """Forward an arbitrary command envelope (gets a fresh sequence_id)."""
     _check_raw_params(body.params)
     service = _online(registry, printer_id)
-    return await _send(
-        service, build_command(body.category, body.command, **body.params)
-    )
+    return await _send(service, build_command(body.category, body.command, **body.params))
 
 
 # --------------------------------------------------------------------------- #
@@ -310,6 +308,11 @@ async def set_temperature(
         )
     service = _online(registry, printer_id)
     hardened = getattr(service, "nozzle_type", None) == "hardened_steel"
+    # Validate the entire request before publishing either heater command.
+    if body.nozzle is not None:
+        _build(commands.set_nozzle_temp, body.nozzle, hardened=hardened)
+    if body.bed is not None:
+        _build(commands.set_bed_temp, body.bed)
     sent: list[dict[str, Any]] = []
     if body.nozzle is not None:
         env = _build(commands.set_nozzle_temp, body.nozzle, hardened=hardened)
@@ -358,9 +361,7 @@ async def send_gcode(
 
 
 @router.post("/{printer_id}/home")
-async def home(
-    printer_id: str, registry: Registry = Depends(get_registry)
-) -> dict[str, Any]:
+async def home(printer_id: str, registry: Registry = Depends(get_registry)) -> dict[str, Any]:
     """Home all axes (G28). Moves the toolhead."""
     service = _online(registry, printer_id)
     result = await _send(service, commands.home())
@@ -368,7 +369,7 @@ async def home(
     # position so subsequent jogs have a position to clamp against. (If the
     # publish raised, _send already converted it to an HTTPException and we
     # never reach here — the estimate stays whatever it was.)
-    service.mark_homed()
+    service.reset_motion_state("Home requested; completion unverified")
     return result
 
 
@@ -383,9 +384,7 @@ def _jog_raise(resp: Any) -> None:
     raise HTTPException(status_code=resp.status_code, detail=body)
 
 
-def _check_jog(
-    service: PrinterService, axis: str, distance_mm: float
-) -> None:
+def _check_jog(service: PrinterService, axis: str, distance_mm: float) -> None:
     """Enforce the jog safety contract — FAIL CLOSED (crash-prevention).
 
     Raises :class:`fastapi.HTTPException` with a contract-§2 envelope body on

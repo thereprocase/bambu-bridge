@@ -15,13 +15,17 @@
  *   Lights          — chamber on/off/flash · work light on/off/flash
  *   Print speed     — 4-level preset
  *   Temperature     — nozzle + bed with 422-verbatim error surface
- *   Fans            — part / aux / chamber sliders (stepped 0/25/50/75/100)
+ *   Fans            — part / aux / chamber sliders (5% increments)
  *   Camera          — ipcam record + timelapse toggles
  *   Movement        — home + jog (printer must be idle)
  */
 
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { CapabilityCard, CapabilityList } from "../../src/components/CapabilityCard";
+import { printerCapabilities } from "../../src/lib/capabilities";
+import { Alert, ScrollView, Text, View } from "react-native";
 import { useState } from "react";
+import { ChoiceTiles } from "../../src/components/ChoiceTiles";
+import { FanSlider } from "../../src/components/FanSlider";
 
 import {
   home,
@@ -45,8 +49,6 @@ import { usePrintersStore } from "../../src/store/printers";
 import { useTheme } from "../../src/theme/ThemeProvider";
 
 const STEP_MM = [1, 10, 50] as const;
-const FAN_STEPS = [0, 25, 50, 75, 100] as const;
-type FanStep = typeof FAN_STEPS[number];
 const SPEED_LEVELS = [
   { level: 1 as const, label: "Silent" },
   { level: 2 as const, label: "Standard" },
@@ -60,6 +62,9 @@ export default function ControlsScreen() {
   const selectedId = usePrintersStore((s) => s.selectedId);
   const live = useLiveStore((s) => (selectedId ? s.printers[selectedId] : undefined));
   const view = viewOf((live?.snapshot as any) ?? null);
+
+  const registeredModel = usePrintersStore((s) => s.list.find((p) => p.serial === selectedId)?.model);
+  const capabilities = printerCapabilities(live?.snapshot, registeredModel);
 
   const [step, setStep] = useState<typeof STEP_MM[number]>(10);
   const [nozzleTarget, setNozzleTarget] = useState("");
@@ -76,8 +81,8 @@ export default function ControlsScreen() {
   const isPrinting = view.phase === "printing" || view.phase === "preparing";
 
   function safeCall(fn: () => Promise<unknown>, okMsg: string) {
-    fn()
-      .then(() => showToast(okMsg, { severity: "success" }))
+    return fn()
+      .then(() => showToast("Command sent", { severity: "success" }))
       .catch((e) => {
         if (e instanceof BridgeError) {
           const hint = e.envelope.remediation_hint
@@ -95,7 +100,9 @@ export default function ControlsScreen() {
       style={{ flex: 1, backgroundColor: c.bg }}
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
     >
+      <CapabilityList>
       {/* Lights -------------------------------------------------------------- */}
+      <CapabilityCard title="Lights" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Lights</Text>
 
@@ -105,14 +112,13 @@ export default function ControlsScreen() {
             onPress={() => safeCall(() => setLight(selectedId, true), "Chamber light on")} />
           <Button label="Off" variant="secondary"
             onPress={() => safeCall(() => setLight(selectedId, false), "Chamber light off")} />
-          <Button label="Flash" variant="secondary"
-            onPress={() => safeCall(
-              () => setLight(selectedId, true),   // flash via the existing on path (bridge handles)
-              "Chamber light flash",
-            )} />
         </View>
 
-        <Text style={[type.small, { color: c.muted }]}>Work light</Text>
+      </Surface>
+      </CapabilityCard>
+      <CapabilityCard title="Work light" availability={capabilities.get("workLight")}>
+      <Surface padded style={{ gap: space.md }}>
+        <Text style={[type.h2, { color: c.text }]}>Work light</Text>
         <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
           <Button label="On" variant="secondary"
             onPress={() => safeCall(() => setWorkLight(selectedId, "on"), "Work light on")} />
@@ -122,8 +128,10 @@ export default function ControlsScreen() {
             onPress={() => safeCall(() => setWorkLight(selectedId, "flashing"), "Work light flashing")} />
         </View>
       </Surface>
+      </CapabilityCard>
 
       {/* Print speed --------------------------------------------------------- */}
+      <CapabilityCard title="Print speed" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Print speed</Text>
         <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
@@ -140,13 +148,15 @@ export default function ControlsScreen() {
           1 Silent · 2 Standard · 3 Sport · 4 Ludicrous
         </Text>
       </Surface>
+      </CapabilityCard>
 
       {/* Temperature --------------------------------------------------------- */}
+      <CapabilityCard title="Temperature" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Temperature</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Bridge clamps: nozzle ≤280 °C (stainless) or ≤300 °C (hardened steel · set in Advanced);
-          bed ≤120 °C. Out-of-range returns a 422 with the reason shown here.
+          Nozzle limit: 280 °C or 300 °C, according to bridge configuration.
+          P1S bed maximum: 100 °C.
         </Text>
         <Field
           label={`Nozzle — now ${view.nozzleActual?.toFixed(0) ?? "?"}°C / ${view.nozzleTarget?.toFixed(0) ?? "off"}°C`}
@@ -173,6 +183,10 @@ export default function ControlsScreen() {
                 showToast("Enter a nozzle or bed value", { severity: "warn" });
                 return;
               }
+              if (body.bed !== undefined && body.bed > 100) {
+                showToast("P1S bed maximum: 100 °C", { severity: "warn" });
+                return;
+              }
               safeCall(() => setTemperature(selectedId, body), "Temperature sent");
             }}
           />
@@ -180,29 +194,33 @@ export default function ControlsScreen() {
             onPress={() => safeCall(() => setTemperature(selectedId, { nozzle: 0, bed: 0 }), "Cooling")} />
         </View>
       </Surface>
+      </CapabilityCard>
 
       {/* Fans ----------------------------------------------------------------- */}
+      <CapabilityCard title="Fans" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Fans</Text>
         <Text style={[type.small, { color: c.muted }]}>
           Current: part {view.fanPart ?? "?"}% · aux {view.fanAux ?? "?"}% · chamber {view.fanChamber ?? "?"}%
         </Text>
 
-        <FanRow
+        <FanSlider current={view.fanPart}
           label="Part fan"
           onSet={(pct) => safeCall(() => setFan(selectedId, "part", pct), `Part fan ${pct}%`)}
         />
-        <FanRow
-          label="Aux / exhaust fan"
+        <FanSlider current={view.fanAux}
+          label="Auxiliary cooling fan"
           onSet={(pct) => safeCall(() => setFan(selectedId, "aux", pct), `Aux fan ${pct}%`)}
         />
-        <FanRow
+        <FanSlider current={view.fanChamber}
           label="Chamber fan"
           onSet={(pct) => safeCall(() => setFan(selectedId, "chamber", pct), `Chamber fan ${pct}%`)}
         />
       </Surface>
+      </CapabilityCard>
 
       {/* Camera -------------------------------------------------------------- */}
+      <CapabilityCard title="Camera" availability={capabilities.get("core")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Camera</Text>
         <Text style={[type.small, { color: c.muted }]}>
@@ -222,33 +240,20 @@ export default function ControlsScreen() {
             onPress={() => safeCall(() => setIpcamTimelapse(selectedId, false), "Timelapse off")} />
         </View>
       </Surface>
+      </CapabilityCard>
 
       {/* Movement ------------------------------------------------------------ */}
+      <CapabilityCard title="Movement" availability={capabilities.get("motion")}>
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Movement</Text>
         <Text style={[type.small, { color: c.muted }]}>
           Homes all axes (G28). Single-axis jog moves the toolhead —
-          printer must be idle, not printing.
+          printer must be idle.
         </Text>
 
-        <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
-          {STEP_MM.map((s) => (
-            <Pressable
-              key={s}
-              onPress={() => setStep(s)}
-              style={{
-                paddingHorizontal: space.md,
-                paddingVertical: space.sm,
-                backgroundColor: step === s ? c.accent : c.surface2,
-                borderRadius: 999,
-              }}
-            >
-              <Text style={{ color: step === s ? "#0a0b0d" : c.text, fontSize: 13 }}>
-                {s}mm
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        <ChoiceTiles label="Movement step" value={String(step)}
+          options={STEP_MM.map(s => ({ id: String(s), topLabel: String(s), label: "mm" }))}
+          onSelect={id => setStep(Number(id) as typeof step)} />
 
         <View style={{ flexDirection: "row", gap: space.sm }}>
           <Button label="Home all" variant="secondary"
@@ -270,38 +275,9 @@ export default function ControlsScreen() {
           </Text>
         )}
       </Surface>
+      </CapabilityCard>
+      </CapabilityList>
     </ScrollView>
-  );
-}
-
-/**
- * FanRow — stepped fan speed selector for one fan.
- * Steps: 0 / 25 / 50 / 75 / 100 %
- */
-function FanRow({ label, onSet }: { label: string; onSet: (pct: FanStep) => void }) {
-  const { c, space, type } = useTheme();
-  return (
-    <View style={{ gap: space.xs }}>
-      <Text style={[type.small, { color: c.muted }]}>{label}</Text>
-      <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
-        {FAN_STEPS.map((pct) => (
-          <Pressable
-            key={pct}
-            onPress={() => onSet(pct)}
-            style={{
-              paddingHorizontal: space.md,
-              paddingVertical: space.sm,
-              backgroundColor: c.surface2,
-              borderRadius: 999,
-              borderWidth: 1,
-              borderColor: c.border,
-            }}
-          >
-            <Text style={{ color: c.text, fontSize: 13 }}>{pct}%</Text>
-          </Pressable>
-        ))}
-      </View>
-    </View>
   );
 }
 

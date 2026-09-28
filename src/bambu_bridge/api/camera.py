@@ -106,7 +106,14 @@ def mjpeg_part(jpeg: bytes) -> bytes:
 
 def _service(registry: Registry, printer_id: str) -> PrinterService:
     try:
-        return registry.get(printer_id)
+        service = registry.get(printer_id)
+        from bambu_bridge.api.capabilities import model_of
+
+        if model_of(service) != "P1S":
+            raise HTTPException(
+                409, {"error": "capability_unavailable", "message": "Camera support under review"}
+            )
+        return service
     except PrinterNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

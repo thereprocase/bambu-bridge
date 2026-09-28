@@ -46,9 +46,7 @@ from bambu_bridge.hms import (
 # Types
 # --------------------------------------------------------------------------- #
 
-Phase = Literal[
-    "idle", "preparing", "printing", "paused", "completed", "failed", "unknown"
-]
+Phase = Literal["idle", "preparing", "printing", "paused", "completed", "failed", "unknown"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -535,12 +533,22 @@ def _ams_units(ams: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": str(unit.get("id", index)),
-            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100),
+            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100)
+            if _ams_type(unit) in {3, 4}
+            else None,
+            "humidity_level": reading(unit.get("humidity"), 1, 5) if _ams_type(unit) == 1 else None,
             "temperature_c": reading(unit.get("temp"), -40, 125),
         }
         for index, unit in enumerate(units)
         if isinstance(unit, dict)
     ]
+
+
+def _ams_type(unit: dict[str, Any]) -> int | None:
+    try:
+        return int(str(unit.get("info", "")), 16) & 15
+    except ValueError:
+        return None
 
 
 def _ams_present(ams: dict[str, Any]) -> bool:
@@ -586,7 +594,7 @@ def engaged_slot(tray_now: Any) -> int | str | None:
         return None
     if n == 254:
         return "external"
-    if 0 <= n <= 3:
+    if 0 <= n <= 15:
         return n + 1
     # Multi-AMS or unknown — surface raw int so APK can render "Slot ?"
     return n
@@ -596,30 +604,33 @@ def _ams_slots(
     ams: dict[str, Any],
     filament_memory: dict[int, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Translate ams.tray[] (or first AMS unit's tray[]).
-
-    P1S without a second AMS sends `ams.ams[0].tray[]`. With multi-AMS,
-    each unit has its own tray[]. v0 surfaces the first unit only;
-    multi-AMS is a v0.1 follow-up.
-    """
+    """Translate four-tray AMS units using reported identifiers, never array order."""
     units = ams.get("ams")
     if isinstance(units, list) and units:
-        first = units[0]
-        if isinstance(first, dict):
-            trays = first.get("tray")
+        result = []
+        for unit in units:
+            if not isinstance(unit, dict):
+                continue
+            unit_id = _as_int(unit.get("id"))
+            # Legacy single-unit telemetry can omit the unit id. Display its
+            # readings, while the command gate still requires an explicit id.
+            if unit_id is None and len(units) == 1:
+                unit_id = 0
+            if unit_id is None or not 0 <= unit_id <= 3:
+                continue  # Other topologies require their own address adapter.
+            trays = unit.get("tray")
             if isinstance(trays, list):
-                return [
-                    _ams_slot(t, i, filament_memory)
+                result.extend(
+                    _ams_slot(t, i, filament_memory, unit_id)
                     for i, t in enumerate(trays)
-                    if isinstance(t, dict)
-                ]
+                    if isinstance(t, dict) and _as_int(t.get("id")) in range(4)
+                )
+        return sorted(result, key=lambda slot: slot["physical_slot"])
     # Some firmwares put tray[] directly on `ams`:
     trays = ams.get("tray")
     if isinstance(trays, list):
         return [
-            _ams_slot(t, i, filament_memory)
-            for i, t in enumerate(trays)
-            if isinstance(t, dict)
+            _ams_slot(t, i, filament_memory) for i, t in enumerate(trays) if isinstance(t, dict)
         ]
     return []
 
@@ -628,16 +639,16 @@ def _ams_slot(
     tray: dict[str, Any],
     array_idx: int,
     filament_memory: dict[int, Any] | None,
+    unit_id: int = 0,
 ) -> dict[str, Any]:
     """One AMS tray → contract §6.1 slot.
 
-    `physical_slot = array_idx + 1` — the array position is definitionally
-    0-based for tray[], unrelated to the parked `ams_mapping` 1-vs-0
-    question (which lives on the SUBMISSION side, not the snapshot side).
+    Identity is unit_id * 4 + reported tray ID + 1. Array position is a
+    legacy fallback only when a tray ID is absent.
     """
     raw_id = _as_int(tray.get("id"))
     has_filament = bool(tray.get("tray_type"))
-    physical_slot = array_idx + 1
+    physical_slot = unit_id * 4 + (raw_id if raw_id is not None else array_idx) + 1
     # G3 — merge filament memory label when available.
     mem: dict[str, Any] | None = None
     if filament_memory is not None:
@@ -650,11 +661,13 @@ def _ams_slot(
             }
     return {
         "physical_slot": physical_slot,
+        "ams_id": unit_id,
+        "tray_id": raw_id,
         "type": tray.get("tray_type") or None,
         "color": _normalize_color(tray.get("tray_color")),
         "rfid_tray": _rfid_tray(tray),
         "state": "loaded" if has_filament else "empty",
-        "remaining_g": _as_int(tray.get("remain")) if has_filament else None,
+        "remaining_g": None,  # Firmware remain is percent, not a measured mass.
         "remaining_pct": _remaining_pct(tray, has_filament),
         "_raw_id": raw_id if raw_id is not None else array_idx,
         "memory": mem,
@@ -816,18 +829,20 @@ def _hms_list(raw: dict[str, Any], job_context: JobContext | None = None) -> lis
         if attr is None or code is None:
             continue
         decoded = decode_hms_entry(attr, code, job_context)
-        result.append({
-            "code": f"{attr}:{code}",
-            "hex": decoded["hex"],
-            "text": decoded["user_message"],
-            "category": decoded["category"],
-            "severity": decoded["severity"],
-            "remediation": decoded["remediation"],
-            "wiki_url": decoded["wiki_url"],
-            "context_note": decoded["context_note"],
-            "stale": decoded["stale"],
-            "_raw": item,
-        })
+        result.append(
+            {
+                "code": f"{attr}:{code}",
+                "hex": decoded["hex"],
+                "text": decoded["user_message"],
+                "category": decoded["category"],
+                "severity": decoded["severity"],
+                "remediation": decoded["remediation"],
+                "wiki_url": decoded["wiki_url"],
+                "context_note": decoded["context_note"],
+                "stale": decoded["stale"],
+                "_raw": item,
+            }
+        )
     return result
 
 
@@ -880,10 +895,7 @@ def _started_at_iso(raw: dict[str, Any]) -> str | None:
     if v in (None, "", 0, "0"):
         return None
     if isinstance(v, int | float) or (isinstance(v, str) and v.isdigit()):
-        return (
-            datetime.fromtimestamp(float(v), tz=UTC)
-            .strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
+        return datetime.fromtimestamp(float(v), tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     if isinstance(v, str) and "T" in v:
         return v  # already ISO from a future firmware/bridge
     return None

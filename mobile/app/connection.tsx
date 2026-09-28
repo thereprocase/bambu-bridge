@@ -20,7 +20,7 @@ export default function ConnectionScreen() {
   }
   return <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, gap: space.md }}>
     <Text style={[type.h1, { color: c.text }]}>Check your connection</Text>
-    <Text style={[type.body, { color: c.muted }]}>Check each route, access, printer, camera, and viewer. These checks only read status; they do not control the printer.</Text>
+    <Text style={[type.body, { color: c.muted }]}>Read-only checks for connection routes, access, printer status, camera, and viewer.</Text>
     <Button label={busy ? "Checking…" : "Run checks"} disabled={busy} onPress={() => { void run(); }} />
     {report && <Text style={[type.small, { color: c.muted }]}>App {report.appVersion} · Server {report.serverVersion} · {report.route}</Text>}
     {report?.checks.map(check => <Surface key={check.name} padded style={{ gap: space.sm }}>
@@ -29,7 +29,7 @@ export default function ConnectionScreen() {
       {check.ms !== undefined && <Text style={[type.small, { color: c.muted }]}>{check.ms} ms</Text>}
     </Surface>)}
     {report && !busy && <>
-      <Text style={[type.small, { color: c.muted }]}>The report includes results and versions. It excludes keys, addresses, printer identifiers, and file names.</Text>
+      <Text style={[type.small, { color: c.muted }]}>The shared report contains check results and app and server versions.</Text>
       <Button label="Share diagnostic report" variant="secondary" onPress={() => { void Share.share({ message: formatDiagnosticReport(report) }).catch(() => {}); }} />
     </>}
   </ScrollView>;

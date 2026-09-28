@@ -949,13 +949,34 @@ describe("viewOf — preparing phase (no fake data)", () => {
 
 
 describe("AMS environmental readings", () => {
+  it("uses original AMS humidity levels with older server percentage fields", () => {
+    const v = viewOf(snap({
+      ams: { units: [{ id: "0", humidity_pct: 6, temperature_c: 30 }] },
+      _raw: { ams: { ams: [{ id: "0", info: "1001", humidity: "3" }] } },
+    }));
+    expect(v.amsUnits).toEqual([
+      { id: "0", humidityPct: null, humidityLevel: 3, temperatureC: 30 },
+    ]);
+  });
+  it("matches humidity capability by unit ID across reordered reports", () => {
+    const v = viewOf(snap({
+      ams: { units: [{ id: "0", humidity_pct: 6 }, { id: "1", humidity_pct: 42 }] },
+      _raw: { ams: { ams: [
+        { id: "1", info: "1003", humidity: "2" },
+        { id: "0", info: "1001", humidity: "4" },
+      ] } },
+    }));
+    expect(v.amsUnits.map(u => [u.id, u.humidityPct, u.humidityLevel])).toEqual([
+      ["0", null, 4], ["1", 42, null],
+    ]);
+  });
   it("supports older bridges", () => {
     expect(viewOf(snap({ ams: { present: true, slots: [] } })).amsUnits).toEqual([]);
   });
   it("keeps raw RH precision, zero and multiple units", () => {
     const units = [{ id: "0", humidity_pct: 6, temperature_c: 36.4 }, { id: "1", humidity_pct: 0, temperature_c: 0 }];
     expect(viewOf(snap({ ams: { units } })).amsUnits).toEqual([
-      { id: "0", humidityPct: 6, temperatureC: 36.4 }, { id: "1", humidityPct: 0, temperatureC: 0 },
+      { id: "0", humidityPct: 6, humidityLevel: null, temperatureC: 36.4 }, { id: "1", humidityPct: 0, humidityLevel: null, temperatureC: 0 },
     ]);
   });
   it.each([null, true, "", "6", NaN, Infinity, -1, 101])("rejects invalid humidity %p", (value) => {

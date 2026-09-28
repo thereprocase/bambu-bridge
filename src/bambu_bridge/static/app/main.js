@@ -88,6 +88,8 @@ import * as camera from './camera.js';
 import * as submit from './submit.js';
 import * as settings from './settings.js';
 import * as library from './library.js';
+import * as queue from './queue.js';
+import { printerStateLabels } from './printer-state.js';
 
 // ── prefs (localStorage-backed) ─────────────────────────────────────────────
 const LS_PREFS = 'bbl.prefs';
@@ -124,7 +126,7 @@ function applyTheme() {
   if (theme === 'system') theme = (mql && mql.matches) ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', theme);
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', theme === 'light' ? '#FAFAFA' : '#101113');
+  if (meta) meta.setAttribute('content', theme === 'light' ? '#C6C6C6' : '#181818');
 }
 if (mql) {
   const onChange = () => { if (prefs.theme === 'system') applyTheme(); };
@@ -134,10 +136,47 @@ if (mql) {
 
 // ── nav chrome ──────────────────────────────────────────────────────────────
 const navEl = document.getElementById('nav');
+const strip = document.getElementById('bridge-strip');
+let stripConnection = null;
+let stripConnectionId = null;
+let syncingStrip = false;
+function syncStripConnection() {
+  if (syncingStrip) return;
+  // Dashboard and Controls already own a stream. Other routes need one so
+  // persistent chrome does not mistake leaving the dashboard for an outage.
+  const route = (location.hash || '#/').replace(/^#\/?/, '').split('/')[0];
+  const id = strip && !strip.hidden && !['', 'controls'].includes(route)
+    ? currentPrinterId() : null;
+  if (id === stripConnectionId) return;
+  syncingStrip = true;
+  try {
+    stripConnectionId = id;
+    stripConnection?.close();
+    stripConnection = id ? ws.connectStatus(id, { onUnauthorized: requireKeyScreen }) : null;
+  } finally { syncingStrip = false; }
+}
+function renderStrip() {
+  syncStripConnection();
+  if (!strip || strip.hidden) return;
+  const pid = currentPrinterId();
+  const connected = !!store.getState().printers[pid]?.connected;
+  const facts = printerStateLabels(store.current(pid), connected);
+  const symbols = { Printing: '▶', Paused: 'Ⅱ', Idle: '■', Finished: '■', Preparing: '◷', 'Print failed': '!' };
+  ui.clear(strip);
+  strip.append(
+    ui.el('span', {}, [ui.el('i', { class: 'dot' + (connected ? ' live' : '') }),
+      ui.el('span', { text: 'Bridge · ' + (connected ? 'Connected' : 'Not connected') })]),
+    ui.el('span', { title: facts.connection, text: (symbols[facts.activity] || '?') + ' Printer · ' + facts.activity }),
+    ui.el('a', { href: '#/queue', text: 'Queue', 'aria-label': 'Bridge queue' }),
+  );
+}
+store.subscribe(renderStrip);
+setInterval(renderStrip, 5000);
 
 function showNav(show) {
   if (!navEl) return;
   navEl.hidden = !show;
+  if (strip) { strip.hidden = !show; renderStrip(); }
 }
 
 function setNavActive(hash) {
@@ -209,6 +248,7 @@ function requireKeyScreen() {
 
 // ── router ──────────────────────────────────────────────────────────────────
 const SCREENS = {
+  queue,
   library,
   dashboard,
   submit,
@@ -220,6 +260,7 @@ const SCREENS = {
 
 // hash -> {name, module-key}. Order doesn't matter; first segment decides.
 const ROUTES = {
+  'queue': { name: 'queue', screen: 'queue' },
   'library': { name: 'library', screen: 'library' },
   '': { name: 'dashboard', screen: 'dashboard' },
   'print': { name: 'submit', screen: 'submit' },
@@ -261,10 +302,15 @@ function renderRoute() {
   app.route = { name: routeDef.name, params };
 
   // tear down the previous screen
+  syncingStrip = true;
   if (typeof unmountCurrent === 'function') {
     try { unmountCurrent(); } catch (e) { console.error('unmount threw', e); }
   }
   unmountCurrent = null;
+  stripConnection?.close();
+  stripConnection = null;
+  stripConnectionId = null;
+  syncingStrip = false;
   ui.clear(root);
 
   // nav chrome: hidden during the wizard, shown otherwise

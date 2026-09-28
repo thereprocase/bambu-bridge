@@ -6,11 +6,9 @@ remembers them until that slot's tray TYPE changes, then forgets.
 All routes are prefixed /printers (shared with files.py etc.) and
 require Bearer auth.
 
-Slot numbering: physical_slot is 1-based (1-4), matching the snapshot's
-`ams.slots[].physical_slot` field and the P1S touchscreen. array_idx
-0-3 is the protocol-level 0-based id; the API speaks physical only.
-Verified: `translate._ams_slot` sets `physical_slot = array_idx + 1`,
-so valid values the snapshot ever emits are 1-4.
+Slot numbering: physical_slot is 1-based (1-16), matching the snapshot's
+`ams.slots[].physical_slot` field: unit_id * 4 + tray_id + 1.
+Reported unit and tray identities keep labels stable across array reordering.
 """
 
 from __future__ import annotations
@@ -33,8 +31,8 @@ router = APIRouter(
     prefix="/printers", tags=["filament"], dependencies=[Depends(require_auth)]
 )
 
-# AMS supports 4 slots; physical_slot is 1-based.
-_VALID_SLOTS = frozenset({1, 2, 3, 4})
+# Four original AMS units, each with four slots; physical_slot is 1-based.
+_VALID_SLOTS = frozenset(range(1, 17))
 _MAX_FIELD_LEN = 120
 
 
@@ -88,7 +86,7 @@ def _check_slot(slot: int) -> int:
     if slot not in _VALID_SLOTS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"slot must be one of {sorted(_VALID_SLOTS)} (physical_slot 1-4)",
+            detail=f"slot must be one of {sorted(_VALID_SLOTS)} (physical_slot 1-16)",
         )
     return slot
 

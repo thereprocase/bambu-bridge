@@ -4,6 +4,12 @@ Guard tests matter more than happy paths: every server-side guard must have a
 rejection test that verifies the correct HTTP status code and error enum.
 
 Mocked broker only — never touches the live printer.
+
+These are isolated handler/builder tests, including dormant handlers. The
+qualification dependency is explicitly bypassed here so their inner guards
+remain covered. Real availability and zero-publication rejection are tested
+without overrides in test_capability_gate.py; these tests do not certify P1S
+hardware support for XCam, drying, nozzle setup or manual motion.
 """
 
 from __future__ import annotations
@@ -21,11 +27,18 @@ from tests.conftest import (
     API_KEY,
     SERIAL,
     MockPrinter,
-    build_app,
+    build_app as _build_app,
     patch_discovery_ok,
 )
 
 _AUTH = {"Authorization": f"Bearer {API_KEY}"}
+
+
+def build_app(*args: Any, **kwargs: Any) -> Any:
+    from bambu_bridge.api.capabilities import control_capability_gate
+    app = _build_app(*args, **kwargs)
+    app.dependency_overrides[control_capability_gate] = lambda: None
+    return app
 
 
 @pytest.fixture(autouse=True)
@@ -756,7 +769,7 @@ async def test_ams_user_setting_reaches_printer(
 async def test_calibration_vibration_reaches_printer(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """Happy path: calibration option=1 (vibration) forwarded."""
+    """Isolated builder: manufacturer vibration bit is 4."""
     app = build_app(tmp_path / "cal_vib.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
@@ -766,14 +779,14 @@ async def test_calibration_vibration_reaches_printer(
             r = c.post(
                 f"/api/v1/printers/{SERIAL}/calibration",
                 headers=_AUTH,
-                json={"option": 1},
+                json={"option": 4},
             )
             assert r.status_code == 200, r.text
             req = _wait_request(
                 mock_printer,
                 lambda r: r.get("print", {}).get("command") == "calibration",
             )
-            assert req["print"]["option"] == 1
+            assert req["print"]["option"] == 4
 
     await asyncio.to_thread(run)
 
@@ -793,7 +806,7 @@ async def test_calibration_all_p1s_confirmed_options_accepted(
         with TestClient(app) as c:
             _register(c)
             _wait_connected(c)
-            for opt in [1, 2, 3, 4, 5, 6, 7]:
+            for opt in [2, 4, 6]:
                 r = c.post(
                     f"/api/v1/printers/{SERIAL}/calibration",
                     headers=_AUTH,
@@ -815,7 +828,7 @@ async def test_calibration_non_p1s_bits_rejected(
         with TestClient(app) as c:
             _register(c)
             _wait_connected(c)
-            for bad_opt in [0, 8, 16, 255]:
+            for bad_opt in [0, 1, 3, 5, 7, 8, 16, 255]:
                 r = c.post(
                     f"/api/v1/printers/{SERIAL}/calibration",
                     headers=_AUTH,
@@ -850,7 +863,7 @@ async def test_calibration_error_message_names_matrix(
                 json={"option": 8},  # X1-only LIDAR bit
             )
             assert r.status_code == 422, r.text
-            assert "CONTROL-MATRIX" in r.text or "matrix" in r.text.lower()
+            assert "support verification" in r.text
 
     await asyncio.to_thread(run)
 
@@ -889,10 +902,10 @@ async def test_set_nozzle_reaches_printer(
 
 
 @pytest.mark.asyncio
-async def test_set_nozzle_updates_in_memory_service_type(
+async def test_set_nozzle_preserves_unconfirmed_service_type(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """set_accessories/nozzle updates service.nozzle_type in-memory."""
+    """Publication alone leaves the reported nozzle policy unchanged."""
     app = build_app(tmp_path / "nz_mem.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
@@ -914,7 +927,7 @@ async def test_set_nozzle_updates_in_memory_service_type(
                 mock_printer,
                 lambda r: r.get("system", {}).get("command") == "set_accessories",
             )
-            assert svc.nozzle_type == "hardened_steel"
+            assert svc.nozzle_type != "hardened_steel"
 
     await asyncio.to_thread(run)
 

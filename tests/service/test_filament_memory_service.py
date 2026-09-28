@@ -144,7 +144,7 @@ async def test_loader_called_only_once_on_reconnect(
             )
             # Push a delta — this does NOT call the loader again.
             await mock_printer.push_report({"print": {"mc_percent": 10}})
-            await _next(sub, lambda e: e.type == "delta")
+            await _next(sub, lambda e: e.type == "delta" and e.data.get("mc_percent") == 10)
             # Slot 2 entry must still be present (loader not re-called).
             assert call_count[0] == 1
             assert svc.filament_memory.get(2) is not None
@@ -163,6 +163,7 @@ async def test_invalidation_on_different_type(
 ) -> None:
     """When slot 1 changes from PLA to PETG, its label is invalidated."""
     invalidated_slots: list[int] = []
+    invalidated = asyncio.Event()
 
     async def _load() -> dict[int, FilamentMemory]:
         return {
@@ -172,6 +173,7 @@ async def test_invalidation_on_different_type(
 
     async def _invalidate(slot: int) -> None:
         invalidated_slots.append(slot)
+        invalidated.set()
 
     svc = _service(
         mqtt_broker,
@@ -186,7 +188,9 @@ async def test_invalidation_on_different_type(
 
             # Slot 1 now reports PETG instead of PLA.
             await mock_printer.push_report(_ams_report({1: "PETG"}))
-            await _next(sub, lambda e: e.type in ("delta", "snapshot"))
+            # The startup identity response can also emit a delta. Wait for
+            # this report's invalidation instead of consuming an unrelated one.
+            await asyncio.wait_for(invalidated.wait(), timeout=10)
 
             assert 1 in invalidated_slots, "invalidator called for slot 1"
             assert svc.filament_memory.get(1) is None, "cache entry removed"
@@ -221,7 +225,7 @@ async def test_no_invalidation_on_same_type(
             await _next(sub, lambda e: e.type == "snapshot")
             # Push same PLA type.
             await mock_printer.push_report(_ams_report({1: "PLA"}))
-            await _next(sub, lambda e: e.type in ("delta", "snapshot"))
+            await _next(sub, lambda e: e.type in ("delta", "snapshot") and "ams" in e.data)
             assert invalidated_slots == [], "no invalidation for same type"
             assert svc.filament_memory.get(1) is not None
         finally:
@@ -258,7 +262,7 @@ async def test_no_invalidation_on_empty_slot(
             await _next(sub, lambda e: e.type == "snapshot")
             # Slot 1 now reports empty (tray_type = "").
             await mock_printer.push_report(_ams_report({1: ""}))
-            await _next(sub, lambda e: e.type in ("delta", "snapshot"))
+            await _next(sub, lambda e: e.type in ("delta", "snapshot") and "ams" in e.data)
             assert invalidated_slots == [], "empty slot must not invalidate"
             assert svc.filament_memory.get(1) is not None
         finally:
@@ -295,7 +299,7 @@ async def test_no_invalidation_when_recorded_type_is_none(
             await _next(sub, lambda e: e.type == "snapshot")
             # Any type — can't compare to None.
             await mock_printer.push_report(_ams_report({1: "PLA"}))
-            await _next(sub, lambda e: e.type in ("delta", "snapshot"))
+            await _next(sub, lambda e: e.type in ("delta", "snapshot") and "ams" in e.data)
             assert invalidated_slots == [], "no invalidation when recorded type is None"
             assert svc.filament_memory.get(1) is not None
         finally:
@@ -331,7 +335,7 @@ async def test_invalidation_is_per_slot(
             await _next(sub, lambda e: e.type == "snapshot")
             # Slot 1 changes to ABS; slot 2 stays PETG.
             await mock_printer.push_report(_ams_report({1: "ABS", 2: "PETG"}))
-            await _next(sub, lambda e: e.type in ("delta", "snapshot"))
+            await _next(sub, lambda e: e.type in ("delta", "snapshot") and "ams" in e.data)
             assert invalidated_slots == [1], "only slot 1 invalidated"
             assert svc.filament_memory.get(1) is None
             assert svc.filament_memory.get(2) is not None

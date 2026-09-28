@@ -1,3 +1,5 @@
+import { CapabilityCard, CapabilityList } from "../../src/components/CapabilityCard";
+import { printerCapabilities } from "../../src/lib/capabilities";
 /**
  * Filament — AMS slots (live, from snapshot) and off-AMS spool inventory
  * (CRUD against /spools).
@@ -53,6 +55,8 @@ export default function FilamentScreen() {
   const showToast = useToastStore((s) => s.show);
   const selectedId = usePrintersStore((s) => s.selectedId);
   const live = useLiveStore((s) => (selectedId ? s.printers[selectedId] : undefined));
+  const registeredModel = usePrintersStore((s) => s.list.find((p) => p.serial === selectedId)?.model);
+  const capabilities = printerCapabilities(live?.snapshot, registeredModel);
   const view = viewOf((live?.snapshot as any) ?? null);
 
   const [spools, setSpools] = useState<Spool[]>([]);
@@ -62,13 +66,14 @@ export default function FilamentScreen() {
   // empties `ams.slots` while the hardware stays attached, §6.1.1) renders the
   // previous slots dimmed instead of flashing empty / "gibberish".
   const [lastSlots, setLastSlots] = useState<typeof view.ams>([]);
+  const [slotsPrinter, setSlotsPrinter] = useState<string | null>(null);
   useEffect(() => {
-    if (view.ams.length > 0) setLastSlots(view.ams);
-  }, [view.ams]);
+    if (view.ams.length > 0) { setLastSlots(view.ams); setSlotsPrinter(selectedId); }
+  }, [selectedId, view.ams]);
 
   // During a re-scan (`amsPresent && no slots`) fall back to the held view.
   const rescanning = view.amsPresent && view.ams.length === 0;
-  const slotsToRender = view.ams.length > 0 ? view.ams : rescanning ? lastSlots : [];
+  const slotsToRender = view.ams.length > 0 ? view.ams : rescanning && slotsPrinter === selectedId ? lastSlots : [];
 
   // New spool form
   const [newName, setNewName] = useState("");
@@ -94,7 +99,7 @@ export default function FilamentScreen() {
 
   function safeCall(fn: () => Promise<unknown>, okMsg: string) {
     fn()
-      .then(() => showToast(okMsg, { severity: "success" }))
+      .then(() => showToast("Command sent", { severity: "success" }))
       .catch((e) => showToast(e instanceof BridgeError ? e.envelope.message : String(e), { severity: "danger" }));
   }
 
@@ -141,13 +146,15 @@ export default function FilamentScreen() {
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
       refreshControl={<RefreshControl refreshing={loading} tintColor={c.accent} onRefresh={refresh} />}
     >
+      <CapabilityList>
       {/* AMS ---------------------------------------------------------------- */}
       {selectedId && (
+        <CapabilityCard title="AMS" availability={capabilities.get("ams")}>
         <Surface padded style={{ gap: space.md }}>
           <Text style={[type.h2, { color: c.text }]}>AMS</Text>
           {view.amsUnits.map((unit, i) => (
             <Text key={unit.id} style={[type.small, { color: c.muted }]}>
-              {live?.status !== "open" ? "Last known · " : ""}AMS {Number(unit.id) + 1 || i + 1} · {unit.humidityPct == null ? "Humidity unavailable" : `${unit.humidityPct}% RH`} · {unit.temperatureC == null ? "Temperature unavailable" : `${unit.temperatureC.toFixed(1)} °C`}
+              {live?.status !== "open" ? "Last known · " : ""}AMS {Number(unit.id) + 1 || i + 1} · {unit.humidityPct != null ? `${unit.humidityPct}% RH` : unit.humidityLevel != null ? `Humidity level ${unit.humidityLevel}/5` : "Humidity unknown"} · {unit.temperatureC == null ? "Temperature unavailable" : `${unit.temperatureC.toFixed(1)} °C`}
             </Text>
           ))}
           {/* §6.1.1 state machine:
@@ -228,7 +235,7 @@ export default function FilamentScreen() {
                         />
                       )}
                     </View>
-                    {!slot.empty && !rescanning && (
+                    {capabilities.get("filamentMotion").available && !slot.empty && !rescanning && (
                       <Button
                         label="Load"
                         variant="secondary"
@@ -248,7 +255,7 @@ export default function FilamentScreen() {
               })}
             </>
           )}
-          {!rescanning && slotsToRender.some((s) => !s.empty) && (
+          {capabilities.get("filamentMotion").available && !rescanning && slotsToRender.some((s) => !s.empty) && (
             <Button
               label="Unload current filament"
               variant="secondary"
@@ -256,7 +263,9 @@ export default function FilamentScreen() {
             />
           )}
         </Surface>
+        </CapabilityCard>
       )}
+      <CapabilityCard title="Load / unload filament" availability={capabilities.get("filamentMotion")}>{null}</CapabilityCard>
 
       {/* Off-AMS spool inventory ------------------------------------------- */}
       <Surface padded style={{ gap: space.md }}>
@@ -308,6 +317,7 @@ export default function FilamentScreen() {
         />
         <Button label="Add" onPress={add} fullWidth />
       </Surface>
+      </CapabilityList>
     </ScrollView>
   );
 }

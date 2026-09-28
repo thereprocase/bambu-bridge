@@ -34,7 +34,7 @@ log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/printers", tags=["status"])
 
 PROTOCOL_VERSION = 1
-_HEARTBEAT_S = 30
+_HEARTBEAT_S = 10
 _WS_POLICY_VIOLATION = 1008
 
 
@@ -117,6 +117,15 @@ async def _pump(
         try:
             event = await asyncio.wait_for(sub.get(), timeout=_HEARTBEAT_S)
         except TimeoutError:
+            # Raw reports that repeat the same values do not emit a service
+            # delta, but they do advance last_telemetry_at. Publish that
+            # watermark so clients can distinguish a quiet printer from a
+            # stale or disconnected one.
+            current = service.snapshot()
+            changed = diff_state(last_translated, current)
+            if changed:
+                await websocket.send_json({"type": "delta", "data": changed})
+                last_translated = current
             await websocket.send_json({"type": "ping"})
             continue
         if event.type == "event":

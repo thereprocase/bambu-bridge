@@ -11,7 +11,7 @@ Wave 2 — YELLOW/GREEN (typed, phase-aware, clamped):
   POST /{id}/ams/drying               start AMS filament drying cycle
   POST /{id}/ams/user_setting         configure AMS RFID read behaviour
   POST /{id}/skip_objects             per-object cancel mid-print
-  POST /{id}/calibration              calibration bitmask (P1S-confirmed bits only)
+  POST /{id}/calibration              withheld pending protocol qualification
   POST /{id}/set_accessories/nozzle   set nozzle type + diameter
 
 Wave 3 — RED (hard server-side guards):
@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
+from bambu_bridge.api.capabilities import control_capability_gate
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol import commands
 from bambu_bridge.protocol.commands import AMS_DRYING_MAX_TEMP_C, AMS_ID_MAX
@@ -70,7 +71,7 @@ log = structlog.get_logger(__name__)
 router = APIRouter(
     prefix="/printers",
     tags=["advanced"],
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_auth), Depends(control_capability_gate)],
 )
 
 
@@ -104,10 +105,8 @@ async def _send(service: PrinterService, envelope: dict[str, Any]) -> dict[str, 
     try:
         await service.send_raw(envelope)
     except ConnectionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
-        ) from exc
-    return {"sent": envelope}
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return {"sent": envelope, "confirmation": "pending"}
 
 
 def _build(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -406,12 +405,8 @@ class AmsUserSettingBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ams_id: int = Field(ge=0, le=AMS_ID_MAX, description="AMS unit index, 0-based (max 3)")
-    startup_read_option: bool = Field(
-        description="re-read RFID tags on AMS startup"
-    )
-    tray_read_option: bool = Field(
-        description="read RFID when a tray is inserted"
-    )
+    startup_read_option: bool = Field(description="re-read RFID tags on AMS startup")
+    tray_read_option: bool = Field(description="read RFID when a tray is inserted")
 
 
 @router.post("/{printer_id}/ams/user_setting")
@@ -447,27 +442,15 @@ async def ams_user_setting(
 
 
 class CalibrationBody(BaseModel):
-    """Calibration bitmask.
-
-    P1S-confirmed bits (docs/P1S-CONTROL-MATRIX.md §8):
-      1 = vibration compensation
-      2 = bed leveling
-      4 = first-layer / flow calibration (extrudes purge material)
-      7 = all three (1|2|4)
-
-    Bits 3+ are X1-only (LIDAR) and are rejected. If the option you need is
-    not listed, check the control matrix for P1S confirmation before adding it.
-    """
+    """Manufacturer calibration mask; endpoint withheld pending qualification."""
 
     model_config = ConfigDict(extra="forbid")
 
-    option: int = Field(
-        description="calibration bitmask — P1S-confirmed values only: 1, 2, 4, or 7"
-    )
-    bed_type: int = Field(
-        default=1,
+    option: int = Field(description="Manufacturer mask: bed=2, vibration=4; endpoint under review")
+    bed_type: int | None = Field(
+        default=None,
         ge=0,
-        description="bed surface type for leveling profile (1=textured, 2=smooth etc.)",
+        description="Legacy parameter; protocol support under review",
     )
 
 
@@ -479,15 +462,9 @@ async def run_calibration(
 ) -> dict[str, Any]:
     """Run printer calibration routines.
 
-    Only matrix-confirmed P1S options are accepted (1, 2, 4, or 7). Any
-    other value is rejected (422) with an explanatory message naming the
-    control matrix as authority.
-
-    Note: option 4 (flow calibration) extrudes purge material. Option 7
-    (all calibrations) runs a full sequence including bed leveling and
-    flow calibration — takes several minutes and moves the toolhead.
-
-    Risk: RED — motion, possible purge extrusion.
+    The builder accepts manufacturer bed-leveling bit 2 and vibration bit 4,
+    individually or combined as 6. Public access is withheld by the capability
+    dependency pending protocol qualification. Risk: RED — machine motion.
     """
     service = _online(registry, printer_id)
     return await _send(
@@ -545,7 +522,7 @@ async def set_nozzle(
     )
     # Update in-memory service attribute so the temperature clamp picks it up
     # immediately — no restart or re-register needed.
-    service.nozzle_type = body.nozzle_type
+    # Reported hardware, rather than publication, determines temperature policy.
     return result
 
 
@@ -567,9 +544,7 @@ class ExtrudeBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    distance_mm: float = Field(
-        description="positive = extrude, negative = retract; |value| ≤ 100"
-    )
+    distance_mm: float = Field(description="positive = extrude, negative = retract; |value| ≤ 100")
     feedrate: int = Field(
         default=300,
         description="feedrate in mm/min — must be one of 120, 300, 600",
@@ -643,8 +618,7 @@ async def extrude(
             detail={
                 "error": "jog_not_homed",
                 "message": (
-                    f"Cannot extrude: axes {unhomed} have not been homed. "
-                    "Run Home first."
+                    f"Cannot extrude: axes {unhomed} have not been homed. " "Run Home first."
                 ),
                 "likely_cause": "axis_position_unknown",
                 "remediation_hint": "Tap 'Home all' to home all axes before extruding.",
