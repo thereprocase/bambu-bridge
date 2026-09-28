@@ -122,7 +122,7 @@ export interface View {
    * an RFID re-scan is in progress — hold the previous slot view, don't
    * latch "No AMS detected". `!amsPresent` ⇒ no AMS hardware. */
   amsPresent: boolean;
-  amsUnits: { id: string; humidityPct: number | null; humidityLevel: number | null; temperatureC: number | null }[];
+  amsUnits: { id: string; humidityPct: number | null; temperatureC: number | null }[];
   /** AMS slot rows — index 0 = physical slot 1. */
   ams: AmsSlot[];
   printError: string | null;
@@ -516,12 +516,8 @@ export function viewOf(snapshot: PrinterSnapshot | null): View {
     v.amsUnits = ams.units.filter((unit) => obj(unit) != null).map((unit, i) => {
       const u = obj(unit)!;
       const id = typeof u.id === "string" ? u.id : String(i);
-      const rawUnits = obj(obj(s._raw)?.ams)?.ams;
-      const reported = Array.isArray(rawUnits) ? rawUnits.map(obj).find(unit => unit && String(unit.id) === id) : null;
-      const original = typeof reported?.info === "string" && (parseInt(reported.info, 16) & 15) === 1;
-      return { id: typeof u.id === "string" ? u.id : String(i),
-        humidityPct: original ? null : measured(u.humidity_pct, 0, 100),
-        humidityLevel: measured(u.humidity_level, 1, 5) ?? (original ? measured(Number(reported?.humidity), 1, 5) : null),
+      return { id,
+        humidityPct: measured(u.humidity_pct, 0, 100),
         temperatureC: measured(u.temperature_c, -40, 125) };
     });
   }

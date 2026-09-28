@@ -516,14 +516,14 @@ def _ams(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, Any]:
 
 
 def _ams_units(ams: dict[str, Any]) -> list[dict[str, Any]]:
-    """Environmental readings; firmware humidity level is NOT percent RH."""
+    """Use humidity_raw for percent RH; the separate 1–5 level is never a fallback."""
 
     def reading(value: Any, low: float, high: float) -> float | None:
         if isinstance(value, bool):
             return None
         try:
             result = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         return result if math.isfinite(result) and low <= result <= high else None
 
@@ -533,9 +533,7 @@ def _ams_units(ams: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": str(unit.get("id", index)),
-            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100)
-            if _ams_type(unit) in {3, 4}
-            else None,
+            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100),
             "humidity_level": reading(unit.get("humidity"), 1, 5) if _ams_type(unit) == 1 else None,
             "temperature_c": reading(unit.get("temp"), -40, 125),
         }

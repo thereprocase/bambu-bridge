@@ -13,7 +13,7 @@ def measured(value: Any, low: float, high: float) -> float | None:
         return None
     try:
         result = float(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
     return result if math.isfinite(result) and low <= result <= high else None
 
