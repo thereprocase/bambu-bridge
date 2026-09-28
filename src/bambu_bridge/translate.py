@@ -533,9 +533,7 @@ def _ams_units(ams: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": str(unit.get("id", index)),
-            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100)
-            if _ams_type(unit) in {3, 4}
-            else None,
+            "humidity_pct": reading(unit.get("humidity_raw"), 0, 100),
             "humidity_level": reading(unit.get("humidity"), 1, 5) if _ams_type(unit) == 1 else None,
             "temperature_c": reading(unit.get("temp"), -40, 125),
         }
