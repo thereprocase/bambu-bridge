@@ -949,16 +949,16 @@ describe("viewOf — preparing phase (no fake data)", () => {
 
 
 describe("AMS environmental readings", () => {
-  it("uses original AMS humidity levels with older server percentage fields", () => {
+  it("keeps reported percentages for original AMS units", () => {
     const v = viewOf(snap({
       ams: { units: [{ id: "0", humidity_pct: 6, temperature_c: 30 }] },
       _raw: { ams: { ams: [{ id: "0", info: "1001", humidity: "3" }] } },
     }));
     expect(v.amsUnits).toEqual([
-      { id: "0", humidityPct: null, humidityLevel: 3, temperatureC: 30 },
+      { id: "0", humidityPct: 6, temperatureC: 30 },
     ]);
   });
-  it("matches humidity capability by unit ID across reordered reports", () => {
+  it("keeps percentages attached to unit IDs across reordered raw reports", () => {
     const v = viewOf(snap({
       ams: { units: [{ id: "0", humidity_pct: 6 }, { id: "1", humidity_pct: 42 }] },
       _raw: { ams: { ams: [
@@ -966,8 +966,8 @@ describe("AMS environmental readings", () => {
         { id: "0", info: "1001", humidity: "4" },
       ] } },
     }));
-    expect(v.amsUnits.map(u => [u.id, u.humidityPct, u.humidityLevel])).toEqual([
-      ["0", null, 4], ["1", 42, null],
+    expect(v.amsUnits.map(u => [u.id, u.humidityPct])).toEqual([
+      ["0", 6], ["1", 42],
     ]);
   });
   it("supports older bridges", () => {
@@ -976,10 +976,11 @@ describe("AMS environmental readings", () => {
   it("keeps raw RH precision, zero and multiple units", () => {
     const units = [{ id: "0", humidity_pct: 6, temperature_c: 36.4 }, { id: "1", humidity_pct: 0, temperature_c: 0 }];
     expect(viewOf(snap({ ams: { units } })).amsUnits).toEqual([
-      { id: "0", humidityPct: 6, humidityLevel: null, temperatureC: 36.4 }, { id: "1", humidityPct: 0, humidityLevel: null, temperatureC: 0 },
+      { id: "0", humidityPct: 6, temperatureC: 36.4 }, { id: "1", humidityPct: 0, temperatureC: 0 },
     ]);
   });
-  it.each([null, true, "", "6", NaN, Infinity, -1, 101])("rejects invalid humidity %p", (value) => {
-    expect(viewOf(snap({ ams: { units: [{ humidity_pct: value }] } })).amsUnits[0].humidityPct).toBeNull();
+  it.each([undefined, null, true, "", "6", NaN, Infinity, -1, 101])("rejects invalid humidity %p", (value) => {
+    expect(viewOf(snap({ ams: { units: [{ id: "0", humidity_pct: value, humidity_level: 5 }] },
+      _raw: { ams: { ams: [{ id: "0", info: "1001", humidity: "5" }] } } })).amsUnits[0].humidityPct).toBeNull();
   });
 });
