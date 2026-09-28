@@ -106,10 +106,14 @@ async def test_video_animates_without_new_camera_frames_but_camera_still_expires
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=lambda: {})
     stream = OverlayStream(lambda: service, lambda: [], video=True)
     rendered = []
+    caches = []
 
     def render(frame, *args, **kwargs):
         rendered.append((frame, args[-1]))
-        assert kwargs == {"rgb": True}
+        assert kwargs["rgb"] is True
+        assert isinstance(kwargs["cache"], camera_overlay.RenderCache)
+        caches.append(kwargs["cache"])
+        assert all(cache is caches[0] for cache in caches)
         return b"fresh" if frame else b"stale"
 
     monkeypatch.setattr(camera_overlay, "render_frame", render)

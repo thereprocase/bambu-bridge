@@ -48,6 +48,92 @@ def jpeg():
     return out.getvalue()
 
 
+def test_video_cache_preserves_pixels_and_decodes_each_source_once(monkeypatch):
+    from unittest.mock import Mock
+
+    from bambu_bridge.camera_overlay import RenderCache
+
+    source = jpeg()
+    lines, warning = status_lines(snapshot(), [], time.time(), 0)
+    expected = render_frame(source, lines, warning, rgb=True)
+    opened = Mock(wraps=Image.open)
+    monkeypatch.setattr(Image, "open", opened)
+    cache = RenderCache()
+    first = render_frame(source, lines, warning, rgb=True, cache=cache)
+    assert first == expected
+    lines[-1] = "Telemetry age 3s | Camera age 3s"
+    assert render_frame(source, lines, warning, rgb=True, cache=cache) is first
+    lines[0] = "PAUSED"
+    changed = render_frame(source, lines, True, rgb=True, cache=cache)
+    assert changed != first
+    assert opened.call_count == 1
+    lost = render_frame(None, lines, True, rgb=True, cache=cache)
+    assert lost != changed
+    assert cache.decoded is None
+    assert render_frame(source, lines, True, rgb=True, cache=cache) == changed
+    assert opened.call_count == 2
+
+
+def test_video_cache_animation_preserves_background(monkeypatch):
+    from bambu_bridge import camera_overlay
+
+    cache = camera_overlay.RenderCache()
+    source = jpeg()
+    lines = ["IDLE", "Temperatures", "Bridge: waiting for next job"]
+    still = render_frame(source, lines, False, rgb=True, cache=cache)
+
+    def draw(canvas, shape, seconds, *args):
+        canvas.putpixel((0, 0), (int(seconds), 0, 0))
+
+    monkeypatch.setattr(camera_overlay, "draw_shape", draw)
+    one = render_frame(
+        source, lines, False, shape=object(), rotation_seconds=1, rgb=True, cache=cache
+    )
+    two = render_frame(
+        source, lines, False, shape=object(), rotation_seconds=2, rgb=True, cache=cache
+    )
+    assert one != two
+    assert render_frame(source, lines, False, rgb=True, cache=cache) == still
+
+
+@pytest.mark.parametrize("source", [None, b"broken jpeg", jpeg()])
+def test_cache_matches_uncached_missing_corrupt_and_live_frames(source):
+    from bambu_bridge.camera_overlay import RenderCache
+
+    lines = ["DISCONNECTED", "Temperatures", "Bridge: waiting for next job", "Telemetry age 65s"]
+    for rgb in (False, True):
+        assert render_frame(source, lines, True, rgb=rgb, cache=RenderCache()) == render_frame(
+            source, lines, True, rgb=rgb
+        )
+
+
+@pytest.mark.parametrize("size", [(320, 240), (640, 480), (1920, 1080)])
+def test_cache_tracks_ams_changes_and_output_format(size):
+    from bambu_bridge.camera_overlay import RenderCache
+
+    out = io.BytesIO()
+    Image.new("RGB", size, "#354960").save(out, "JPEG")
+    source, cache = out.getvalue(), RenderCache()
+    lines = ["IDLE", "Temperatures"]
+    panel = {
+        "title": "AMS",
+        "subtitle": "Slot 1",
+        "active": 0,
+        "stale": False,
+        "fault": None,
+        "colors": ["#FF0000"] * 4,
+    }
+    first = render_frame(source, lines, False, panel, rgb=True, cache=cache)
+    assert len(first) == 1280 * 720 * 3
+    panel["colors"][0] = "#00FF00"
+    changed = render_frame(source, lines, False, panel, rgb=True, cache=cache)
+    assert changed != first
+    assert changed == render_frame(source, lines, False, panel, rgb=True)
+    assert render_frame(source, lines, False, panel, cache=cache) == render_frame(
+        source, lines, False, panel
+    )
+
+
 def test_measured_printer_status_and_separate_delivery():
     now = time.time()
     lines, warning = status_lines(snapshot(), [{"created": now, "state": "delivered"}], now, 0.2)
@@ -195,9 +281,7 @@ async def test_camera_rate_is_not_capped_by_status_refresh(monkeypatch):
 
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=state)
     stream = OverlayStream(lambda: service, lambda: [])
-    monkeypatch.setattr(
-        camera_overlay, "render_frame", lambda frame, *args: frame
-    )
+    monkeypatch.setattr(camera_overlay, "render_frame", lambda frame, *args: frame)
     async with stream.subscribe() as queue:
         for i in range(5):
             frame = str(i).encode()
@@ -216,9 +300,7 @@ async def test_no_duplicate_live_frames_between_camera_arrivals(monkeypatch):
         yield raw
 
     service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=snapshot)
-    monkeypatch.setattr(
-        camera_overlay, "render_frame", lambda frame, *args: frame
-    )
+    monkeypatch.setattr(camera_overlay, "render_frame", lambda frame, *args: frame)
     stream = OverlayStream(lambda: service, lambda: [])
     async with stream.subscribe() as queue:
         raw.put_nowait(b"live")

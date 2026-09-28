@@ -24,12 +24,23 @@ RESOURCE = re.compile(
 )
 
 
-def encoder_command(executable: str, directory: Path) -> list[str]:
+def encoder_command(executable: str, directory: Path, vaapi_device: str | None = None) -> list[str]:
     args = [
         executable,
         "-hide_banner",
         "-loglevel",
         "error",
+    ]
+    if vaapi_device:
+        args += ["-vaapi_device", vaapi_device]
+    filters = (
+        "[0:v]format=nv12,hwupload,split=3[a][b][c];"
+        "[a]scale_vaapi=w=640:h=360[low];"
+        "[b]scale_vaapi=w=960:h=540[medium];[c]null[high]"
+        if vaapi_device
+        else "[0:v]split=3[a][b][c];[a]scale=640:360[low];" "[b]scale=960:540[medium];[c]null[high]"
+    )
+    args += [
         "-f",
         "rawvideo",
         "-pixel_format",
@@ -43,33 +54,30 @@ def encoder_command(executable: str, directory: Path) -> list[str]:
         "-filter_complex_threads",
         "1",
         "-filter_complex",
-        "[0:v]split=3[a][b][c];[a]scale=640:360[low];[b]scale=960:540[medium];" "[c]null[high]",
+        filters,
     ]
     for name, _, _, _ in QUALITIES:
         args += ["-map", f"[{name}]"]
-    args += [
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-tune",
-        "zerolatency",
-        "-pix_fmt",
-        "yuv420p",
-        "-profile:v",
-        "main",
-        "-threads",
-        "2",
-        "-g",
-        "30",
-        "-keyint_min",
-        "30",
-        "-sc_threshold",
-        "0",
-        "-bf",
-        "0",
-    ]
+    args += ["-an", "-profile:v", "main", "-g", "30", "-bf", "0"]
+    if vaapi_device:
+        args += ["-c:v", "h264_vaapi", "-rc_mode", "CBR"]
+    else:
+        args += [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-threads",
+            "2",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
+        ]
     for i, (_, _, _, bitrate) in enumerate(QUALITIES):
         args += [
             f"-b:v:{i}",
@@ -136,6 +144,7 @@ class AdaptiveVideo:
                     "BRIDGE_VIDEO_API_KEY": settings.bridge_api_key,
                     "BRIDGE_VIDEO_FFMPEG": settings.bridge_ffmpeg_path,
                     "BRIDGE_VIDEO_HLS_DIR": str(self.directory),
+                    "BRIDGE_VIDEO_VAAPI_DEVICE": getattr(settings, "bridge_video_vaapi_device", ""),
                 }
                 try:
                     self.process = await asyncio.create_subprocess_exec(

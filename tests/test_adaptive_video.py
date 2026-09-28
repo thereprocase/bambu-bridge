@@ -8,6 +8,83 @@ from bambu_bridge import adaptive_video
 from bambu_bridge.adaptive_video import AdaptiveVideo, encoder_command
 
 
+def test_vaapi_preserves_ladder_and_uses_hardware_scaling(tmp_path):
+    args = encoder_command("ffmpeg", tmp_path, "/dev/dri/renderD128")
+    assert args[args.index("-c:v") + 1] == "h264_vaapi"
+    assert "scale_vaapi=w=640:h=360" in args[args.index("-filter_complex") + 1]
+    assert args[args.index("-g") + 1] == "30"
+    assert args[args.index("-bf") + 1] == "0"
+    assert "-preset" not in args
+    assert args[args.index("-var_stream_map") + 1] == "v:0,name:low v:1,name:medium v:2,name:high"
+
+
+def test_gpu_probe_falls_back_on_failure(monkeypatch):
+    import subprocess
+
+    from bambu_bridge.video_publisher import usable_vaapi
+
+    def failed(*args, **kwargs):
+        raise subprocess.TimeoutExpired("ffmpeg", 5)
+
+    monkeypatch.setattr(subprocess, "run", failed)
+    assert not usable_vaapi("ffmpeg", "/dev/dri/renderD128")
+    assert not usable_vaapi("ffmpeg", "")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0))
+    assert usable_vaapi("ffmpeg", "/dev/dri/renderD128")
+
+
+@pytest.mark.parametrize("result", [1, OSError("device unavailable")])
+def test_gpu_probe_failure_and_cleanup(monkeypatch, result):
+    import subprocess
+    from pathlib import Path
+
+    from bambu_bridge.video_publisher import usable_vaapi
+
+    directories = []
+
+    def run(command, **kwargs):
+        directory = Path(command[-1]).parent
+        directories.append(directory)
+        assert directory.is_dir()
+        assert len(kwargs["input"]) == 1280 * 720 * 3
+        assert "v:0,name:low v:1,name:medium v:2,name:high" in command
+        assert kwargs["timeout"] == 5
+        if isinstance(result, Exception):
+            raise result
+        return SimpleNamespace(returncode=result)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert not usable_vaapi("ffmpeg", "")
+    assert directories == []
+    assert not usable_vaapi("ffmpeg", "/dev/dri/renderD128")
+    assert len(directories) == 1 and not directories[0].exists()
+
+
+def test_publisher_reaps_encoder_when_pipe_close_fails(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+
+    from bambu_bridge import video_publisher
+
+    for key, value in {
+        "BRIDGE_VIDEO_PRINTER_ID": "fixture",
+        "BRIDGE_VIDEO_API_PORT": "8080",
+        "BRIDGE_VIDEO_API_KEY": "test-credential",
+        "BRIDGE_VIDEO_HLS_DIR": str(tmp_path),
+        "BRIDGE_VIDEO_FFMPEG": "ffmpeg",
+        "BRIDGE_VIDEO_VAAPI_DEVICE": "",
+    }.items():
+        monkeypatch.setenv(key, value)
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b""
+    monkeypatch.setattr(video_publisher.urllib.request, "urlopen", lambda *a, **kw: response)
+    child = MagicMock()
+    child.stdin.close.side_effect = BrokenPipeError()
+    monkeypatch.setattr(video_publisher.subprocess, "Popen", lambda *a, **kw: child)
+    video_publisher.main()
+    child.terminate.assert_called_once()
+    child.wait.assert_called_once_with(timeout=5)
+
+
 def test_ladder_aligns_keyframes_and_bounds_disk_and_rate(tmp_path):
     args = encoder_command("ffmpeg", tmp_path)
     assert args[args.index("-g") + 1] == "30"

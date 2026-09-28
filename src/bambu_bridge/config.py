@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     bridge_native_video_advertise: bool = False  # enable only after client acceptance
     bridge_mediamtx_path: str = "/usr/local/bin/mediamtx"
     bridge_ffmpeg_path: str = "/usr/bin/ffmpeg"
+    bridge_video_vaapi_device: str = ""
     bridge_camera_timezone: str = "UTC"  # IANA zone for the shared camera's completion estimate
 
     @field_validator("bridge_camera_timezone")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import math
 import time
 from collections.abc import AsyncIterator, Callable
@@ -142,12 +143,8 @@ def status_lines(
     return [title, thermal, bridge, health], warning
 
 
-def render_frame(
-    jpeg: bytes | None, lines: list[str], warning: bool, ams: dict[str, Any] | None = None,
-    shape: Shape | None = None, rotation_seconds: float = 0.0, rgb: bool = False
-) -> bytes:
-    """Render off the event loop; bound decoded dimensions before allocating RGB."""
-    canvas = None
+def _decode_frame(jpeg: bytes | None) -> Image.Image | None:
+    """Bound decoded dimensions before allocating RGB."""
     if jpeg:
         try:
             with Image.open(io.BytesIO(jpeg)) as source:
@@ -156,9 +153,20 @@ def render_frame(
                     and 320 <= source.width <= 1920
                     and 240 <= source.height <= 1080
                 ):
-                    canvas = source.convert("RGB")
+                    return source.convert("RGB")
         except (OSError, ValueError, Image.DecompressionBombError):
             pass
+    return None
+
+
+def _render_base(
+    decoded: Image.Image | None,
+    lines: list[str],
+    warning: bool,
+    ams: dict[str, Any] | None = None,
+) -> tuple[Image.Image, int, int]:
+    """Compose static layers off the event loop, preserving the decoded source."""
+    canvas = decoded.copy() if decoded is not None else None
     missing = canvas is None
     if canvas is None:
         canvas = Image.new("RGB", (1280, 720), "#111923")
@@ -215,13 +223,79 @@ def render_frame(
         )
     if ams:
         draw_ams(canvas, ams)
+    return canvas, panel_width + margin, panel_height
+
+
+class RenderCache:
+    """One decoded camera frame and one static composition per active stream.
+
+    Owned by the stream's serial render worker; released when the viewer leaves.
+    Animated geometry is painted on a copy, preserving the cached background.
+    """
+
+    def __init__(self):
+        self.jpeg: bytes | None = None
+        self.decoded: Image.Image | None = None
+        self.key: tuple | None = None
+        self.base: tuple[Image.Image, int, int] | None = None
+        self.output: bytes | None = None
+
+    def background(
+        self,
+        jpeg: bytes | None,
+        lines: list[str],
+        warning: bool,
+        ams: dict[str, Any] | None,
+        rgb: bool,
+    ) -> tuple[Image.Image, int, int]:
+        if jpeg != self.jpeg:
+            self.jpeg, self.decoded = jpeg, _decode_frame(jpeg)
+            self.key = None
+        # The health line is displayed only for warnings. Its age changes on
+        # every tick, while the visible normal-status panel stays unchanged.
+        key = (
+            tuple(lines if warning else lines[:3]),
+            warning,
+            json.dumps(ams, sort_keys=True),
+            rgb,
+        )
+        if key != self.key:
+            self.base = _render_base(self.decoded, lines, warning, ams)
+            self.key, self.output = key, None
+        assert self.base is not None
+        return self.base
+
+
+def render_frame(
+    jpeg: bytes | None,
+    lines: list[str],
+    warning: bool,
+    ams: dict[str, Any] | None = None,
+    shape: Shape | None = None,
+    rotation_seconds: float = 0.0,
+    rgb: bool = False,
+    cache: RenderCache | None = None,
+) -> bytes:
+    base = (
+        cache.background(jpeg, lines, warning, ams, rgb)
+        if cache
+        else _render_base(_decode_frame(jpeg), lines, warning, ams)
+    )
+    canvas, panel_width, panel_height = base
+    if cache and not shape and cache.output is not None:
+        return cache.output
     if shape:
-        draw_shape(canvas, shape, rotation_seconds, panel_width + margin, panel_height)
+        canvas = canvas.copy()
+        draw_shape(canvas, shape, rotation_seconds, panel_width, panel_height)
     if rgb:
-        return canvas.resize((1280, 720)).tobytes()
-    output = io.BytesIO()
-    canvas.save(output, format="JPEG", quality=85)
-    return output.getvalue()
+        result = (canvas if canvas.size == (1280, 720) else canvas.resize((1280, 720))).tobytes()
+    else:
+        output = io.BytesIO()
+        canvas.save(output, format="JPEG", quality=85)
+        result = output.getvalue()
+    if cache:
+        cache.output = None if shape else result
+    return result
 
 
 class OverlayStream:
@@ -268,6 +342,7 @@ class OverlayStream:
 
     async def _run(self) -> None:
         try:
+            cache = RenderCache() if self.video else None
             service = self.service()
             async with service.camera.subscribe() as raw:
                 frame: bytes | None = None
@@ -297,8 +372,12 @@ class OverlayStream:
                         last_frame = tick
                         got_frame = True
                     age = tick - last_frame if last_frame is not None else None
-                    if (not self.video and not got_frame
-                            and age is not None and age <= STALE_FRAME_S):
+                    if (
+                        not self.video
+                        and not got_frame
+                        and age is not None
+                        and age <= STALE_FRAME_S
+                    ):
                         continue  # do not manufacture duplicate "live" frames between arrivals
                     if tick - status_at >= 1:
                         snapshot, receipts = service.snapshot(), self.receipts()
@@ -315,7 +394,7 @@ class OverlayStream:
                             ams_panel(snapshot, time.time()),
                             self.shapes.update(snapshot) if self.shapes else None,
                             tick,
-                            **({"rgb": True} if self.video else {}),
+                            **({"rgb": True, "cache": cache} if self.video else {}),
                         )
                     )
                     try:

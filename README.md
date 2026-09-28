@@ -30,6 +30,7 @@ The bridge and app are developed together in this repository:
 - [Print library](docs/PRINT-LIBRARY.md)
 - [Home Assistant](homeassistant/README.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Video performance and optional GPU encoding](docs/video-performance.md)
 
 ## Development
 

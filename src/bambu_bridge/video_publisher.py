@@ -2,12 +2,35 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
+import tempfile
 import urllib.request
 from pathlib import Path
 from urllib.parse import quote
+
+from bambu_bridge.adaptive_video import encoder_command
+
+
+def usable_vaapi(executable: str, device: str) -> bool:
+    """Probe the complete three-rendition pipeline with the worker's permissions."""
+    if not device:
+        return False
+    try:
+        with tempfile.TemporaryDirectory(prefix="bridge-video-probe-") as directory:
+            result = subprocess.run(
+                encoder_command(executable, Path(directory), device),
+                input=bytes(1280 * 720 * 3),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def main() -> None:
@@ -17,14 +40,16 @@ def main() -> None:
     if not directory:
         remux(printer, port)
         return
+    executable = os.environ["BRIDGE_VIDEO_FFMPEG"]
+    device = os.environ.get("BRIDGE_VIDEO_VAAPI_DEVICE", "")
+    command = encoder_command(
+        executable, Path(directory), device if usable_vaapi(executable, device) else None
+    )
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/v1/printers/{printer}/camera/video.rgb",
         headers={"Authorization": "Bearer " + os.environ["BRIDGE_VIDEO_API_KEY"]},
     )
     with urllib.request.urlopen(request, timeout=15) as response:
-        from bambu_bridge.adaptive_video import encoder_command as adaptive_command
-
-        command = adaptive_command(os.environ["BRIDGE_VIDEO_FFMPEG"], Path(directory))
         process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -36,7 +61,10 @@ def main() -> None:
                 process.stdin.write(data)
         finally:
             if process.stdin:
-                process.stdin.close()
+                # An encoder exit can leave buffered bytes in the pipe. Finish
+                # reaping the child even when flushing those bytes fails.
+                with contextlib.suppress(BrokenPipeError):
+                    process.stdin.close()
             process.terminate()
             try:
                 process.wait(timeout=5)
