@@ -448,6 +448,7 @@ If you skip this rule and render `mc_percent` during `preparing`, the APK shows 
 | `temps.*.target_c` | `nozzle_target_temper`, `bed_target_temper`, … | numeric pass-through |
 | `cooling.*.percent` | `cooling_fan_speed`, `big_fan1_speed`, `big_fan2_speed` (P1S native 0–15 string) | **percent = round(raw * 100 / 15)**; `_raw` retains the original string |
 | `ams.present` | `ams.ams_exist_bits` | bool. Hex-ish bitmask string; **nonzero ⇒ AMS hardware attached**, absent/empty/all-zero ⇒ `false`. Independent of `ams.ams[]` so it stays `true` across an RFID re-scan (see §6.1.1). |
+| `ams.units[].humidity_pct` | `ams.ams[].humidity_raw` | Finite percent RH in the inclusive range 0–100, independent of AMS model. Missing, invalid, boolean, or out-of-range readings become `null`. Mobile displays `% RH` or `Humidity N/A`; it never substitutes the separate 1–5 `humidity_level`. |
 | `ams.slots[].physical_slot` | array index of `ams.tray[]` | **physical_slot = raw_id + 1**. `_raw_id` retains the 0-based. |
 | `ams.engaged_slot` | `ams.tray_now` | `255 → null` (nothing engaged), `254 → "external"`, `0-3 → 1-4` (physical slot). The §6.3 feed-confirmation signal. |
 

@@ -614,7 +614,7 @@ def test_started_at_null_when_neither_raw_nor_ctx() -> None:
 
 
 @pytest.mark.parametrize("info", ["1001", "1003", "1004", None, "unknown"])
-@pytest.mark.parametrize("humidity", ["0", "6", "100"])
+@pytest.mark.parametrize("humidity", ["0", "6.25", "100"])
 def test_ams_environment_uses_raw_percent_not_category(info: str | None, humidity: str) -> None:
     ams_unit = {"id": "0", "humidity": "5", "humidity_raw": humidity, "temp": "36.4"}
     if info is not None:
@@ -630,9 +630,11 @@ def test_ams_environment_uses_raw_percent_not_category(info: str | None, humidit
     ]
 
 
-@pytest.mark.parametrize("value", [None, True, "", "nan", "inf", -1, 101])
+@pytest.mark.parametrize("value", [
+    None, True, False, "", "Err", "nan", "inf", "-inf", -1, 101, 255, 65535, [], {}, 10**400,
+])
 def test_ams_invalid_humidity_is_unavailable(value: Any) -> None:
-    raw = {"ams": {"ams": [{"humidity": "5", "humidity_raw": value}]}}
+    raw = {"ams": {"ams": [{"info": "1001", "humidity": "5", "humidity_raw": value}]}}
     unit = translate_snapshot(raw, _ctx())["ams"]["units"][0]
     assert unit["humidity_pct"] is None
     assert unit["temperature_c"] is None

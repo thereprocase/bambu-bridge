@@ -39,9 +39,12 @@ def test_live_selection_and_reported_values():
     assert not panel["stale"] and panel["fault"] is None
 
 
-@pytest.mark.parametrize("value", [None, "", "nan", "inf", -1, 101, True])
+@pytest.mark.parametrize("value", [None, "", "Err", "nan", "inf", -1, 101, 255, True, [], {}, 10**400])
 def test_invalid_humidity_is_not_a_measurement(value):
     assert measured(value, 0, 100) is None
+    s = sample()
+    s["_raw"]["ams"]["ams"][0].update(humidity_raw=value, humidity="5")
+    assert "% RH" not in ams_panel(s, time.time())["title"]
 
 
 def test_missing_fields_external_and_stale_faults():

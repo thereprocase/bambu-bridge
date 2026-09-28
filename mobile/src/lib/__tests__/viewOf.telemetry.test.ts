@@ -24,6 +24,7 @@
  */
 
 import { viewOf } from "../snapshot";
+import { amsEnvironmentLabel } from "../amsEnvironment";
 
 // ---------------------------------------------------------------------------
 // Helpers — build the minimal realistic fixtures without repeating boilerplate
@@ -979,8 +980,42 @@ describe("AMS environmental readings", () => {
       { id: "0", humidityPct: 6, temperatureC: 36.4 }, { id: "1", humidityPct: 0, temperatureC: 0 },
     ]);
   });
-  it.each([undefined, null, true, "", "6", NaN, Infinity, -1, 101])("rejects invalid humidity %p", (value) => {
-    expect(viewOf(snap({ ams: { units: [{ id: "0", humidity_pct: value, humidity_level: 5 }] },
-      _raw: { ams: { ams: [{ id: "0", info: "1001", humidity: "5" }] } } })).amsUnits[0].humidityPct).toBeNull();
+  it.each([
+    undefined, null, true, false, "", "6", "Err", NaN, Infinity, -Infinity,
+    -1, 101, 255, 65535, [], {},
+  ])("shows N/A for invalid humidity %p even when level 5 is reported", (value) => {
+    const unit = viewOf(snap({
+      ams: { units: [{ id: "0", humidity_pct: value, humidity_level: 5 }] },
+      _raw: { ams: { ams: [{ id: "0", info: "1001", humidity: "5" }] } },
+    })).amsUnits[0];
+    expect(unit.humidityPct).toBeNull();
+    expect(amsEnvironmentLabel(unit, 0, false)).toBe(
+      "AMS 1 · Humidity N/A · Temperature unavailable",
+    );
+  });
+  it.each([0, 6.25, 100])("shows %p percent without rounding or a level fallback", (value) => {
+    const unit = viewOf(snap({
+      ams: { units: [{ id: "1", humidity_pct: value, temperature_c: 36.4 }] },
+    })).amsUnits[0];
+    expect(amsEnvironmentLabel(unit, 0, false)).toBe(`AMS 2 · ${value}% RH · 36.4 °C`);
+    expect(amsEnvironmentLabel(unit, 0, true)).toBe(
+      `Last known · AMS 2 · ${value}% RH · 36.4 °C`,
+    );
+  });
+  it("does not retain an old percentage when a reading becomes invalid, and recovers", () => {
+    const labels = [6, null, 8].map(humidity => {
+      const unit = viewOf(snap({
+        ams: { units: [{ id: "0", humidity_pct: humidity, humidity_level: 5 }] },
+      })).amsUnits[0];
+      return amsEnvironmentLabel(unit, 0, false);
+    });
+    expect(labels).toEqual([
+      "AMS 1 · 6% RH · Temperature unavailable",
+      "AMS 1 · Humidity N/A · Temperature unavailable",
+      "AMS 1 · 8% RH · Temperature unavailable",
+    ]);
+  });
+  it.each([undefined, null, {}, "Err"])("ignores malformed unit lists %p", units => {
+    expect(viewOf(snap({ ams: { units } })).amsUnits).toEqual([]);
   });
 });
