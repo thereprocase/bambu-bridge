@@ -25,6 +25,7 @@ Collects every issue (does not raise) so the caller can report all at once.
 from __future__ import annotations
 
 import io
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
@@ -53,16 +54,35 @@ class ValidationReport:
             raise ContainerError("; ".join(self.issues))
 
 
-def _slice_info_arity(xml_bytes: bytes) -> tuple[int, int, set[int]]:
-    """``(filament_maps token count, <filament> count, filament_list idxs)``."""
+_INDEX = re.compile(r"-?[0-9]+")
+
+
+def _slice_info_arity(xml_bytes: bytes) -> tuple[int, int, set[int], list[str]]:
+    """``(filament_maps token count, <filament> count, filament_list idxs, unparseable values)``.
+
+    ``filament_list`` is a space-separated list: a layer range printed with several filaments
+    (OrcaSlicer's per-part colours, e.g. a flush inlay) is ``filament_list="0 1"``. A missing or
+    empty value counts as index -1 (reported as out of range); non-integer tokens are returned
+    as-is so the caller reports them instead of raising.
+    """
     root = ET.fromstring(xml_bytes)  # noqa: S314 — our own generated XML
     maps_tokens = 0
     for md in root.iter("metadata"):
         if md.get("key") == "filament_maps":
             maps_tokens = len((md.get("value") or "").split())
     filament_count = sum(1 for _ in root.iter("filament"))
-    fl_idxs = {int(lfl.get("filament_list") or -1) for lfl in root.iter("layer_filament_list")}
-    return maps_tokens, filament_count, fl_idxs
+    fl_idxs: set[int] = set()
+    fl_bad: list[str] = []
+    for lfl in root.iter("layer_filament_list"):
+        raw = lfl.get("filament_list") or ""
+        tokens = raw.split() or ["-1"]
+        for token in tokens:
+            # ASCII digits only: int() alone also takes "1_0" and non-ASCII digits
+            if not _INDEX.fullmatch(token):
+                fl_bad.append(raw)
+                break
+            fl_idxs.add(int(token))
+    return maps_tokens, filament_count, fl_idxs, fl_bad
 
 
 def validate(
@@ -141,7 +161,7 @@ def validate(
                 r.issues.append("G6 requires single-nozzle slice metadata")
             if expected_nozzle is not None and meta.get("nozzle_diameters") != str(expected_nozzle):
                 r.issues.append("G6 sliced nozzle diameter differs from the reported nozzle")
-            maps_n, fil_n, fl_idxs = _slice_info_arity(slice_xml)
+            maps_n, fil_n, fl_idxs, fl_bad = _slice_info_arity(slice_xml)
             if expected_model is not None and expected_ams_mapping is None and fil_n > 1:
                 r.issues.append("G6 multi-filament files require a complete filament mapping")
         except ET.ParseError as exc:
@@ -158,7 +178,11 @@ def validate(
                     f"{maps_n} slots but {fil_n} <filament> record(s) "
                     "(the §6.3 trap)"
                 )
-            for idx in fl_idxs:
+            for raw in fl_bad:
+                r.issues.append(
+                    f"G5 layer_filament_list filament_list={raw!r} is not a list of indices"
+                )
+            for idx in sorted(fl_idxs):
                 if not (0 <= idx < max(fil_n, 1)):
                     r.issues.append(
                         f"G5 layer_filament_list filament_list={idx} " f"outside 0..{fil_n - 1}"
