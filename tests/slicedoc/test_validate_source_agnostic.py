@@ -147,3 +147,50 @@ def test_target_model_and_nozzle_qualification(model, nozzle, issue) -> None:
     else:
         assert not result.ok
         assert any(issue in item for item in result.issues)
+
+
+# A two-colour flush inlay sliced by OrcaSlicer 2.4.2 with per-part filaments: the layers that print
+# both colours list both slice indices, space-separated (captured from a real sliced plate).
+_TWO_FILAMENT_INLAY = (
+    '<?xml version="1.0"?><config><plate>'
+    '<metadata key="filament_maps" value="1 1"/>'
+    '<filament id="1" type="ASA" color="#161616"/>'
+    '<filament id="2" type="ASA" color="#FFF144"/>'
+    "<layer_filament_lists>"
+    '<layer_filament_list filament_list="0 1" layer_ranges="8 9" />'
+    '<layer_filament_list filament_list="0" layer_ranges="0 7" />'
+    "</layer_filament_lists>"
+    "</plate></config>"
+)
+_TWO_FILAMENT_GCODE = (
+    b"M620 S0A\nT0\nM621 S0A\nG1 X1\n" b"M620 S1A\nT1\nM621 S1A\nM620 S0A\nT0\nM621 S0A\n"
+)
+
+
+def test_multi_filament_layer_list_is_parsed_not_a_crash() -> None:
+    # Regression: int("0 1") raised ValueError out of validate(), so every flush two-colour
+    # slice failed the jobs API, the Orca upload adapter and the queue with a server error.
+    r = validate(_container(_TWO_FILAMENT_INLAY, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
+    assert r.ok, r.issues
+
+
+@pytest.mark.parametrize("value", ["0 x", "one", "0,1", "1_0", "0 \u0661"])
+def test_unparseable_layer_list_is_an_issue_not_an_exception(value: str) -> None:
+    info = _TWO_FILAMENT_INLAY.replace('filament_list="0 1"', f'filament_list="{value}"')
+    r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
+    assert not r.ok
+    assert any("is not a list of indices" in issue for issue in r.issues), r.issues
+
+
+def test_layer_list_index_outside_the_filaments_still_rejected() -> None:
+    info = _TWO_FILAMENT_INLAY.replace('filament_list="0 1"', 'filament_list="0 2"')
+    r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
+    assert any("filament_list=2 outside 0..1" in issue for issue in r.issues), r.issues
+
+
+@pytest.mark.parametrize("attr", ['filament_list=""', ""])
+def test_missing_or_empty_layer_list_counts_as_out_of_range(attr: str) -> None:
+    info = _TWO_FILAMENT_INLAY.replace('filament_list="0 1"', attr)
+    r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
+    assert not r.ok
+    assert any("filament_list=-1 outside 0..1" in issue for issue in r.issues), r.issues

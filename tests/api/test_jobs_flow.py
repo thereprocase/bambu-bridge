@@ -328,3 +328,69 @@ async def test_cancel_before_printer_ack(
 
     await asyncio.to_thread(run)
     assert captured["state"] in ("canceled", "failed")
+
+
+def _two_filament_container(layer_list: str) -> bytes:
+    """Minimal P1S slice (the three members the gate reads) with two filaments and one
+    layer range listing both, OrcaSlicer's shape for a two-colour layer."""
+    import hashlib
+    import io
+    import zipfile
+
+    gcode = b"M620 S0A\nT0\nM621 S0A\nG1 X1\nM620 S1A\nT1\nM621 S1A\n"
+    info = (
+        '<?xml version="1.0"?><config><plate>'
+        '<metadata key="printer_model_id" value="C12"/>'
+        '<metadata key="nozzle_diameters" value="0.4"/>'
+        '<filament id="1" type="ASA" color="#161616"/>'
+        '<filament id="2" type="ASA" color="#FFF144"/>'
+        f'<layer_filament_lists><layer_filament_list filament_list="{layer_list}" '
+        'layer_ranges="0 9" /></layer_filament_lists>'
+        "</plate></config>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("Metadata/plate_1.gcode", gcode)
+        md5 = hashlib.md5(gcode).hexdigest().upper()  # noqa: S324
+        z.writestr("Metadata/plate_1.gcode.md5", md5)
+        z.writestr("Metadata/slice_info.config", info)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("layer_list", ["0 1", "0 x"])
+async def test_two_filament_layer_list_is_a_clean_422_not_a_500(
+    tmp_path: Path,
+    mqtt_broker: int,
+    printing_mock: MockPrinter,
+    ftps_server: tuple[int, Path],
+    layer_list: str,
+) -> None:
+    """filament_list="0 1" once raised ValueError out of validate(): a 500 from this endpoint.
+    One ams_mapping slot for a two-filament slice must be refused cleanly as invalid_3mf."""
+    ftps_port, _ = ftps_server
+    app = build_app(tmp_path / "lfl.db", mqtt_port=mqtt_broker, ftps_port=ftps_port)
+    captured: dict[str, object] = {}
+
+    def run() -> None:
+        with TestClient(app) as c:
+            _register(c)
+            sub = c.post(
+                f"/api/v1/printers/{SERIAL}/jobs",
+                headers=_AUTH,
+                data={"ams_mapping": "1"},
+                files={
+                    "file": (
+                        "two.gcode.3mf",
+                        _two_filament_container(layer_list),
+                        "application/octet-stream",
+                    )
+                },
+            )
+            captured["status"] = sub.status_code
+            captured["body"] = sub.json()
+
+    await asyncio.to_thread(run)
+    assert captured["status"] == 422, captured
+    messages = " ".join(i["message"] for i in captured["body"]["issues"])  # type: ignore[index]
+    assert "ams_mapping arity 1" in messages, captured
