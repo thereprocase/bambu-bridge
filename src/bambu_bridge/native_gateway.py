@@ -455,9 +455,6 @@ class NativeGateway:
             server.close()
         for writer in list(self.writers):
             writer.close()
-        for task in list(self.tasks):
-            task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
         if self.inbox_task:
             self.inbox_task.cancel()
             await asyncio.gather(self.inbox_task, return_exceptions=True)

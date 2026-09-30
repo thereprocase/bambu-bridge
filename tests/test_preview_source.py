@@ -108,3 +108,18 @@ async def test_restart_reuses_source_for_same_job_but_reprint_reacquires(tmp_pat
     reprint = {**current, "job": {"started_at": "2026-01-02T00:00:00Z"}}
     with pytest.raises(ValueError, match="printer changed"):
         await restarted.load(reprint)
+
+
+@pytest.mark.asyncio
+async def test_explicit_retry_reacquires_the_current_source(tmp_path):
+    calls = []
+    current = {**SNAPSHOT, "_raw": {**SNAPSHOT["_raw"], "gcode_state": "RUNNING"}}
+    sources = preview_source.PreviewSources(
+        tmp_path, lambda: None, lambda snapshot: calls.append(True) or GCODE, lambda: 990
+    )
+    assert await sources.load(current) is not None
+    assert await sources.load(current) is not None
+    assert len(calls) == 1
+    await sources.retry(current)
+    assert await sources.load(current) is not None
+    assert len(calls) == 2

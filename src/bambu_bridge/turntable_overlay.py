@@ -497,6 +497,8 @@ class ShapeCache:
                     self.failures += 1
                     self.state = "retrying"
                     self.retry_at = time.monotonic() + min(60, 5 * 2 ** min(self.failures - 1, 4))
+                    if self.error in {"ValueError", "ParseError", "GcodeParseError"}:
+                        self.retry_at = float("inf")
                 else:
                     self.state, self.error, self.failures = "ready", None, 0
             self.task = None

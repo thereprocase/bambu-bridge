@@ -128,6 +128,10 @@ async def retry_preview(request: Request, printer_id: str) -> dict[str, Any]:
     if gateway.video_overlay.shapes:
         from bambu_bridge.spinner_frames import SPINNER_FRAMES
 
+        sources = getattr(gateway, "preview_sources", None)
+        if sources:
+            await sources.retry(gateway.service().snapshot())
+            _get_viz_cache(request).invalidate(printer_id)
         SPINNER_FRAMES.close()
         gateway.video_overlay.shapes.retry()
     return gateway.preview_status()

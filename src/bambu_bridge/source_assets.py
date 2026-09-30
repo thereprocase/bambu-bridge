@@ -105,3 +105,8 @@ class SourceAssets:
                     item.unlink(missing_ok=True)
                     db.execute("DELETE FROM refs WHERE digest=?", (item.name,))
         return digest
+
+    def forget(self, reference: str) -> None:
+        """Release one association; shared content remains available to other jobs."""
+        with self._connect() as db:
+            db.execute("DELETE FROM refs WHERE key=?", (self._key(reference),))

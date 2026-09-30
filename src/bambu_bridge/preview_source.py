@@ -102,6 +102,10 @@ class PreviewSources:
             digest = await asyncio.to_thread(self.assets.put, "upload", data)
             return await self.geometry.acquire(self.assets.directory / digest, plate)
 
+    async def retry(self, snapshot: dict[str, Any]) -> None:
+        await self.close()
+        await asyncio.to_thread(self.assets.forget, "job:" + job_key(snapshot))
+
 
 def selected_plate(raw: dict[str, Any]) -> int:
     """Prefer the selected archive member supplied by printer telemetry."""
