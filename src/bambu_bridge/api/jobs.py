@@ -89,15 +89,14 @@ async def submit_job(
     belt-and-suspenders against any future async re-entry.)
     """
     name = file.filename or "upload.3mf"
-    from bambu_bridge.api.capabilities import fresh_state, reported_nozzle, require_p1s, unavailable
+    from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
 
     try:
         service = registry.get(printer_id)
     except PrinterNotFoundError:
         return api_errors.not_found("printer", printer_id)  # type: ignore[return-value]
     require_p1s(service)
-    if fresh_state(service) not in {"IDLE", "FINISH"}:
-        unavailable("Printer must be idle before starting a file")
+    require_start_ready(service)
     data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
     report = slice_validate(

@@ -183,11 +183,10 @@ async def start_queue_item(
         await repo.delete(item_id)
         return errors.not_found("printer", item.printer_id)
     # Re-validate ams_mapping at start time in case slot range tightened.
-    from bambu_bridge.api.capabilities import fresh_state, reported_nozzle, require_p1s, unavailable
+    from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
 
     require_p1s(service)
-    if fresh_state(service) not in {"IDLE", "FINISH"}:
-        unavailable("Printer must be idle before starting a stored file")
+    require_start_ready(service, "a stored file")
     try:
         _validate_ams(item.ams_mapping)
     except _SlotError as exc:

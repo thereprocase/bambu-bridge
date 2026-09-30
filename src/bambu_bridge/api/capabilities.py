@@ -57,6 +57,18 @@ def fresh_state(service: Any) -> str:
     return str((snapshot.get("_raw") or {}).get("gcode_state", "UNKNOWN"))
 
 
+# A P1S keeps reporting FAILED after a stopped or failed print until the next
+# job starts; the screen's dismiss does not return it to IDLE. Treat it like
+# FINISH, as the native gateway, Orca route and job watcher already do. Whether
+# the plate is clear is the operator's call, not a telemetry state.
+START_READY_STATES = frozenset({"IDLE", "FINISH", "FAILED"})
+
+
+def require_start_ready(service: Any, what: str = "a file") -> None:
+    if fresh_state(service) not in START_READY_STATES:
+        unavailable(f"Printer must be idle before starting {what}")
+
+
 async def control_capability_gate(request: Request) -> None:
     """Protect every typed/raw route in the control routers before publication."""
     from bambu_bridge.api.printers import get_registry
