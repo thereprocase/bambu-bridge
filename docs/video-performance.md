@@ -56,6 +56,24 @@ Temporary probe files are cleaned up. A failed probe selects the software encode
 An empty setting also selects software. Both paths retain the same resolutions,
 bitrate targets, one-second GOPs, HLS segment format, and viewing leases.
 
+`BRIDGE_VIDEO_RATE_CONTROL=VBR` selects capped variable bitrate for VAAPI. The
+default remains CBR. The startup probe tests the requested mode; unsupported
+hardware/driver combinations select software. Resolution, 30 FPS, one-second
+GOPs and peak bitrate caps remain unchanged.
+
+A three-second static sample captured from the live camera produced:
+
+| FPS | Mode | Encoder CPU seconds | 720p kbit/s | PSNR dB |
+| --- | --- | --- | --- | --- |
+| 15 | CBR | 0.348 | 1336 | 43.43 |
+| 15 | VBR | 0.322 | 171 | 43.43 |
+| 30 | CBR | 0.469 | 1336 | 42.82 |
+| 30 | VBR | 0.491 | 159 | 42.82 |
+
+All three renditions decoded in every case. This supports selecting VBR on the
+qualified Intel host while retaining 30 FPS; it measures a static sample, rather
+than establishing quality or bitrate across every moving scene.
+
 Validation should include decoding all three renditions, real-camera visual
 quality, rendition switching, Orca playback, camera-loss status, multiple viewers,
 and idle shutdown. Measure CPU using interval deltas; process lifetime CPU is

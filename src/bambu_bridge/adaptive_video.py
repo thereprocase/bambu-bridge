@@ -24,7 +24,11 @@ RESOURCE = re.compile(
 )
 
 
-def encoder_command(executable: str, directory: Path, vaapi_device: str | None = None) -> list[str]:
+def encoder_command(
+    executable: str, directory: Path, vaapi_device: str | None = None, rate_control: str = "CBR"
+) -> list[str]:
+    if rate_control not in {"CBR", "VBR"}:
+        raise ValueError("Invalid video rate control")
     args = [
         executable,
         "-hide_banner",
@@ -60,7 +64,7 @@ def encoder_command(executable: str, directory: Path, vaapi_device: str | None =
         args += ["-map", f"[{name}]"]
     args += ["-an", "-profile:v", "main", "-g", "30", "-bf", "0"]
     if vaapi_device:
-        args += ["-c:v", "h264_vaapi", "-rc_mode", "CBR"]
+        args += ["-c:v", "h264_vaapi", "-rc_mode", rate_control]
     else:
         args += [
             "-c:v",
@@ -145,6 +149,9 @@ class AdaptiveVideo:
                     "BRIDGE_VIDEO_FFMPEG": settings.bridge_ffmpeg_path,
                     "BRIDGE_VIDEO_HLS_DIR": str(self.directory),
                     "BRIDGE_VIDEO_VAAPI_DEVICE": getattr(settings, "bridge_video_vaapi_device", ""),
+                    "BRIDGE_VIDEO_RATE_CONTROL": getattr(
+                        settings, "bridge_video_rate_control", "CBR"
+                    ),
                 }
                 try:
                     self.process = await asyncio.create_subprocess_exec(

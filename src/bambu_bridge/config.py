@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     bridge_mediamtx_path: str = "/usr/local/bin/mediamtx"
     bridge_ffmpeg_path: str = "/usr/bin/ffmpeg"
     bridge_video_vaapi_device: str = ""
+    bridge_video_rate_control: Literal["CBR", "VBR"] = "CBR"
     bridge_camera_timezone: str = "UTC"  # IANA zone for the shared camera's completion estimate
 
     @field_validator("bridge_camera_timezone")

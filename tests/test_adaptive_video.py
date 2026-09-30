@@ -18,6 +18,14 @@ def test_vaapi_preserves_ladder_and_uses_hardware_scaling(tmp_path):
     assert args[args.index("-var_stream_map") + 1] == "v:0,name:low v:1,name:medium v:2,name:high"
 
 
+def test_optional_vbr_keeps_rate_caps_and_rejects_invalid_mode(tmp_path):
+    args = encoder_command("ffmpeg", tmp_path, "/dev/dri/renderD128", "VBR")
+    assert args[args.index("-rc_mode") + 1] == "VBR"
+    assert args[args.index("-maxrate:v:2") + 1] == "1600k"
+    with pytest.raises(ValueError):
+        encoder_command("ffmpeg", tmp_path, rate_control="invalid")
+
+
 def test_gpu_probe_falls_back_on_failure(monkeypatch):
     import subprocess
 

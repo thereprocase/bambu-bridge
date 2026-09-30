@@ -14,14 +14,14 @@ from urllib.parse import quote
 from bambu_bridge.adaptive_video import encoder_command
 
 
-def usable_vaapi(executable: str, device: str) -> bool:
+def usable_vaapi(executable: str, device: str, rate_control: str = "CBR") -> bool:
     """Probe the complete three-rendition pipeline with the worker's permissions."""
     if not device:
         return False
     try:
         with tempfile.TemporaryDirectory(prefix="bridge-video-probe-") as directory:
             result = subprocess.run(
-                encoder_command(executable, Path(directory), device),
+                encoder_command(executable, Path(directory), device, rate_control),
                 input=bytes(1280 * 720 * 3),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -42,8 +42,12 @@ def main() -> None:
         return
     executable = os.environ["BRIDGE_VIDEO_FFMPEG"]
     device = os.environ.get("BRIDGE_VIDEO_VAAPI_DEVICE", "")
+    rate_control = os.environ.get("BRIDGE_VIDEO_RATE_CONTROL", "CBR")
     command = encoder_command(
-        executable, Path(directory), device if usable_vaapi(executable, device) else None
+        executable,
+        Path(directory),
+        device if usable_vaapi(executable, device, rate_control) else None,
+        rate_control,
     )
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/v1/printers/{printer}/camera/video.rgb",
