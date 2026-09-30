@@ -17,7 +17,8 @@ import structlog
 from PIL import Image, ImageDraw, ImageFont
 
 from bambu_bridge.ams_overlay import ams_panel, draw_ams
-from bambu_bridge.turntable_overlay import Shape, ShapeCache, draw_shape
+from bambu_bridge.spinner_frames import SPINNER_FRAMES
+from bambu_bridge.turntable_overlay import Shape, ShapeCache, ShapeLoader, draw_shape
 
 STALE_TELEMETRY_S = 60
 STALE_FRAME_S = 5
@@ -286,7 +287,14 @@ def render_frame(
         return cache.output
     if shape:
         canvas = canvas.copy()
-        draw_shape(canvas, shape, rotation_seconds, panel_width, panel_height)
+        draw_shape(
+            canvas,
+            shape,
+            rotation_seconds,
+            panel_width,
+            panel_height,
+            frames=SPINNER_FRAMES if cache else None,
+        )
     if rgb:
         result = (canvas if canvas.size == (1280, 720) else canvas.resize((1280, 720))).tobytes()
     else:
@@ -306,7 +314,7 @@ class OverlayStream:
         service: Callable[[], Any],
         receipts: Callable[[], list[dict[str, Any]]],
         timezone: Callable[[], str] = lambda: "UTC",
-        shape_loader: Callable[[dict[str, Any]], Shape | None] | None = None,
+        shape_loader: ShapeLoader | None = None,
         video: bool = False,
     ):
         self.service, self.receipts = service, receipts

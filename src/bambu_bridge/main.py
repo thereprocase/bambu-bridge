@@ -114,7 +114,15 @@ def create_app(
         registry.add_listener(persister.attach)
         registry.add_listener(notifier.attach)
         sliced_date_memo = SlicedDateMemo(repo=SlicedDateRepo(db))
-        viz_cache = VizCache(ftps_port=ftps_port, sliced_date_memo=sliced_date_memo)
+        viz_cache = VizCache(
+            ftps_port=ftps_port,
+            sliced_date_memo=sliced_date_memo,
+            source_directory=(
+                Path(settings.bridge_pairing_dir)
+                if settings.bridge_pairing_dir
+                else Path(settings.bridge_db_path).parent
+            ),
+        )
         job_manager = JobManager(
             JobRepo(db),
             EventRepo(db),

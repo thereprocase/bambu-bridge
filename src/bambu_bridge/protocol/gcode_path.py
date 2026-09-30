@@ -76,8 +76,8 @@ from dataclasses import dataclass
 # ------------------------------------------------------------------ #
 
 _MAX_INPUT_BYTES = 120 * 1024 * 1024  # 120 MB raw input guard
-_SEGMENT_BUDGET = 250_000             # max output segments
-_COLLINEAR_EPS = 1e-6                 # cross-product magnitude cutoff (unit vecs)
+_SEGMENT_BUDGET = 250_000  # max output segments
+_COLLINEAR_EPS = 1e-6  # cross-product magnitude cutoff (unit vecs)
 
 # ------------------------------------------------------------------ #
 # Error
@@ -146,9 +146,7 @@ def _direction(seg: _Segment) -> tuple[float, float, float] | None:
     return dx / mag, dy / mag, dz / mag
 
 
-def _cross_mag(
-    a: tuple[float, float, float], b: tuple[float, float, float]
-) -> float:
+def _cross_mag(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
     """Magnitude of the cross product of two 3-vectors."""
     cx = a[1] * b[2] - a[2] * b[1]
     cy = a[2] * b[0] - a[0] * b[2]
@@ -185,14 +183,17 @@ def _merge_collinear(segs: list[_Segment]) -> list[_Segment]:
             and abs(current.z1 - nxt.z0) <= 1e-6
         )
         forward = bool(
-            cur_dir and nxt_dir
-            and sum(a * b for a, b in zip(cur_dir, nxt_dir, strict=True)) > 0
+            cur_dir and nxt_dir and sum(a * b for a, b in zip(cur_dir, nxt_dir, strict=True)) > 0
         )
         if collinear and connected and forward:
             # Extend current to cover nxt's endpoint.
             current = _Segment(
-                current.x0, current.y0, current.z0,
-                nxt.x1, nxt.y1, nxt.z1,
+                current.x0,
+                current.y0,
+                current.z0,
+                nxt.x1,
+                nxt.y1,
+                nxt.z1,
             )
             # Recompute direction after extension for the next comparison.
             cur_dir = _direction(current)
@@ -210,9 +211,7 @@ def _merge_collinear(segs: list[_Segment]) -> list[_Segment]:
 # ------------------------------------------------------------------ #
 
 
-def _decimate(
-    layers: dict[float, list[_Segment]], total: int, budget: int
-) -> list[_Segment]:
+def _decimate(layers: dict[float, list[_Segment]], total: int, budget: int) -> list[_Segment]:
     """Thin segments per-layer so total <= budget.  Every layer keeps >= 1."""
     out: list[_Segment] = []
     n_layers = len(layers)
@@ -268,8 +267,60 @@ def _parse_line(
     return cmd, params
 
 
+def _arc_points(
+    cmd: str, params: dict[str, str], start: tuple[float, ...], end: tuple[float, ...]
+) -> list[tuple[float, float, float]]:
+    """Tessellate XY center/radius arcs and helices at <=0.05 mm chord error."""
+    x, y, z = start
+    u, v, w = end
+    clockwise = cmd == "G2"
+    if "I" in params or "J" in params:
+        cx, cy = x + float(params.get("I", 0)), y + float(params.get("J", 0))
+    else:
+        r = float(params["R"])
+        dx, dy = u - x, v - y
+        chord = math.hypot(dx, dy)
+        if chord <= 1e-9 or chord > 2 * abs(r):
+            raise ValueError("Invalid arc radius")
+        distance = math.sqrt(max(0, r * r - chord * chord / 4))
+        sign = -1 if clockwise else 1
+        if r < 0:
+            sign *= -1
+        cx, cy = (
+            (x + u) / 2 - sign * dy / chord * distance,
+            (y + v) / 2 + sign * dx / chord * distance,
+        )
+    radius = math.hypot(x - cx, y - cy)
+    if not math.isfinite(radius) or radius <= 0 or radius > 2000:
+        raise ValueError("Invalid arc radius")
+    if abs(math.hypot(u - cx, v - cy) - radius) > max(0.05, radius * 0.001):
+        raise ValueError("Inconsistent arc center")
+    angle = math.atan2(y - cy, x - cx)
+    sweep = (math.atan2(v - cy, u - cx) - angle) % math.tau
+    if clockwise:
+        sweep = sweep - math.tau if sweep else -math.tau
+    elif not sweep:
+        sweep = math.tau
+    step = min(math.pi / 12, 2 * math.acos(max(-1, 1 - 0.05 / radius)))
+    count = min(4096, max(2, math.ceil(abs(sweep) / max(step, 0.001))))
+    points = [
+        (
+            cx + radius * math.cos(angle + sweep * i / count),
+            cy + radius * math.sin(angle + sweep * i / count),
+            z + (w - z) * i / count,
+        )
+        for i in range(1, count + 1)
+    ]
+    points[-1] = u, v, w
+    return points
+
+
 def parse_gcode_toolpath(
-    source: bytes | str, *, features: frozenset[str] | None = None
+    source: bytes | str,
+    *,
+    features: frozenset[str] | None = None,
+    preserve_z: bool = False,
+    arcs: bool = False,
 ) -> GcodeToolpath:
     """Parse gcode text/bytes and return extrusion-move toolpath segments.
 
@@ -303,7 +354,7 @@ def parse_gcode_toolpath(
     cur_x = 0.0
     cur_y = 0.0
     cur_z = 0.0
-    cur_e = 0.0     # absolute E accumulator (meaningless when e_relative=True)
+    cur_e = 0.0  # absolute E accumulator (meaningless when e_relative=True)
 
     # Segments grouped by Z for decimation later.
     layers: dict[float, list[_Segment]] = {}
@@ -344,7 +395,7 @@ def parse_gcode_toolpath(
             continue
 
         # ---- G0 / G1 moves ----------------------------------------------- #
-        if cmd not in ("G0", "G1"):
+        if cmd not in (("G0", "G1", "G2", "G3") if arcs else ("G0", "G1")):
             continue
 
         # Parse coordinate parameters; skip line on any numeric error.
@@ -386,21 +437,29 @@ def parse_gcode_toolpath(
         x_changed = abs(new_x - cur_x) > 1e-9
         y_changed = abs(new_y - cur_y) > 1e-9
 
-        is_extrusion = has_e and e_delta > 0.0 and (x_changed or y_changed)
+        is_extrusion = has_e and e_delta > 0.0 and (x_changed or y_changed or cmd in ("G2", "G3"))
 
         if is_extrusion and (features is None or feature in features):
             # Flat-segment convention (see module docstring): both endpoints use
             # cur_z, so a Z-changing extrusion (spiral-vase) is flattened onto
             # the layer it started on.  This keeps each segment in exactly one
             # layers[cur_z] bucket; new_z is applied to state only afterwards.
-            seg = _Segment(
-                x0=cur_x, y0=cur_y, z0=cur_z,
-                x1=new_x, y1=new_y, z1=cur_z,
-            )
-            z_key = cur_z
-            if z_key not in layers:
-                layers[z_key] = []
-            layers[z_key].append(seg)
+            endpoints = [(new_x, new_y, new_z if preserve_z else cur_z)]
+            if cmd in ("G2", "G3"):
+                try:
+                    endpoints = _arc_points(
+                        cmd,
+                        params,
+                        (cur_x, cur_y, cur_z),
+                        (new_x, new_y, new_z if preserve_z else cur_z),
+                    )
+                except (ValueError, OverflowError):
+                    raise GcodeParseError("Invalid extrusion arc") from None
+            a = cur_x, cur_y, cur_z
+            for b in endpoints:
+                seg = _Segment(*a, *b)
+                layers.setdefault(a[2], []).append(seg)
+                a = b
 
         # Advance state.
         cur_x = new_x

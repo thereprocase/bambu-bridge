@@ -6,9 +6,37 @@ The Orca compatibility stream reuses the high rendition. The encoder parks after
 
 The video compositor keeps one decoded camera image and one static composition.
 Status and AMS changes invalidate the composition. Animated model geometry is
-drawn on a copy each tick. Camera loss replaces the cached image with the existing
+rendered once into a 360-position rotation cache. Each tick blends neighboring
+2D panels and composites the result. Camera loss replaces the cached image with the existing
 unavailable-camera panel after the freshness timeout. Cache memory is released
 when the stream stops.
+
+The preview acquires the active job from a verified local upload or printer
+storage, including printer-started jobs. It selects the reported plate, retries
+failed transfers, and retains content-verified sources, parsed geometry and
+versioned rotation frames across restarts. The dashboard and Android show source
+and rendering status with a manager-authorized retry action.
+
+Source, geometry and compressed rotation disk budgets are 256, 96 and 128 MiB.
+One source/geometry acquisition runs at a time, and one rotation-generation
+thread fills coarse angles before intermediate positions. Two active sequences
+retain at most 16 MiB compressed each and eight decoded panels each. Geometry
+parsing runs in a disposable process with a 120-second wall timeout and a
+100-second CPU limit; its large working heap is released after the job.
+
+G-code exterior bodies preserve holes and connected-part colors. Continuous-Z
+paths retain endpoint heights; XY arcs are tessellated. Slicer line-width and
+layer-height headers set material tolerances. Dense surfaces receive per-part
+detail reduction before rendering. Mesh-only archives also receive per-part
+colors. Preview generation never issues a printer command.
+
+A private 3.2 MB live-job qualification produced about 5,500 preview faces.
+Geometry reconstruction took 16.7 seconds, the full rotation 13.3 seconds, and
+cached geometry reload 47 ms. Cached 720p compositing averaged 0.37 ms/frame.
+The rotation occupied 6.45 MiB compressed. These measurements describe one
+dense job; first-time reconstruction exceeds the initial five-second target.
+Upload prewarming and persistent caches reduce the interactive wait. Real files,
+camera captures and deployment credentials remain outside the repository.
 
 ## Optional Intel/VAAPI encoding
 

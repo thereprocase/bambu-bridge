@@ -44,6 +44,7 @@ import { useTheme } from "../../src/theme/ThemeProvider";
 import { Camera } from "../../src/viewing/Camera";
 import { canViewJob } from "../../src/viewing/job";
 import { MonitorControls } from "../../src/viewing/MonitorControls";
+import { PreviewStatus } from "../../src/viewing/PreviewStatus";
 
 export default function StatusScreen() {
   const { c, space, type } = useTheme();
@@ -316,6 +317,7 @@ export default function StatusScreen() {
 
       {/* 3D viewer ---------------------------------------------------------- */}
       <Surface padded style={{ gap: space.sm }}>
+        {selectedId && <PreviewStatus printerId={selectedId} />}
         <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <Ionicons name="cube-outline" size={18} color={viewAvailable ? c.text : c.muted} />
           <Text style={[type.h2, { color: c.text, flex: 1 }]}>3D view</Text>

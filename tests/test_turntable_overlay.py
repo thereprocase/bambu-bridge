@@ -35,6 +35,23 @@ def test_archive_preview_keeps_physical_plate_placement() -> None:
     assert shape.radius == pytest.approx(math.sqrt(2) * 128)
 
 
+def test_preview_plain_gcode_without_feature_labels() -> None:
+    shape = archive_shape(io.BytesIO(b"M83\nG1 X100 Y100 Z1\nG1 X110 E1\n"))
+    assert shape is not None
+    assert shape.segments == ((-28, -28, 1, -18, -28, 1),)
+
+
+def test_preview_uses_selected_plate() -> None:
+    source = io.BytesIO()
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", GCODE)
+        archive.writestr("Metadata/plate_2.gcode", b"M83\nG1 X0 Y0 Z2\nG1 X10 E1\n")
+    source.seek(0)
+    shape = archive_shape(source, plate=2)
+    assert shape is not None
+    assert shape.segments == ((-128, -128, 2, -118, -128, 2),)
+
+
 def test_zoom_and_elevation_are_constant_through_full_rotation() -> None:
     shape = Shape(((100, 100, 0, 100, 100, 120),), math.sqrt(2) * 128, 120)
     heights = []
@@ -65,6 +82,17 @@ def test_one_rpm_returns_same_image_without_zoom() -> None:
 def test_interrupted_idle_job_does_not_keep_old_shape() -> None:
     assert job_key({"_raw": {"gcode_state": "RUNNING", "gcode_file": "new.3mf"}}) == "new.3mf"
     assert job_key({"_raw": {"gcode_state": "IDLE", "gcode_file": "old.3mf"}}) == ""
+    assert job_key({"_raw": {"gcode_state": "FAILED", "gcode_file": "failed.3mf"}}) == "failed.3mf"
+
+
+def test_reprints_and_plate_changes_have_distinct_preview_identity() -> None:
+    first = {"_raw": {"gcode_state": "PREPARE", "gcode_file": "same.3mf", "plate_idx": 1}}
+    second = {"_raw": {**first["_raw"], "plate_idx": 2}}
+    assert job_key(first)
+    assert job_key(first) != job_key(second)
+    first["job"] = {"started_at": "2026-01-01T00:00:00Z"}
+    second = {**first, "job": {"started_at": "2026-01-02T00:00:00Z"}}
+    assert job_key(first) != job_key(second)
 
 
 @pytest.mark.asyncio
@@ -184,4 +212,6 @@ def test_archive_builds_colored_surfaces_without_infill() -> None:
         archive.writestr("Metadata/plate_1.gcode", GCODE)
     source.seek(0)
     shape = archive_shape(source)
-    assert shape is not None and len(shape.faces) == 3
+    assert shape is not None and len(shape.segments) == 3
+    assert shape.faces and len(shape.face_parts) == len(shape.faces)
+    assert shape.ink_edges and len(shape.ink_edges) == len(shape.faces)

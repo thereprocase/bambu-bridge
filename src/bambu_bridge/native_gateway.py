@@ -32,8 +32,10 @@ from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
 from bambu_bridge.native_video import NativeVideo
 from bambu_bridge.pairing import PairingStore, identity
+from bambu_bridge.preview_source import PreviewSources
 from bambu_bridge.service.events import Event, EventBus
-from bambu_bridge.turntable_overlay import Shape, archive_shape
+from bambu_bridge.spinner_frames import SPINNER_FRAMES
+from bambu_bridge.turntable_overlay import Shape
 
 if TYPE_CHECKING:
     from bambu_bridge.native_inbox import NativeInbox
@@ -170,6 +172,17 @@ class NativeGateway:
         )
         self.inbox_expiry: set[asyncio.TimerHandle] = set()
         self.inbox_status: list[dict[str, Any]] = []
+        self.preview_upload_id: str | None = None
+        self.preview_sources = PreviewSources(
+            store.directory,
+            self.service,
+            self.local_camera_source,
+            lambda: self.app.state.ftps_port,
+            lambda printer, ftps, filename: self.app.state.viz_cache_obj.acquire_source(
+                printer, ftps, filename
+            ),
+        )
+        SPINNER_FRAMES.configure(store.directory / "preview-frames")
         self.camera_overlay = OverlayStream(
             self.service,
             lambda: self.inbox_status,
@@ -177,11 +190,14 @@ class NativeGateway:
             self.load_camera_shape,
         )
         self.video_overlay = OverlayStream(
-            self.service, lambda: self.inbox_status,
+            self.service,
+            lambda: self.inbox_status,
             lambda: self.app.state.settings.bridge_camera_timezone,
-            self.load_camera_shape, video=True,
+            self.load_camera_shape,
+            video=True,
         )
         self.video = NativeVideo(self)
+        self.camera_overlay.shapes = self.video_overlay.shapes
         self.inbox_reports = EventBus()
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None
@@ -207,19 +223,97 @@ class NativeGateway:
         if row:
             self.config = dict(row)
 
-    def load_camera_shape(self, snapshot: dict[str, Any]) -> Shape | None:
-        """Read only the immutable local archive matching the current printer job."""
+    async def load_camera_shape(self, snapshot: dict[str, Any]) -> Shape | None:
+        return await self.preview_sources.load(snapshot)
+
+    async def warm_preview(self) -> None:
+        """Acquire each job and warm its rotation before a viewer joins."""
+        while True:
+            try:
+                shapes = self.video_overlay.shapes
+                shape = shapes.update(self.service().snapshot()) if shapes else None
+                if shape:
+                    await asyncio.to_thread(SPINNER_FRAMES.panel, shape, 0, 243, 185, 13)
+                if self.preview_upload_id and self.inbox and not self.preview_sources.inflight:
+                    identifier, self.preview_upload_id = self.preview_upload_id, None
+
+                    def source_bytes(identifier: str = identifier) -> bytes:
+                        assert self.inbox
+                        with self.inbox.open_verified(identifier) as source:
+                            return source.read()
+
+                    data = await asyncio.to_thread(source_bytes)
+                    warmed = await self.preview_sources.prewarm(data)
+                    if warmed:
+                        await asyncio.to_thread(SPINNER_FRAMES.panel, warmed, 0, 243, 185, 13)
+            except Exception as exc:
+                log.warning("preview.warm_failed", error=type(exc).__name__)
+            await asyncio.sleep(2)
+
+    def preview_status(self) -> dict[str, Any]:
+        shapes = self.video_overlay.shapes
+        if not shapes:
+            return {"state": "idle", "frames": 0, "total_frames": 360}
+        shapes.update(self.service().snapshot())
+        frames, render_error = 0, None
+        if shapes.shape:
+            with SPINNER_FRAMES.lock:
+                for sequence in SPINNER_FRAMES.sequences.values():
+                    if sequence.shape.content_id == shapes.shape.content_id:
+                        frames = max(frames, len(sequence.frames))
+                        render_error = render_error or sequence.error
+        state = "preview_error" if render_error else shapes.state
+        if shapes.error == "FileNotFoundError":
+            state = "source_unavailable"
+        elif shapes.error in {"ValueError", "GcodeParseError", "ParseError"}:
+            state = "preview_error"
+        return {
+            "state": state,
+            "frames": frames,
+            "total_frames": 360,
+            "error": render_error or shapes.error,
+        }
+
+    def local_camera_source(self, snapshot: dict[str, Any]) -> bytes | None:
+        """Prefer a verified local upload; every filename can use printer storage."""
+        from bambu_bridge.native_inbox import InboxError
+
         inbox = self.inbox
         filename = str(snapshot.get("_raw", {}).get("gcode_file") or "").rsplit("/", 1)[-1]
         match = re.fullmatch(r"beluga-([0-9a-f]{32})\.gcode\.3mf", filename)
-        if inbox is None or match is None:
+        if inbox is None:
             return None
-        row = inbox.get(match.group(1))
-        if (str(row["remote"]).rsplit("/", 1)[-1] != filename
-                or row["printer"] != snapshot.get("printer_id")):
+        if match is None:
+            # Correlate the reusable display name only through an acknowledged
+            # live start receipt; an unrelated SD print must never inherit it.
+            raw = snapshot.get("_raw", {})
+            if not re.fullmatch(r"plate_\d+\.gcode", filename) or not raw.get("subtask_name"):
+                return None
+            with inbox.connect() as db:
+                rows = db.execute(
+                    "SELECT * FROM uploads WHERE printer=? AND acknowledged=1 "
+                    "AND start_state IN ('accepted','running') AND kind='upload'",
+                    (snapshot.get("printer_id"),),
+                ).fetchall()
+            for candidate in rows:
+                command = json.loads(candidate["command"] or "{}").get("print", {})
+                if command.get("subtask_name") == raw["subtask_name"]:
+                    try:
+                        with inbox.open_verified(candidate["id"]) as source:
+                            return source.read()
+                    except (FileNotFoundError, KeyError, ValueError, InboxError):
+                        return None
             return None
-        with inbox.open_verified(row["id"]) as source:
-            return archive_shape(source)
+        try:
+            row = inbox.get(match.group(1))
+            if str(row["remote"]).rsplit("/", 1)[-1] != filename or row["printer"] != snapshot.get(
+                "printer_id"
+            ):
+                return None
+            with inbox.open_verified(row["id"]) as source:
+                return source.read()
+        except (FileNotFoundError, KeyError, ValueError, InboxError):
+            return None
 
     def service(self) -> Any:
         if self.config is None:
@@ -281,6 +375,9 @@ class NativeGateway:
     async def start(self) -> None:
         if not self.config:
             return
+        preview_task = asyncio.create_task(self.warm_preview())
+        self.tasks.add(preview_task)
+        preview_task.add_done_callback(self.tasks.discard)
         if self.app.state.settings.bridge_native_durable_inbox:
             from bambu_bridge.native_inbox import NativeInbox
 
@@ -346,7 +443,14 @@ class NativeGateway:
             raise
 
     async def close(self) -> None:
+        for task in list(self.tasks):
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        if self.video_overlay.shapes:
+            await self.video_overlay.shapes.close()
+        await self.preview_sources.close()
         await self.video.close()
+        SPINNER_FRAMES.close()
         for server in self.servers:
             server.close()
         for writer in list(self.writers):

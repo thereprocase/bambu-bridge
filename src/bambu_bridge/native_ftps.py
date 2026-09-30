@@ -292,6 +292,7 @@ async def serve_ftps(
                                 phase = "receiving_client_data"
                                 stored = await gateway.inbox.receive(data_reader, row, limit)
                                 total = stored["bytes"]
+                                gateway.preview_upload_id = stored["id"]
                                 gateway.inbox_wake.set()
                                 # The receipt identifies durable SERVER custody,
                                 # never printer delivery or a physical start.

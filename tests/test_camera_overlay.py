@@ -82,7 +82,7 @@ def test_video_cache_animation_preserves_background(monkeypatch):
     lines = ["IDLE", "Temperatures", "Bridge: waiting for next job"]
     still = render_frame(source, lines, False, rgb=True, cache=cache)
 
-    def draw(canvas, shape, seconds, *args):
+    def draw(canvas, shape, seconds, *args, **kwargs):
         canvas.putpixel((0, 0), (int(seconds), 0, 0))
 
     monkeypatch.setattr(camera_overlay, "draw_shape", draw)

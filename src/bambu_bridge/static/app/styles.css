@@ -528,6 +528,8 @@ a:hover{text-decoration:underline;}
 .camera__label{position:absolute;left:8px;top:8px;font-size:11px;
   color:var(--paper);text-shadow:0 1px 3px rgba(0,0,0,.7);}
 .camera__3d{position:absolute;right:8px;top:8px;}
+.camera__preview-row{position:absolute;left:8px;bottom:8px;display:flex;align-items:center;
+  gap:8px;padding:6px 8px;background:rgba(0,0,0,.8);color:var(--paper);font-size:12px;}
 
 /* ── 13. Utilities ─────────────────────────────────────────────────────── */
 .hidden,[hidden]{display:none !important;}

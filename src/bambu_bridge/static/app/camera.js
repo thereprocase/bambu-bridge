@@ -10,6 +10,36 @@ export function mountInto(container, app, opts = {}) {
   const overlay = el('div', { class: 'camera__overlay' });
   const label = el('div', { class: 'camera__label', text: 'Live · full camera rate' });
   const frame = el('div', { class: 'camera' }, [img, overlay, label]);
+  const preview = el('div', { class: 'camera__preview', text: 'Loading preview' });
+  const retryPreview = el('button', { class: 'btn btn--sm', text: 'Retry preview', hidden: true });
+  const previewRow = el('div', { class: 'camera__preview-row', hidden: true }, [preview, retryPreview]);
+  frame.appendChild(previewRow);
+  let previewPending = false;
+  async function updatePreview() {
+    if (!pid || destroyed || previewPending) return;
+    previewPending = true;
+    try {
+      const result = await api(`/printers/${encodeURIComponent(pid)}/viz/preview`);
+      if (destroyed) return;
+      if (!result.ok) { previewRow.hidden = true; return; }
+      const value = result.data;
+      previewRow.hidden = false;
+      preview.textContent = value.state === 'ready'
+        ? value.frames >= value.total_frames ? 'Spinner ready' : `Rendering spinner · ${value.frames}/${value.total_frames}`
+        : ({idle: 'Preview available with a job', loading: 'Loading preview', retrying: 'Retrying preview',
+            source_unavailable: 'Source unavailable · retrying', preview_error: 'Preview error'}[value.state] || 'Loading preview');
+      retryPreview.hidden = !['retrying', 'source_unavailable', 'preview_error'].includes(value.state);
+    } catch { if (!destroyed) previewRow.hidden = true; }
+    finally { previewPending = false; }
+  }
+  retryPreview.addEventListener('click', async e => {
+    e.stopPropagation(); retryPreview.disabled = true;
+    try { const result = await api(`/printers/${encodeURIComponent(pid)}/viz/preview/retry`, {method: 'POST'});
+      if (result.ok) await updatePreview(); else preview.textContent = 'Preview retry failed'; }
+    catch { preview.textContent = 'Preview retry failed'; }
+    finally { retryPreview.disabled = false; }
+  });
+  const previewTimer = setInterval(updatePreview, 5000);
   if (opts.onTapFrame) {
     frame.style.cursor = 'pointer';
     frame.addEventListener('click', e => { if (!e.target.closest('.camera__3d')) opts.onTapFrame(); });
@@ -81,6 +111,7 @@ export function mountInto(container, app, opts = {}) {
     root: frame,
     destroy() {
       destroyed = true; controller?.abort();
+      clearInterval(previewTimer);
       clearTimeout(retryTimer); clearInterval(watchdog);
       img.removeAttribute('src');
       if (curObjUrl) URL.revokeObjectURL(curObjUrl);

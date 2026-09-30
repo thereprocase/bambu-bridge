@@ -512,7 +512,7 @@ function buildAboutSection(app) {
 
   return el('div', { class: 'section' }, [
     el('div', { class: 't-section', text: 'About & updates' }),
-    el('a', { class: 'btn btn--ghost btn--block mt-2', href: 'https://github.com/thereprocase/bambu-bridge/tree/v0.6.0', target: '_blank', rel: 'noopener noreferrer', text: 'Source code & AGPL license' }),
+    el('a', { class: 'btn btn--ghost btn--block mt-2', href: 'https://github.com/thereprocase/bambu-bridge', target: '_blank', rel: 'noopener noreferrer', text: 'Source code & AGPL license' }),
     el('div', { class: 'card mt-2' }, [
       el('div', { class: 'row row--between' }, [
         el('span', { class: 'dim', text: 'Bridge version' }), bridgeVerEl,

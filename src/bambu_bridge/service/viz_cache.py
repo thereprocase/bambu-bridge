@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from pathlib import PurePosixPath
+import json
+from pathlib import Path, PurePosixPath
 
 import structlog
 
@@ -45,6 +46,7 @@ from bambu_bridge.protocol.gcode_path import (
     parse_gcode_from_archive,
 )
 from bambu_bridge.protocol.threemf import Mesh3MF, ParseError, parse_3mf
+from bambu_bridge.source_assets import SourceAssets
 
 log = structlog.get_logger(__name__)
 
@@ -135,9 +137,15 @@ async def find_3mf(ftps: FtpsTransfer, job_name: str) -> tuple[str, str] | None:
     This is the single canonical implementation; ``api/viz.py`` imports and
     calls this function rather than maintaining a duplicate.
     """
-    stem = PurePosixPath(job_name).stem
-    candidates = [job_name, f"{stem}.3mf", f"{stem}.gcode.3mf"]
-    for remote_dir in (UPLOAD_DIR_PERSISTENT, UPLOAD_DIR_CACHE):
+    filename = PurePosixPath(job_name).name
+    stem = PurePosixPath(filename).stem
+    candidates = [filename, f"{stem}.3mf", f"{stem}.gcode.3mf", f"{stem}.gcode"]
+    directories = (
+        (UPLOAD_DIR_CACHE, UPLOAD_DIR_PERSISTENT)
+        if "cache" in PurePosixPath(job_name).parts
+        else (UPLOAD_DIR_PERSISTENT, UPLOAD_DIR_CACHE)
+    )
+    for remote_dir in directories:
         try:
             listing = await ftps.list_dir(remote_dir)
         except Exception:  # noqa: BLE001 — FTPS list failure treated as empty
@@ -166,6 +174,7 @@ class VizCache:
         self,
         ftps_port: int = 990,
         sliced_date_memo: SlicedDateMemo | None = None,
+        source_directory: Path | None = None,
     ) -> None:
         # Exposed as plain dicts so api/viz.py can read/write them directly.
         self.mesh_cache: dict[_CacheKey, Mesh3MF] = {}
@@ -173,6 +182,8 @@ class VizCache:
         self._revisions: dict[tuple[str, str], tuple[str, tuple[int, str]]] = {}
         self._digests: dict[tuple[str, str], str] = {}
         self._fill_lock = asyncio.Lock()
+        self._source_lock = asyncio.Lock()
+        self.sources = SourceAssets(source_directory) if source_directory is not None else None
         self._ftps_port = ftps_port
         # Optional sliced-date memo: filled whenever a .gcode.3mf is downloaded
         # for pre-warm.  When None the feature is disabled (tests that don't
@@ -222,6 +233,30 @@ class VizCache:
             for key in list(metadata):
                 if key not in live:
                     del metadata[key]
+
+    async def source_bytes(
+        self, printer_id: str, ftps: FtpsTransfer, remote_dir: str, filename: str
+    ) -> bytes:
+        """Share verified source bytes across mesh, toolpath and spinner loads."""
+        async with self._source_lock:
+            revision = self._revisions.get((printer_id, filename))
+            reference = json.dumps([printer_id, filename, revision]) if revision else ""
+            if self.sources is not None and reference:
+                cached = await asyncio.to_thread(self.sources.read, reference)
+                if cached is not None:
+                    return cached
+            data = await ftps.download_bytes(filename, remote_dir=remote_dir)
+            if self.sources is not None and reference:
+                await asyncio.to_thread(self.sources.put, reference, data)
+            return data
+
+    async def acquire_source(self, printer_id: str, ftps: FtpsTransfer, job_name: str) -> bytes:
+        location = await find_3mf(ftps, job_name)
+        if location is None:
+            raise VizFillError("not_found", "Print source unavailable on printer storage")
+        remote_dir, filename = location
+        await self.validate_revision(printer_id, ftps, remote_dir, filename)
+        return await self.source_bytes(printer_id, ftps, remote_dir, filename)
 
     def put_mesh(self, key: _CacheKey, mesh: Mesh3MF) -> None:
         _cache_put_mesh(self.mesh_cache, key, mesh)
@@ -311,7 +346,7 @@ class VizCache:
             return filename, hit[1]
 
         try:
-            data = await ftps.download_bytes(filename, remote_dir=remote_dir)
+            data = await self.source_bytes(printer_id, ftps, remote_dir, filename)
         except Exception as exc:  # noqa: BLE001
             raise VizFillError("download", f"FTPS download failed: {exc}") from exc
 
@@ -391,7 +426,7 @@ class VizCache:
             return filename, hit[1]
 
         try:
-            data = await ftps.download_bytes(filename, remote_dir=remote_dir)
+            data = await self.source_bytes(printer_id, ftps, remote_dir, filename)
         except Exception as exc:  # noqa: BLE001
             raise VizFillError("download", f"FTPS download failed: {exc}") from exc
 

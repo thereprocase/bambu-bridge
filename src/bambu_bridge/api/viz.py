@@ -90,7 +90,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
-from bambu_bridge.api.auth import require_read_or_viz
+from bambu_bridge.api.auth import require_auth, require_read_or_viz
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.protocol.gcode_path import GcodeToolpath
@@ -107,6 +107,30 @@ from bambu_bridge.service.viz_cache import (
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/printers", tags=["viz"])
+
+
+def _preview_gateway(request: Request, printer_id: str) -> Any:
+    gateway = getattr(request.app.state, "native_gateway", None)
+    if not gateway or not gateway.config or gateway.config.get("printer_id") != printer_id:
+        raise HTTPException(404, "Preview unavailable")
+    return gateway
+
+
+@router.get("/{printer_id}/viz/preview", dependencies=[Depends(require_read_or_viz)])
+async def preview_status(request: Request, printer_id: str) -> dict[str, Any]:
+    """Report source acquisition and cached rotation progress."""
+    return _preview_gateway(request, printer_id).preview_status()
+
+
+@router.post("/{printer_id}/viz/preview/retry", dependencies=[Depends(require_auth)])
+async def retry_preview(request: Request, printer_id: str) -> dict[str, Any]:
+    gateway = _preview_gateway(request, printer_id)
+    if gateway.video_overlay.shapes:
+        from bambu_bridge.spinner_frames import SPINNER_FRAMES
+
+        SPINNER_FRAMES.close()
+        gateway.video_overlay.shapes.retry()
+    return gateway.preview_status()
 
 
 # ------------------------------------------------------------------ #
@@ -946,8 +970,11 @@ async def get_android_apk(request: Request) -> Response:
 
 def _dashboard_access(request: Request) -> None:
     settings = getattr(request.app.state, "settings", None)
-    if (settings and settings.bridge_dashboard_port is not None
-            and not request.scope.get("bambu.dashboard_authenticated")):
+    if (
+        settings
+        and settings.bridge_dashboard_port is not None
+        and not request.scope.get("bambu.dashboard_authenticated")
+    ):
         raise HTTPException(403, "Open the dashboard at its private HTTPS Tailscale DNS URL")
 
 

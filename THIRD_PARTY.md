@@ -44,3 +44,9 @@ or run a modified covered version for network users, provide its corresponding
 source as required by AGPL section 13, retain notices, and update the source link
 to the code actually deployed. Linking only to the unchanged upstream tree does
 not provide source for your modifications. Full terms are in `LICENSE`.
+
+Preview reconstruction installs [Shapely](https://github.com/shapely/shapely)
+with GEOS and NumPy through the lockfile. Dense preview meshes use
+[fast-simplification](https://github.com/pyvista/fast-simplification), distributed
+under its upstream MIT license. These packages retain their distribution notices;
+the bridge does not vendor their implementation sources.

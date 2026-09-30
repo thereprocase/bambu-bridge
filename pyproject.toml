@@ -40,6 +40,8 @@ dependencies = [
     "qrcode~=8.2",
     "pillow>=12.1,<13",
     "tzdata>=2025.2; sys_platform == 'win32'",
+    "shapely~=2.1.2",
+    "fast-simplification~=0.2.0",
 ]
 
 [project.optional-dependencies]
