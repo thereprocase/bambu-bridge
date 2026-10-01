@@ -19,6 +19,7 @@
 
 import { wsStatusUrl } from './api.js';
 import { applySnapshot, applyDelta, setConnected } from './store.js';
+import { recordClockSample } from './clock-sync.js';
 
 const BACKOFF = [1000, 2000, 4000, 8000, 30000];
 const KEEPALIVE_MS = 30000;
@@ -45,10 +46,13 @@ export function connectStatus(printerId, cb = {}) {
   let attempt = 0;            // backoff index
   let stopped = false;        // hard stop (auth/unknown/protocol) — do not retry
   let gotSnapshot = false;
+  let probeTimers = [];
 
   function clearTimers() {
     if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    probeTimers.forEach(clearTimeout);
+    probeTimers = [];
   }
 
   function scheduleReconnect() {
@@ -73,12 +77,20 @@ export function connectStatus(printerId, cb = {}) {
     }
     ws = socket;
 
+    // NTP clock probe (see clock-sync.js); older bridges ignore it.
+    const probeClock = () => {
+      if (socket.readyState === WebSocket.OPEN) {
+        try { socket.send(JSON.stringify({ type: 'clock', t0: Date.now() })); } catch { /* */ }
+      }
+    };
+
     socket.onopen = () => {
       // keepalive: client also sends {type:'pong'} every 30s (contract §5.1.5)
       keepaliveTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
           try { socket.send(JSON.stringify({ type: 'pong' })); } catch { /* */ }
         }
+        probeClock();
       }, KEEPALIVE_MS);
     };
 
@@ -92,6 +104,7 @@ export function connectStatus(printerId, cb = {}) {
           // (4000) is the authoritative signal, so we just surface hello.
           break;
         case 'snapshot':
+          if (!gotSnapshot) probeTimers = [0, 1000, 2500].map((ms) => setTimeout(probeClock, ms));
           gotSnapshot = true;
           attempt = 0;                       // reset backoff on a good snapshot
           applySnapshot(printerId, msg.data);
@@ -107,6 +120,13 @@ export function connectStatus(printerId, cb = {}) {
         case 'ping':
           if (socket.readyState === WebSocket.OPEN) {
             try { socket.send(JSON.stringify({ type: 'pong' })); } catch { /* */ }
+          }
+          probeClock();
+          break;
+        case 'clock':
+          if (typeof msg.t0 === 'number' && typeof msg.t1 === 'number') {
+            recordClockSample(String(printerId), msg.t0, msg.t1, Date.now(),
+              typeof msg.t2 === 'number' ? msg.t2 : msg.t1);
           }
           break;
         default:
