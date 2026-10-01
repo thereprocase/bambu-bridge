@@ -471,8 +471,10 @@ class JobRun:
         self._ams_mapping = ams_mapping
         self._spaghetti_detection = spaghetti_detection
         self._feed_deadline_s = feed_deadline_s
-        self._signals: asyncio.Queue[str] = asyncio.Queue()
         self._cancel = asyncio.Event()
+        self._wake = asyncio.Event()
+        self._stop_reason: str | None = None   # user_cancel | FED_NO_PROGRESS | SPAGHETTI_DETECTED
+        self._stop_sent = False
         self._task: asyncio.Task[None] | None = None
         self._log = log.bind(job_id=job.id, printer_id=job.printer_id)
 
@@ -489,7 +491,12 @@ class JobRun:
 
     async def request_cancel(self) -> None:
         self._cancel.set()
-        self._signals.put_nowait("cancel")
+        self._request_stop("user_cancel")
+
+    def _request_stop(self, reason: str) -> None:
+        if self._stop_reason is None:
+            self._stop_reason = reason
+        self._wake.set()
 
     # ------------------------------------------------------------------ #
 
@@ -506,7 +513,7 @@ class JobRun:
             await self._fail("printer_removed")
             return
         async with service.bus.subscribe() as sub:
-            reader = asyncio.create_task(self._read_bus(sub))
+            reader = asyncio.create_task(self._wake_on_reports(sub))
             try:
                 guard = getattr(service, "job_guard", None)
                 if guard is not None:
@@ -524,40 +531,10 @@ class JobRun:
                 with contextlib.suppress(asyncio.CancelledError):
                     await reader
 
-    async def _read_bus(self, sub: Any) -> None:
-        """Normalise bus events into FSM signals.
-
-        - ``running`` — gcode_state crossed into RUNNING (submitted → preparing)
-        - ``preparing`` — gcode_state is PREPARE: the printer accepted the job and is
-          reading/heating/levelling (submitted → preparing, no deadline)
-        - ``layer_advanced`` — layer_num crossed 0 → positive (preparing → printing)
-        - ``progress`` — AMS engaged (FED_NO_PROGRESS watchdog satisfaction)
-        - ``completed`` / ``failed`` / ``stopped`` — terminal signals
-        """
-        confirmed_active = self._job.state in (JobState.PREPARING, JobState.PRINTING)
-        async for ev in sub:  # type: Event
-            assert isinstance(ev, Event)
-            if ev.name == "print_started":
-                self._signals.put_nowait("running")
-            elif ev.name == "print_progress":
-                self._signals.put_nowait("layer_advanced")
-            elif ev.name == "print_completed":
-                self._signals.put_nowait("completed")
-            elif ev.name == "print_interrupted":
-                if confirmed_active:
-                    self._signals.put_nowait("interrupted")
-            elif ev.name in ("print_failed", "error"):
-                self._signals.put_nowait("failed")
-            elif ev.type in ("delta", "snapshot"):
-                gs = _gcode_state(ev.data)
-                if gs in ("IDLE", "FAILED", "FINISH"):
-                    self._signals.put_nowait("stopped")
-                if gs == "PREPARE":
-                    self._signals.put_nowait("preparing")
-                if _ams_engaged(ev.data):
-                    self._signals.put_nowait("progress")
-                if _layer_advanced(ev.data):
-                    self._signals.put_nowait("layer_advanced")
+    async def _wake_on_reports(self, sub: Any) -> None:
+        """Every report (or reconnect) re-runs the reconcile; content is not used."""
+        async for _ev in sub:
+            self._wake.set()
 
     async def _lifecycle(self, service: Any) -> None:
         if self._cancel.is_set():
@@ -586,6 +563,7 @@ class JobRun:
         await self._jobs.update(self._job.id, file_path=remote)
 
         await self._set(JobState.SUBMITTED, "project_file_published")
+        before = service.print_view()
         # url = file:///sdcard/<name>.gcode.3mf — the ONLY confirmed scheme
         # (REPORT §6.2). The old code used ftp://, flagged untested in §9.
         await service.send_command(
@@ -597,129 +575,130 @@ class JobRun:
                 ams_mapping=self._ams_mapping or [],
             ),
         )
+        await self._track(service, before)
 
-        # submitted -> preparing. The printer must acknowledge the job within
-        # 60 s: PREPARE (reading the file, heating, levelling) or RUNNING.
-        # Silence means the command was lost (error code kept for clients).
-        sig = await self._wait_signal(
-            {"running", "preparing", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S
-        )
-        if sig == "preparing":
-            # PREPARE is the printer's own "working on it" state and can far
-            # outlast 60 s on a large file or a cold bed (2026-10-01: a 9 MB
-            # plate was marked failed while the printer went on to print it).
-            # Wait as long as the printer prepares; only its own outcome ends it.
-            await self._set(JobState.PREPARING, "printer_preparing")
-            sig = await self._wait_signal({"running", "cancel", "failed", "stopped"})
-            if sig == "stopped":
-                sig = "failed"      # PREPARE -> IDLE/FAILED/FINISH without starting
-        if sig == "cancel":
-            await self._do_cancel(service, acked=self._job.state is JobState.PREPARING)
-            return
-        if sig in (None, "failed"):
-            reason = "no_running_within_60s" if sig is None else "printer_error"
-            await self._fail(reason)
-            return
-        if self._job.state is not JobState.PREPARING:
-            await self._set(JobState.PREPARING, "gcode_running")
+    async def _track(self, service: Any, before: dict[str, Any]) -> None:
+        """Reconcile the job against the printer's current state until it ends.
 
-        # preparing -> printing  (layer_num > 0 OR completion, with the
-        # FED_NO_PROGRESS watchdog still in force as the §6.3 hard safety).
-        # `layer_advanced` is the canonical "printing began" signal per
-        # contract §6.0.1; `progress` (AMS engaged) is the parallel safety
-        # check — if neither fires within the deadline, abort. In healthy
-        # prints both arrive within seconds of each other.
-        sig = await self._wait_signal(
-            {"layer_advanced", "progress", "completed", "failed", "cancel", "interrupted"},
-            timeout=(
-                self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S
-            ),
-        )
-        if sig is None:
-            with contextlib.suppress(Exception):
-                await service.send_command("print", "stop")
-            await self._fail("FED_NO_PROGRESS")
-            return
-        if sig == "interrupted":
-            await self._jobs.update(
-                self._job.id, finished_at=int(time.time()), error_code="printer_job_lost"
-            )
-            await self._set(JobState.INTERRUPTED, "printer_job_lost")
-            return
-        if sig == "completed":
-            await self._complete()
-            return
-        if sig == "cancel":
-            await self._do_cancel(service, acked=True)
-            return
-        if sig == "failed":
-            await self._fail("printer_error")
-            return
-        # Either layer_advanced (preferred) or progress (AMS) — both signal
-        # the §6.3 boundary has been crossed safely. Transition to PRINTING.
-        trigger = "layer_started" if sig == "layer_advanced" else "ams_engaged"
-        await self._set(JobState.PRINTING, trigger)
-
-        # printing -> completed | failed | canceled | spaghetti
-        #
-        # Spaghetti detection (opt-in, vision/) runs ONLY here: telemetry is
-        # healthy by construction at this point (RUNNING, tray engaged, past
-        # FED_NO_PROGRESS) so a sustained chaotic-frame run means the print
-        # itself failed. It feeds the same abort path as any other failure.
-        accept = {"completed", "failed", "cancel", "interrupted"}
-        spaghetti = self._start_spaghetti_monitor(service)
-        if spaghetti is not None:
-            accept.add("spaghetti")
+        Level-triggered, like OrcaSlicer's StatusPanel::update_subtask: every
+        report, reconnect, cancel or deadline re-reads ``service.print_view()``
+        and derives the job's phase from it, so a missed or reordered event
+        cannot strand the job.
+        """
+        loop = asyncio.get_running_loop()
+        ack_by = loop.time() + _RUNNING_TIMEOUT_S
+        feed_s = self._feed_deadline_s if self._feed_deadline_s is not None else _FEED_DEADLINE_S
+        feed_by: float | None = None
+        ran = False  # the printer reported RUNNING/PAUSE for this job
+        spaghetti: asyncio.Task[None] | None = None
         try:
-            sig = await self._wait_signal(accept)
+            while True:
+                self._wake.clear()
+                await self._deliver_stop(service)
+                if self._job.state.terminal:
+                    return
+                v = service.print_view()
+                gs, now = v["gcode_state"], loop.time()
+                state = self._job.state
+
+                if state is JobState.SUBMITTED:
+                    # Orca PrintJob wait_fn: the job is accepted once the printer is in a
+                    # printing status (PREPARE/RUNNING/PAUSE).
+                    if self._stop_sent:
+                        await self._set(JobState.CANCELED, "user_cancel")
+                        return
+                    if gs in ("PREPARE", "RUNNING", "PAUSE"):
+                        trigger = "printer_preparing" if gs == "PREPARE" else "gcode_running"
+                        await self._set(JobState.PREPARING, trigger)
+                        continue
+                    if gs == "FAILED" and before["gcode_state"] != "FAILED":
+                        await self._fail("printer_error")
+                        return
+                    elif now >= ack_by:
+                        await self._fail("no_running_within_60s")
+                        return
+                elif gs is not None:
+                    done = (
+                        gs in ("FINISH", "FAILED")
+                        or v["lost"]
+                        or (gs == "IDLE" and (self._stop_sent or not ran))
+                    )
+                    if done:
+                        await self._close(gs, lost=v["lost"], ran=ran)
+                        return
+                    if gs in ("RUNNING", "PAUSE"):
+                        ran = True
+                        if feed_by is None:
+                            feed_by = now + feed_s
+                    if state is JobState.PREPARING and ran:
+                        progressed = v["layer_num"] > 0 or _tray_engaged_since(before, v)
+                        if progressed:
+                            trigger = "layer_started" if v["layer_num"] > 0 else "ams_engaged"
+                            await self._set(JobState.PRINTING, trigger)
+                            spaghetti = self._start_spaghetti_monitor(service)
+                        elif feed_by is not None and now >= feed_by:
+                            self._request_stop("FED_NO_PROGRESS")
+                            continue
+
+                deadlines = [d for d in (ack_by if state is JobState.SUBMITTED else None,
+                                         feed_by if self._job.state is JobState.PREPARING else None)
+                             if d is not None]
+                timeout = max(0.0, min(deadlines) - loop.time()) if deadlines else None
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._wake.wait(), timeout)
         finally:
             if spaghetti is not None:
                 spaghetti.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await spaghetti
-        if sig == "interrupted":
+
+    async def _deliver_stop(self, service: Any) -> None:
+        """Send ``print stop`` once for a pending stop; retried on the next wake if it fails."""
+        if self._stop_reason is None or self._stop_sent:
+            return
+        try:
+            await service.send_command("print", "stop")
+        except ValueError as exc:
+            if str(exc).startswith("BBSTOP_"):
+                await self._fail(
+                    "cancel_not_confirmed; check the printer and use printer stop controls"
+                )
+                return
+            raise
+        except Exception as exc:  # noqa: BLE001 — link down: keep the job live, retry
+            self._log.warning("job.stop_not_delivered", reason=self._stop_reason, error=str(exc))
+            await self._events.add(
+                printer_id=self._job.printer_id,
+                job_id=self._job.id,
+                event_type="stop_not_delivered",
+                payload={"reason": self._stop_reason, "error": str(exc)},
+            )
+            return
+        self._stop_sent = True
+
+    async def _close(self, gs: str, *, lost: bool, ran: bool) -> None:
+        """The printer left the job: record how (Orca is_printing_finished = FINISH/FAILED)."""
+        if self._stop_sent:
+            if self._stop_reason == "user_cancel":
+                await self._set(JobState.CANCELED, "user_cancel")
+            else:
+                await self._fail(self._stop_reason or "printer_error")
+        elif gs == "FINISH":
+            await self._complete()
+        elif lost and ran:
             await self._jobs.update(
                 self._job.id, finished_at=int(time.time()), error_code="printer_job_lost"
             )
             await self._set(JobState.INTERRUPTED, "printer_job_lost")
-            return
-        if sig == "completed":
-            await self._complete()
-        elif sig == "cancel":
-            await self._do_cancel(service, acked=True)
-        elif sig == "spaghetti":
-            with contextlib.suppress(Exception):
-                await service.send_command("print", "stop")
-            await self._fail("SPAGHETTI_DETECTED")
         else:
             await self._fail("printer_error")
-
-    # ------------------------------------------------------------------ #
-    # Transitions
-    # ------------------------------------------------------------------ #
-
-    async def _wait_signal(self, accept: set[str], *, timeout: float | None = None) -> str | None:
-        """Pull signals until one is in ``accept``; None on timeout."""
-        deadline = None if timeout is None else asyncio.get_event_loop().time() + timeout
-        while True:
-            remaining = None
-            if deadline is not None:
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    return None
-            try:
-                sig = await asyncio.wait_for(self._signals.get(), timeout=remaining)
-            except TimeoutError:
-                return None
-            if sig in accept:
-                return sig
 
     def _start_spaghetti_monitor(self, service: Any) -> asyncio.Task[None] | None:
         """Opt-in camera failure watch, scoped to the PRINTING phase.
 
         Returns the running task, or None when disabled / no camera. The
-        callback only *enqueues* a signal — the actual abort stays in the
-        FSM (one stop path), and the trigger is debounced upstream in the
+        callback only requests a stop — the abort stays in the reconcile
+        loop (one stop path), and the trigger is debounced upstream in the
         pure detector, so a single bad frame can't fail a good print.
         """
         if not self._spaghetti_detection:
@@ -731,26 +710,10 @@ class JobRun:
         monitor = SpaghettiMonitor(
             camera,
             printing_ok=lambda: self._job.state is JobState.PRINTING,
-            on_spaghetti=lambda _c: self._signals.put_nowait("spaghetti"),
+            on_spaghetti=lambda _c: self._request_stop("SPAGHETTI_DETECTED"),
             printer_id=self._job.printer_id,
         )
         return asyncio.create_task(monitor.run())
-
-    async def _do_cancel(self, service: Any, *, acked: bool) -> None:
-        try:
-            await service.send_command("print", "stop")
-        except ValueError as exc:
-            if str(exc).startswith("BBSTOP_"):
-                await self._fail(
-                    "cancel_not_confirmed; check the printer and use printer stop controls"
-                )
-                return
-        except Exception:
-            pass
-        if acked:
-            # Printer was printing — wait for it to confirm the stop (spec 8).
-            await self._wait_signal({"stopped", "completed", "failed"}, timeout=_CANCEL_CONFIRM_S)
-        await self._set(JobState.CANCELED, "user_cancel")
 
     async def _complete(self) -> None:
         now = int(time.time())
@@ -787,37 +750,15 @@ class JobRun:
         self._log.info("job.transition", frm=cur.value, to=new.value, trigger=trigger)
 
 
-def _gcode_state(data: dict[str, Any]) -> str | None:
-    """Pull gcode_state out of a delta/snapshot payload (nested under state)."""
-    if "gcode_state" in data:
-        gs = data["gcode_state"]
-        return str(gs) if gs is not None else None
-    state = data.get("state")
-    if isinstance(state, dict) and state.get("gcode_state") is not None:
-        return str(state["gcode_state"])
-    return None
+def _tray_engaged_since(before: dict[str, Any], now: dict[str, Any]) -> bool:
+    """The feed engaged a tray during this job (FED_NO_PROGRESS satisfaction).
 
-
-def _layer_advanced(data: dict[str, Any]) -> bool:
-    """Has layer_num crossed into positive (the contract §6.0.1 boundary)?
-
-    True only when the report carries an explicit positive ``layer_num``.
-    Deltas where the key is absent return False (no signal). The watcher
-    in :meth:`_read_bus` is idempotent — repeated True observations just
-    re-publish the signal, which the FSM ignores once PREPARING has
-    advanced.
+    Level form of the old edge signal: a tray_now already engaged before the
+    project_file does not count, a change to an engaged tray does.
     """
-    if "layer_num" in data:
-        ln = data["layer_num"]
-    else:
-        state = data.get("state")
-        ln = state.get("layer_num") if isinstance(state, dict) else None
-    if ln is None:
-        return False
-    try:
-        return int(ln) > 0
-    except (TypeError, ValueError):
-        return False
+    return _ams_engaged({"ams": {"tray_now": now["tray_now"]}}) and (
+        now["tray_now"] != before["tray_now"]
+    )
 
 
 def _ams_engaged(data: dict[str, Any]) -> bool:
