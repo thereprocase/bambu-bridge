@@ -199,10 +199,11 @@ Tap the **Print** tab. Print submission takes a sliced **`.gcode.3mf`** file —
 export one from Bambu Studio. Then:
 
 1. **Pick** the file (the app also offers a recent-reprints list).
-2. **Map AMS slots** if you're printing in color/multi-material — the app reads
-   the filaments the slice expects and lets you assign each to a **physical AMS
-   slot (1–4)**, matching the numbers printed on the AMS. Printing from the
-   external spool? Skip the mapping.
+2. **Map AMS slots** — the app reads the filaments the slice expects and, like
+   Orca's Send dialog, assigns each to a loaded slot of the same material with
+   the closest colour. Slots are labelled 1–4, matching the numbers printed on
+   the AMS; change any pick, or choose External for the external spool. A
+   filament with no matching slot must be picked before you can continue.
 3. **Confirm and upload.** A progress bar tracks the upload.
 
 The bridge validates the file *before* accepting it. If something's wrong (bad
@@ -321,8 +322,11 @@ curl -fsS -X POST \
 ```
 
 - `file` is your sliced `.gcode.3mf`.
-- `ams_mapping` is optional — a comma-separated list of **physical AMS slot
-  numbers (1–4)**. Omit it to print from the external spool.
+- `ams_mapping` is optional and uses **Orca's format**: one entry per filament
+  in the project, each the **0-based AMS tray** (`0` = slot 1 … `3` = slot 4)
+  or `-1` for a filament the plate does not use. `1` above prints a
+  one-filament project from physical slot 2. Omit it to print from the
+  external spool. See [API-CONTRACT §7.1](API-CONTRACT.md).
 
 Validation and the `queued → ... → printing` lifecycle are exactly as described
 in the web-app flow above; a bad file returns `422` with a list of specific
