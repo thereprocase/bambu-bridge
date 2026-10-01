@@ -566,7 +566,9 @@ class JobRun:
             "project_file",
             **project_file_command(
                 self._job.file_name,
-                use_ams=bool(self._ams_mapping),
+                # Orca SelectMachineDialog: use_ams iff some filament is on
+                # an AMS tray; an all -1 mapping means the external spool.
+                use_ams=any(tray >= 0 for tray in self._ams_mapping or []),
                 ams_mapping=self._ams_mapping or [],
             ),
         )

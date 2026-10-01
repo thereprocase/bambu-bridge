@@ -150,6 +150,33 @@ async def test_full_job_lifecycle_to_completed(
         "completed",
     ]
     assert events[0]["event_type"] == "job_created"
+    # Orca's ams_mapping goes to the printer unchanged: tray 1 = physical slot 2.
+    sent = [
+        r["print"] for r in printing_mock.requests
+        if r.get("print", {}).get("command") == "project_file"
+    ]
+    assert [(p["ams_mapping"], p["use_ams"]) for p in sent] == [([1], True)]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1", [1]), ("0,-1,3", [0, -1, 3]), ("-1", [-1]), ("", None), (None, None)],
+)
+def test_ams_mapping_form_is_orca_trays(raw: str | None, expected: list[int] | None) -> None:
+    from bambu_bridge.api.jobs import _parse_ams
+
+    assert _parse_ams(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["1000", "-2", "16", "a", ",".join(["0"] * 65)])
+def test_ams_mapping_form_out_of_range_is_422(raw: str) -> None:
+    from fastapi import HTTPException
+
+    from bambu_bridge.api.jobs import _parse_ams
+
+    with pytest.raises(HTTPException) as err:
+        _parse_ams(raw)
+    assert err.value.status_code == 422
 
 
 @pytest.mark.asyncio

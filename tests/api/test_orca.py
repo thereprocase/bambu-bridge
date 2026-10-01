@@ -215,7 +215,7 @@ def test_external_spool_and_invalid_client_config(client: TestClient) -> None:
     _, auth = key(client, [])
     assert send(client, auth, fields={"print": "true"}).status_code == 201
     assert client.app.state.jobs.submit.call_args.kwargs["ams_mapping"] is None
-    for mapping in [[-1], [16], list(range(17))]:
+    for mapping in [[-2], [16], [0] * 65]:  # -1 (unused filament) is valid Orca
         assert (
             client.post(
                 MANAGE,
