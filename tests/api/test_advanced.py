@@ -902,37 +902,6 @@ async def test_set_nozzle_reaches_printer(
 
 
 @pytest.mark.asyncio
-async def test_set_nozzle_preserves_unconfirmed_service_type(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
-    """Publication alone leaves the reported nozzle policy unchanged."""
-    app = build_app(tmp_path / "nz_mem.db", mqtt_port=mqtt_broker)
-
-    def run() -> None:
-        with TestClient(app) as c:
-            _register(c)
-            _wait_connected(c)
-
-            svc = _service(app)
-            assert svc.nozzle_type != "hardened_steel"
-
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/set_accessories/nozzle",
-                headers=_AUTH,
-                json={"nozzle_type": "hardened_steel", "nozzle_diameter": 0.6},
-            )
-            assert r.status_code == 200, r.text
-            # Wait for the command to be sent before checking state.
-            _wait_request(
-                mock_printer,
-                lambda r: r.get("system", {}).get("command") == "set_accessories",
-            )
-            assert svc.nozzle_type != "hardened_steel"
-
-    await asyncio.to_thread(run)
-
-
-@pytest.mark.asyncio
 async def test_set_nozzle_invalid_type_is_422(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:

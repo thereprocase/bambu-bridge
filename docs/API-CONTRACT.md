@@ -698,7 +698,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/print/resume` | — | resume paused print | v0 |
 | POST | `/print/stop` | — | stop active print (same body as POST /jobs/{id}/cancel response semantics) | v0 |
 | POST | `/light` | `{"on": bool}` | chamber light on/off | v0 |
-| POST | `/temperature` | `{"nozzle": int?, "bed": int?}` | both optional but one required. Range-validated server-side: nozzle ≤280 °C (stainless nozzle, default) or ≤300 °C when `printers.nozzle_type=hardened_steel`; bed ≤120 °C always. APK fires liberally; bridge 422s out-of-range. | v0 |
+| POST | `/temperature` | `{"nozzle": int?, "bed": int?}` | both optional but one required. Range-validated server-side: nozzle ≤ the printer-reported `nozzle_temp_range[1]`, else ≤300 °C whatever the nozzle type (as OrcaSlicer); bed ≤120 °C always. APK fires liberally; bridge 422s out-of-range. | v0 |
 | POST | `/fan` | `{"part": "part\|aux\|chamber", "percent": 0-100}` | bridge translates to native 0-15 | v0 |
 | POST | `/speed` | `{"level": 1-4}` | 1 silent · 2 standard · 3 sport · 4 ludicrous. **Response echoes labels** so APK doesn't hardcode i18n. | v0 |
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
@@ -822,7 +822,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be connec
 | POST | `/ams/drying` | `{ams_id, temp, cooling_temp, duration, humidity, mode?, rotate_tray?}` | YELLOW | Starts AMS drying cycle; requires AMS firmware support. |
 | POST | `/ams/user_setting` | `{ams_id, startup_read_option, tray_read_option}` | YELLOW | Configures RFID auto-read behaviour. |
 | POST | `/calibration` | `{option: 1\|2\|4\|7, bed_type?}` | RED | P1S-confirmed bits only (matrix §8). Option 3, 5, 6, 8+ → 422 naming the matrix. |
-| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Updates in-memory temp clamp immediately. |
+| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Tells the printer only; the temperature ceiling does not depend on it. |
 | POST | `/extrude` | `{distance_mm, feedrate?}` | RED | 5-layer guard (see §11.2). |
 | POST | `/steppers/off` | — | RED | Sends M84; resets dead-reckon position to UNKNOWN. |
 | POST | `/gcode/raw` | `{line: str}` | BLACK | Gated by `BRIDGE_ENABLE_RAW_GCODE` env var; disabled by default (403). Every line logged at WARNING. 4 KB cap inherited. |

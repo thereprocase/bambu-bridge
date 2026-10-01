@@ -28,7 +28,6 @@ def rig():
         model=None,
         connected=True,
         cert_status="ok",
-        nozzle_type="hardened_steel",
         snapshot=lambda: snapshot,
         send_raw=AsyncMock(),
     )

@@ -155,7 +155,7 @@ export default function ControlsScreen() {
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Temperature</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Nozzle limit: 280 °C or 300 °C, according to bridge configuration.
+          Nozzle limit: 300 °C, or the range the printer reports.
           P1S bed maximum: 100 °C.
         </Text>
         <Field

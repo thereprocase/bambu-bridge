@@ -174,16 +174,12 @@ class PrinterService:
         recover_started_at: RecoverStartedAt | None = None,
         load_filament_memory: LoadFilamentMemory | None = None,
         invalidate_filament_memory: InvalidateFilamentMemory | None = None,
-        nozzle_type: str | None = None,
     ) -> None:
         self.serial = serial
         self.ip = ip
         self.access_code = access_code
         self.friendly_name = friendly_name
         self.model = model
-        # Wave-1: "hardened_steel" allows 300 °C nozzle target; None or any
-        # other value falls back to the 280 °C stainless ceiling.
-        self.nozzle_type = nozzle_type
         self._mqtt_port = mqtt_port
         self._camera_port = camera_port
         self._camera_linger_s = camera_linger_s

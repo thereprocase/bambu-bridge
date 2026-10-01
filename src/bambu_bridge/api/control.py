@@ -288,6 +288,16 @@ class TemperatureBody(BaseModel):
     bed: int | None = None
 
 
+def _nozzle_max_c(service: PrinterService) -> int:
+    """The printer-reported ``nozzle_temp_range[1]``, else 300 °C (OrcaSlicer)."""
+    reported = (service.snapshot().get("_raw") or {}).get("nozzle_temp_range")
+    if isinstance(reported, list) and len(reported) >= 2:
+        top = reported[1]
+        if isinstance(top, int) and not isinstance(top, bool) and top > 0:
+            return top
+    return commands.NOZZLE_MAX_C
+
+
 @router.post("/{printer_id}/temperature")
 async def set_temperature(
     printer_id: str,
@@ -296,10 +306,8 @@ async def set_temperature(
 ) -> dict[str, Any]:
     """Set nozzle and/or bed target (gcode M104/M140 under the hood).
 
-    Nozzle clamp: 280 °C default (stainless nozzle); 300 °C only when the
-    printer row records ``nozzle_type=hardened_steel``.  This is the server-
-    side gate — the builder enforces the same ceiling but needs to know
-    which cap applies.
+    Nozzle ceiling as in OrcaSlicer: the printer-reported
+    ``nozzle_temp_range`` maximum, else 300 °C, whatever the nozzle type.
     """
     if body.nozzle is None and body.bed is None:
         raise HTTPException(
@@ -307,15 +315,15 @@ async def set_temperature(
             detail="provide nozzle and/or bed",
         )
     service = _online(registry, printer_id)
-    hardened = getattr(service, "nozzle_type", None) == "hardened_steel"
+    max_c = _nozzle_max_c(service)
     # Validate the entire request before publishing either heater command.
     if body.nozzle is not None:
-        _build(commands.set_nozzle_temp, body.nozzle, hardened=hardened)
+        _build(commands.set_nozzle_temp, body.nozzle, max_c=max_c)
     if body.bed is not None:
         _build(commands.set_bed_temp, body.bed)
     sent: list[dict[str, Any]] = []
     if body.nozzle is not None:
-        env = _build(commands.set_nozzle_temp, body.nozzle, hardened=hardened)
+        env = _build(commands.set_nozzle_temp, body.nozzle, max_c=max_c)
         sent.append((await _send(service, env))["sent"])
     if body.bed is not None:
         sent.append((await _send(service, _build(commands.set_bed_temp, body.bed)))["sent"])
