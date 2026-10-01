@@ -117,3 +117,38 @@ def test_legacy_unknown_status_does_not_block(
         r = c.get(f"/api/v1/printers/{SERIAL}", headers=_AUTH)
         assert r.status_code == 200
         assert r.json()["cert_status"] == "unknown"
+
+
+def test_changed_cert_blocks_print_start_but_not_job_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /jobs and queue start refuse before any upload (audit 2026-10-01);
+    cancelling a job is the way out and is never gated."""
+    patch_discovery_ok(monkeypatch, serial=SERIAL, fingerprint="pin-A")
+    with TestClient(build_app(tmp_path / "gate-start.db")) as c:
+        assert _register(c).status_code == 201
+        item = c.post(
+            f"/api/v1/printers/{SERIAL}/queue",
+            headers=_AUTH,
+            json={"file_path": "/cube.gcode.3mf", "file_name": "cube.gcode.3mf"},
+        )
+        assert item.status_code == 201, item.text
+        svc = c.app.state.registry.get(SERIAL)  # type: ignore[attr-defined]
+        svc.expected_fingerprint = "pin-A"
+        svc.current_fingerprint = "pin-B"
+        svc.cert_status = "changed"
+        svc.model = "P1S"  # identity known, as on a live printer
+
+        r = c.post(
+            f"/api/v1/printers/{SERIAL}/jobs",
+            headers=_AUTH,
+            files={"file": ("cube.3mf", b"PK", "application/octet-stream")},
+        )
+        assert r.status_code == 403, r.text
+        assert r.json()["error"] == "printer_cert_changed"
+
+        r = c.post(f"/api/v1/queue/{item.json()['id']}/start", headers=_AUTH)
+        assert r.status_code == 403, r.text
+        assert r.json()["error"] == "printer_cert_changed"
+
+        assert c.post("/api/v1/jobs/nope/cancel", headers=_AUTH).status_code == 404
