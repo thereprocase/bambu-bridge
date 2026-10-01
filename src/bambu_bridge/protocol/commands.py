@@ -35,13 +35,10 @@ from bambu_bridge.protocol.models import build_command
 
 Envelope = dict[str, Any]
 
-# Default nozzle temperature ceiling (stainless steel nozzle).  Hardened-steel
-# nozzles can go to 300 °C; the API layer applies the conditional clamp and
-# passes the already-validated value here.  The builder enforces the
-# hardcoded absolute maximum (300 °C) so no client-supplied clamp can exceed
-# the physical limit regardless of nozzle type.
-NOZZLE_MAX_C = 280             # default / stainless ceiling
-NOZZLE_MAX_HARDENED_C = 300   # conditional ceiling; requires nozzle_type=hardened
+# Nozzle temperature ceiling, as in OrcaSlicer: 300 °C whatever the nozzle
+# type (StatusPanel::create_temp_control), unless the printer reports its own
+# nozzle_temp_range (StatusPanel::update_temp_ctrl), which the API passes in.
+NOZZLE_MAX_C = 300
 BED_MAX_C = 100  # Qualified adapter: P1S (manufacturer C12 profile).
 SPEED_LEVELS = {1: "silent", 2: "standard", 3: "sport", 4: "ludicrous"}
 # print.gcode_line fan index per Bambu convention.
@@ -204,25 +201,14 @@ def gcode_line(line: str) -> Envelope:
 # --------------------------------------------------------------------------- #
 
 
-def set_nozzle_temp(celsius: int, *, hardened: bool = False) -> Envelope:
+def set_nozzle_temp(celsius: int, *, max_c: int = NOZZLE_MAX_C) -> Envelope:
     """Set nozzle target temperature (M104, no-wait).
 
-    ``hardened=False`` (default / stainless nozzle): ceiling is
-    :data:`NOZZLE_MAX_C` (280 °C).
-    ``hardened=True`` (hardened-steel nozzle confirmed in printer record):
-    ceiling is :data:`NOZZLE_MAX_HARDENED_C` (300 °C).
-
-    The API layer reads the nozzle_type from the printer record / service
-    state and sets ``hardened`` accordingly.  The builder itself never
-    trusts the caller to raise the limit — ``hardened=True`` is only ever
-    set by the server-side gate in ``api/control.py``.
+    ``max_c`` is the printer-reported ``nozzle_temp_range`` maximum when the
+    printer sends one, else :data:`NOZZLE_MAX_C`.
     """
-    ceiling = NOZZLE_MAX_HARDENED_C if hardened else NOZZLE_MAX_C
-    if not 0 <= celsius <= ceiling:
-        raise ValueError(
-            f"nozzle temp {celsius} out of range 0..{ceiling} "
-            f"({'hardened' if hardened else 'stainless'} nozzle)"
-        )
+    if not 0 <= celsius <= max_c:
+        raise ValueError(f"nozzle temp {celsius} out of range 0..{max_c}")
     return _gcode(f"M104 S{celsius}")
 
 
@@ -542,9 +528,9 @@ def ams_filament_setting(
         raise ValueError(
             f"nozzle_temp_min ({nozzle_temp_min}) must be < nozzle_temp_max ({nozzle_temp_max})"
         )
-    if nozzle_temp_max > NOZZLE_MAX_HARDENED_C:
+    if nozzle_temp_max > NOZZLE_MAX_C:
         raise ValueError(
-            f"nozzle_temp_max {nozzle_temp_max} exceeds absolute ceiling {NOZZLE_MAX_HARDENED_C}"
+            f"nozzle_temp_max {nozzle_temp_max} exceeds absolute ceiling {NOZZLE_MAX_C}"
         )
     if tray_type not in AMS_TRAY_TYPES:
         raise ValueError(

@@ -441,8 +441,8 @@ export default function AdvancedScreen() {
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Nozzle type & diameter</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Tell the bridge which nozzle is installed. Hardened steel unlocks
-          the 300 °C temperature clamp; stainless is clamped at 280 °C.
+          Tell the printer which nozzle is installed. The nozzle limit stays
+          300 °C (or the range the printer reports), as in OrcaSlicer.
         </Text>
 
         <Text style={[type.small, { color: c.muted }]}>Nozzle type</Text>

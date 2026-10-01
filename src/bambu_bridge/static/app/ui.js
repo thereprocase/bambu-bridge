@@ -11,7 +11,6 @@
 //                       renders message + remediation_hint VERBATIM with a
 //                       Dev-mode _raw "Technical details" disclosure
 //   - banner()        : the under-header state banner (reconnecting/offline)
-//   - pressHold()     : press-and-hold helper (100mm jog guard) with a fill ring
 //   - certChangedSheet(): the TOFU trust sheet rendered from actions[]
 //
 // Everything here is escaping-safe by default: el() sets textContent (never
@@ -295,64 +294,6 @@ export function banner(message, kind = 'amber', action) {
     el('span', { class: 'banner__msg', text: message }),
     action ? el('button', { class: 'btn btn--sm btn--ghost', text: action.label, onClick: action.onClick }) : null,
   ]);
-}
-
-// ── press-and-hold helper (100mm jog guard) ─────────────────────────────────
-/**
- * Attach a press-and-hold gesture to an element. The action fires only after
- * the user holds for `holdMs`. A filling ring (via inline style on an optional
- * ring element) gives feedback. Releasing early cancels. Honors
- * prefers-reduced-motion by skipping the fill animation but keeping the hold.
- *
- * @param {HTMLElement} target
- * @param {()=>void} onComplete
- * @param {object} [opts]
- * @param {number} [opts.holdMs=700]
- * @param {HTMLElement} [opts.ring]   element whose width/background fills 0->100%
- * @returns {()=>void} detach function
- */
-export function pressHold(target, onComplete, opts = {}) {
-  const holdMs = opts.holdMs || 700;
-  const ring = opts.ring || null;
-  let raf = 0, start = 0, fired = false, holding = false;
-
-  function tick(now) {
-    if (!holding) return;
-    const pct = Math.min(1, (now - start) / holdMs);
-    if (ring) ring.style.width = (pct * 100) + '%';
-    if (pct >= 1) {
-      fired = true; holding = false;
-      if (ring) ring.style.width = '0%';
-      onComplete();
-      return;
-    }
-    raf = requestAnimationFrame(tick);
-  }
-
-  function down(e) {
-    e.preventDefault();
-    holding = true; fired = false; start = performance.now();
-    target.setPointerCapture && e.pointerId != null && target.setPointerCapture(e.pointerId);
-    raf = requestAnimationFrame(tick);
-  }
-  function up() {
-    holding = false;
-    if (raf) cancelAnimationFrame(raf);
-    if (ring) ring.style.width = '0%';
-  }
-
-  target.addEventListener('pointerdown', down);
-  target.addEventListener('pointerup', up);
-  target.addEventListener('pointercancel', up);
-  target.addEventListener('pointerleave', up);
-
-  return () => {
-    target.removeEventListener('pointerdown', down);
-    target.removeEventListener('pointerup', up);
-    target.removeEventListener('pointercancel', up);
-    target.removeEventListener('pointerleave', up);
-    if (raf) cancelAnimationFrame(raf);
-  };
 }
 
 // ── tiny formatters screens share (bridge owns words; these are pure) ───────

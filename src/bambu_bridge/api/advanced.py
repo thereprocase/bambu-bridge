@@ -24,14 +24,9 @@ BLACK — gated by env var:
 Contract §11 (Advanced controls) table:
   See docs/API-CONTRACT.md §11 for the risk tier column and guard list.
 
-Nozzle write-back note:
-  set_accessories/nozzle sends the command to the printer and updates the
-  in-memory ``service.nozzle_type`` attribute (used by the temperature clamp).
-  Persistent write-back to the ``printers`` DB row is a one-line follow-up
-  for the architect: ``await registry.update_nozzle_type(printer_id, nozzle_type)``
-  (or equivalent) — not done here because the DB layer is outside this file
-  partition. The in-memory update is sufficient for the temp-clamp gate within
-  the current session.
+Nozzle note:
+  set_accessories/nozzle only tells the printer which nozzle is fitted. The
+  nozzle type does not set the temperature ceiling (see POST /temperature).
 
 M84 position-state note:
   steppers/off sends M84 and calls ``service.reset_motion_state("M84")`` to
@@ -500,16 +495,10 @@ async def set_nozzle(
     """Notify the printer of the installed nozzle type and diameter.
 
     Sends a ``system.set_accessories`` command to update the printer's
-    nozzle profile. Also updates the in-memory service attribute
-    ``nozzle_type`` so the temperature clamp in ``POST /temperature`` uses
-    the correct ceiling (280 °C stainless vs 300 °C hardened) immediately.
+    nozzle profile.
 
-    NOTE — persistent write-back to the DB ``printers`` row is a one-line
-    follow-up owned by the architect: ``registry.update_nozzle_type(id, type)``.
-    The in-memory update is sufficient for the temp-clamp gate within this session.
-
-    Risk: YELLOW — incorrect nozzle settings affect temperature limits and
-    could cause under/over-temp on the next print.
+    Risk: YELLOW — incorrect nozzle settings mislead the printer's own
+    filament/nozzle compatibility checks.
     """
     service = _online(registry, printer_id)
     result = await _send(
@@ -520,9 +509,6 @@ async def set_nozzle(
             nozzle_diameter=body.nozzle_diameter,
         ),
     )
-    # Update in-memory service attribute so the temperature clamp picks it up
-    # immediately — no restart or re-register needed.
-    # Reported hardware, rather than publication, determines temperature policy.
     return result
 
 

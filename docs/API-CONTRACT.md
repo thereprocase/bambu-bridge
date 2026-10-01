@@ -675,9 +675,9 @@ Query: `since=<ISO-8601>`, `until=<ISO-8601>`, `limit=` (default 50, max 200), `
 ]
 ```
 
-`kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `feed_warning`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
+`kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
 
-`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `feed_warning` / `spool_low` / `door`, `error` for `print_failed` / thermal / `error`.
+`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `spool_low` / `door`, `error` for `print_failed` / thermal / `error`.
 
 `title` + `detail` + `context` are pre-formatted (English-first; i18n is v0.1). APK renders verbatim.
 
@@ -701,15 +701,15 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/print/resume` | — | resume paused print | v0 |
 | POST | `/print/stop` | — | stop active print (same body as POST /jobs/{id}/cancel response semantics) | v0 |
 | POST | `/light` | `{"on": bool}` | chamber light on/off | v0 |
-| POST | `/temperature` | `{"nozzle": int?, "bed": int?}` | both optional but one required. Range-validated server-side: nozzle ≤280 °C (stainless nozzle, default) or ≤300 °C when `printers.nozzle_type=hardened_steel`; bed ≤120 °C always. APK fires liberally; bridge 422s out-of-range. | v0 |
+| POST | `/temperature` | `{"nozzle": int?, "bed": int?}` | both optional but one required. Range-validated server-side: nozzle ≤ the printer-reported `nozzle_temp_range[1]`, else ≤300 °C whatever the nozzle type (as OrcaSlicer); bed ≤120 °C always. APK fires liberally; bridge 422s out-of-range. | v0 |
 | POST | `/fan` | `{"part": "part\|aux\|chamber", "percent": 0-100}` | bridge translates to native 0-15 | v0 |
 | POST | `/speed` | `{"level": 1-4}` | 1 silent · 2 standard · 3 sport · 4 ludicrous. **Response echoes labels** so APK doesn't hardcode i18n. | v0 |
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
 | POST | `/home` | — | G28 home all axes | v0.1 |
-| POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog | v0.1 |
+| POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog. `distance_mm` ∈ ±{1, 10} (OrcaSlicer's steps; UIs send XY at 3000, Z at 900 mm/min). `409 conflict` while a print runs (allowed when paused), as OrcaSlicer disables motion. | v0.1 |
 | POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
-| POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | mid-print filament change. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
-| POST | `/filament/unload` | — | unload current filament | v0.1 |
+| POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | filament change. `409 conflict` while a print runs; when paused only the external spool (`254`), as in OrcaSlicer. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
+| POST | `/filament/unload` | — | unload current filament. `409 conflict` while a print runs; when paused only if the external spool is loaded (OrcaSlicer). | v0.1 |
 | POST | `/work_light` | `{"mode": "on\|off\|flashing", "loop_times": int?, "interval_time": int?}` | work/task light; mode `"flashing"` accepts `loop_times` (default 1; 0=forever) and `interval_time` ms (default 500). Not all P1S configs have this node; printer ignores when absent. | v0.1 |
 | POST | `/ipcam/record` | `{"enabled": bool}` | enable/disable print video recording to SD card | v0.1 |
 | POST | `/ipcam/timelapse` | `{"enabled": bool}` | enable/disable timelapse generation to SD card | v0.1 |
@@ -825,7 +825,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be connec
 | POST | `/ams/drying` | `{ams_id, temp, cooling_temp, duration, humidity, mode?, rotate_tray?}` | YELLOW | Starts AMS drying cycle; requires AMS firmware support. |
 | POST | `/ams/user_setting` | `{ams_id, startup_read_option, tray_read_option}` | YELLOW | Configures RFID auto-read behaviour. |
 | POST | `/calibration` | `{option: 1\|2\|4\|7, bed_type?}` | RED | P1S-confirmed bits only (matrix §8). Option 3, 5, 6, 8+ → 422 naming the matrix. |
-| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Updates in-memory temp clamp immediately. |
+| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Tells the printer only; the temperature ceiling does not depend on it. |
 | POST | `/extrude` | `{distance_mm, feedrate?}` | RED | 5-layer guard (see §11.2). |
 | POST | `/steppers/off` | — | RED | Sends M84; resets dead-reckon position to UNKNOWN. |
 | POST | `/gcode/raw` | `{line: str}` | BLACK | Gated by `BRIDGE_ENABLE_RAW_GCODE` env var; disabled by default (403). Every line logged at WARNING. 4 KB cap inherited. |
@@ -894,7 +894,6 @@ The design's `AlertBanner` has 3 visual kinds (`door`, `runout`, `thermal`) — 
 | WS event | `data` shape | AlertBanner `kind` | severity | title template | detail template | action label |
 |---|---|---|---|---|---|---|
 | `filament_runout` | `{code, slot}` | `runout` | `warn` | `"Filament runout — Slot {slot}"` | `"{material name} ran out at layer {layer}. Swap spool and resume, or reassign."` | `"Swap & resume"` |
-| `feed_warning` | `{since_ms, advice}` | `runout`-styled (or `door` if user prefers a distinct kind) | `warn` | `"Print may not be feeding filament"` | `"The printer is heating and moving, but hasn't started laying plastic for {since_ms/1000}s. Likely a slot/filament mismatch."` | `"View camera"` + `"Stop"` |
 | `error` with `print_error.category="thermal"` | `{print_error: {code, text, category, severity}}` | `thermal` | `critical` | `"Thermal anomaly — {component}"` | `"{print_error.text}"` | `"Acknowledge"` |
 | `error` with `print_error.category="door"` (P1S has door sensor on some configs) | same | `door` | `warn` | `"Chamber door open"` | `"Print paused automatically. Close the door and resume."` | `"Resume"` |
 | `error` with other categories | same | derive from `print_error.category`; fallback `"error"` | `error.severity` (default `warn`) | `print_error.text` | (none — error remains sticky until ack) | `"Acknowledge"` |
@@ -920,7 +919,6 @@ All wrapped in `{type: "event", event: "<name>", data: {...}}`.
 | `filament_runout` | print_error matches runout codes | `{code, slot: physical_slot}` | Offer "swap filament" / "stop" |
 | `connection_lost` | MQTT link dropped | `{at}` | Dim cached state, "Reconnecting · last update Ns ago" |
 | `connection_restored` | MQTT reconnected after a loss | `{at, missed_ms}` | Brighten state; if `missed_ms > 30000`, show toast "Reconnected — state refreshed" |
-| `feed_warning` | RUNNING + temps at target + ams.engaged_slot==null + layer_num unchanged for ≥90s | `{since_ms, advice: "look at the plate"}` | **The headline v0 UX feature.** Non-blocking banner: "Print may not be feeding filament — view camera / stop print / keep waiting." Auto-clears when ANY of: layer_num advances, gcode_state leaves RUNNING, ams.engaged_slot changes off null. (PR B implements.) |
 | `job_state_change` | JobState transitions | `{job_id, from, to, trigger}` | Update job tab |
 
 ---
@@ -1040,7 +1038,7 @@ Minimum settings the APK exposes:
 **PR B — dashboard contract unblocker (~140 LOC):**
 1. In-place translation layer in `service/printer.py:snapshot()` + `summary()` — phase, headline, AMS dual-emission (+ `remaining_g`/`remaining_pct` per slot), fan native→percent, print_error int→HMS lookup, `print_params.{speed_mm_s, flow_pct}`
 2. JobState enum remap: `started`→`submitted`, +new `preparing` state, `printing` gated on `layer_num > 0`. (`canceled` stays — see §7.4 note.)
-3. `feed_warning` named event (90s timer, auto-clears per §13.2)
+3. ~~`feed_warning` named event~~ (retired: air printing is the printer's own `air_print_detect`, as in OrcaSlicer)
 4. `GET /api/v1/printers/{id}/events` flat event feed endpoint + `POST .../dismiss` (per §8.4–8.5)
 5. `api/files.py` + `api/control.py` envelope cleanups (typed-exception text, FTPS auth→401)
 

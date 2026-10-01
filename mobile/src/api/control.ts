@@ -83,13 +83,17 @@ export function home(id: string) {
   );
 }
 
+/** OrcaSlicer's jog feed rates: XY at 3000 mm/min, Z at 900 mm/min. */
+export const JOG_FEED_MM_MIN = { X: 3000, Y: 3000, Z: 900 } as const;
+
 export function move(
   id: string,
   body: { axis: "X" | "Y" | "Z"; distance_mm: number; feed_mm_min?: number },
 ) {
+  const withFeed = { feed_mm_min: JOG_FEED_MM_MIN[body.axis], ...body };
   return tracked(
     `move_${body.axis.toLowerCase()}`,
-    request<{ sent: unknown }>(`/printers/${id}/move`, { method: "POST", body }),
+    request<{ sent: unknown }>(`/printers/${id}/move`, { method: "POST", body: withFeed }),
   );
 }
 

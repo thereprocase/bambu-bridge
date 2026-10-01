@@ -28,7 +28,6 @@ def rig():
         model=None,
         connected=True,
         cert_status="ok",
-        nozzle_type="hardened_steel",
         snapshot=lambda: snapshot,
         send_raw=AsyncMock(),
     )
@@ -49,7 +48,7 @@ def rig():
         ("ams/drying", {}),
         ("set_accessories/nozzle", {"nozzle_type": "hardened_steel", "nozzle_diameter": 0.4}),
         ("home", {}),
-        ("move", {"axis": "Z", "distance_mm": -50}),
+        ("move", {"axis": "Z", "distance_mm": -10}),
         ("extrude", {"distance_mm": 10}),
         ("steppers/off", {}),
         ("ams/change", {"target_tray": 0}),

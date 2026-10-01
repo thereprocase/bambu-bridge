@@ -140,33 +140,22 @@ class TestAmsSlotNumbering:
 
 
 class TestNozzleTempClamp:
-    """Nozzle temp: 280 °C stainless default; 300 °C only for hardened_steel."""
+    """Nozzle ceiling as in OrcaSlicer: 300 °C, or the printer-reported max."""
 
-    def test_280_accepted_stainless(self) -> None:
-        env = commands.set_nozzle_temp(280)
-        assert env["print"]["param"] == "M104 S280\n"
+    def test_300_accepted_by_default(self) -> None:
+        assert commands.set_nozzle_temp(300)["print"]["param"] == "M104 S300\n"
 
-    def test_281_rejected_stainless(self) -> None:
-        with pytest.raises(ValueError, match="nozzle temp"):
-            commands.set_nozzle_temp(281)
+    def test_301_rejected_by_default(self) -> None:
+        with pytest.raises(ValueError, match="nozzle temp 301 out of range 0..300"):
+            commands.set_nozzle_temp(301)
 
-    def test_300_accepted_hardened(self) -> None:
-        env = commands.set_nozzle_temp(300, hardened=True)
-        assert env["print"]["param"] == "M104 S300\n"
-
-    def test_301_rejected_hardened(self) -> None:
-        with pytest.raises(ValueError, match="nozzle temp"):
-            commands.set_nozzle_temp(301, hardened=True)
+    def test_reported_maximum_applies(self) -> None:
+        assert commands.set_nozzle_temp(320, max_c=320)["print"]["param"] == "M104 S320\n"
+        with pytest.raises(ValueError, match="0..250"):
+            commands.set_nozzle_temp(260, max_c=250)
 
     def test_zero_accepted_always(self) -> None:
         assert commands.set_nozzle_temp(0)["print"]["param"] == "M104 S0\n"
-        assert commands.set_nozzle_temp(0, hardened=True)["print"]["param"] == "M104 S0\n"
-
-    def test_error_message_names_nozzle_type(self) -> None:
-        with pytest.raises(ValueError, match="stainless"):
-            commands.set_nozzle_temp(290)
-        with pytest.raises(ValueError, match="hardened"):
-            commands.set_nozzle_temp(301, hardened=True)
 
 
 class TestGcodeLineCap:

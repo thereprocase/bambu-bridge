@@ -217,21 +217,25 @@ function runInterceptor(r) {
  * resolve to {ok:false, status:0, network:true}.
  *
  * @param {string} path  path under /api/v1, e.g. "/printers"
- * @param {RequestInit & {auth?:boolean, raw?:boolean}} [opts]
+ * @param {RequestInit & {auth?:boolean, raw?:boolean, base?:string, key?:string,
+ *        intercept?:boolean}} [opts]
  *        auth=false skips the Bearer header (for /health). raw=true returns the
  *        raw Response instead of JSON (rare; used for blob downloads).
+ *        base/key override the saved address and key (a connection test);
+ *        intercept=false keeps a 401/503 from navigating away.
  * @returns {Promise<ApiResult|Response>}
  */
 export async function api(path, opts = {}) {
-  const { auth = true, raw = false, headers, ...rest } = opts;
+  const { auth = true, raw = false, intercept = true, base, key, headers, ...rest } = opts;
   const h = new Headers(headers || {});
   if (auth) {
-    const key = getKey();
-    if (key) h.set('Authorization', `Bearer ${key}`);
+    const k = key ?? getKey();
+    if (k) h.set('Authorization', `Bearer ${k}`);
   }
+  const root = base != null ? (base.trim().replace(/\/+$/, '') || location.origin) + '/api/v1' : apiBase();
   let res;
   try {
-    res = await fetch(apiBase() + path, { ...rest, headers: h });
+    res = await fetch(root + path, { ...rest, headers: h });
   } catch (netErr) {
     return { ok: false, status: 0, network: true, error: 'network',
       message: "Can't reach the bridge.", _netErr: String(netErr) };
@@ -253,7 +257,7 @@ export async function api(path, opts = {}) {
   if (res.ok) return { ok: true, status: res.status, data: body };
 
   const r = parseEnvelope(res.status, body);
-  runInterceptor(r);
+  if (intercept) runInterceptor(r);
   return r;
 }
 
@@ -273,11 +277,17 @@ export async function api(path, opts = {}) {
  *   1) GET /health  (no auth) — is the bridge reachable here?
  *   2) GET /printers (Bearer) — is the key accepted, and how many printers?
  *
+ * Tests the CANDIDATE address and key without saving either, and without the
+ * 401 interceptor (a rejected test key must not bounce the user to onboarding).
+ * The caller saves them only on 'connected'.
  * Returns a single discriminated outcome the caller maps to a status line.
+ * @param {string} base  bridge address ('' = this page's origin)
+ * @param {string} key   API key
  * @returns {Promise<TestResult>}
  */
-export async function testConnection() {
-  const health = await api('/health', { auth: false });
+export async function testConnection(base, key) {
+  const candidate = { base, key, intercept: false };
+  const health = await api('/health', { ...candidate, auth: false });
   if (health.network) return { outcome: 'no_bridge', detail: health };
   if (health.status === 503 || health.error === 'auth_not_configured') {
     return { outcome: 'not_configured', detail: health };
@@ -285,7 +295,7 @@ export async function testConnection() {
   // something answered but isn't the bridge (non-2xx, non-503 on /health)
   if (!health.ok) return { outcome: 'wrong_address', detail: health };
 
-  const printers = await api('/printers');
+  const printers = await api('/printers', candidate);
   if (printers.network) return { outcome: 'no_bridge', detail: printers };
   if (printers.status === 503 || printers.error === 'auth_not_configured') {
     return { outcome: 'not_configured', detail: printers };

@@ -77,9 +77,8 @@ class Printer(BaseModel):
     # §3.6). Stored on register; compared on every connect. Mismatch ->
     # 403 printer_cert_changed (post-firmware-update re-trust prompt).
     cert_fingerprint: str | None = None
-    # Installed nozzle type: "hardened_steel" allows 300 °C; NULL/"stainless_steel"
-    # defaults to 280 °C (the safe stainless ceiling).  Set via
-    # POST /printers/{id}/nozzle or learned from set_accessories MQTT reports.
+    # Legacy column, no longer read: the nozzle ceiling follows the printer's
+    # report (api/control.py _nozzle_max_c), not a stored nozzle type.
     nozzle_type: str | None = None
 
 
@@ -127,8 +126,7 @@ _MIGRATIONS = (
     # NotificationsScreen. Both nullable so existing rows survive.
     "ALTER TABLE events ADD COLUMN severity TEXT",
     "ALTER TABLE events ADD COLUMN dismissed_at INTEGER",
-    # Wave-1 controls: nozzle_type lets the API gate 300 °C only for
-    # hardened-steel nozzles.  NULL = unknown = stainless fallback (280 °C).
+    # Legacy nozzle_type column (unused; kept so existing databases migrate).
     "ALTER TABLE printers ADD COLUMN nozzle_type TEXT",
     # G3 — filament memory table. CREATE TABLE IF NOT EXISTS is idempotent, but
     # the schema.sql path runs only on new databases; on existing ones we need

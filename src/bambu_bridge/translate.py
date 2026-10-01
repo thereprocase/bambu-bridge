@@ -117,7 +117,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
         "print_params": _print_params(raw),
         "motion": _motion(raw),
         "ams": _ams(raw, ctx),
-        "print_error": _print_error(raw),
+        "print_error": build_print_error(active_error_code(raw)),
         "stage": _stage(raw),
         "hms": _hms_list(raw, job_ctx),
         "_raw": _raw_passthrough(raw),
@@ -132,7 +132,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
 def _phase_and_reason(raw: dict[str, Any]) -> tuple[Phase, str | None]:
     gs = raw.get("gcode_state")
     layer_num = _as_int(raw.get("layer_num")) or 0
-    perr = _print_error_active(raw)
+    perr = active_error_code(raw) is not None
 
     # An active print_error overrides phase classification — failure is sticky.
     if perr and gs in ("FAILED", "IDLE", "FINISH"):
@@ -168,7 +168,7 @@ def _preparing_reason(raw: dict[str, Any]) -> str:
         tn = str(ams.get("tray_now", "")).strip()
         if tn == "255" or tn == "":
             # Still preparing — feed hasn't engaged yet. Heuristic only;
-            # the 90s feed_warning watchdog is the alerting path.
+            # air printing is the printer's own air_print_detect alert.
             nozzle_c = _as_float(raw.get("nozzle_temper"))
             nozzle_target = _as_float(raw.get("nozzle_target_temper"))
             if nozzle_c is not None and nozzle_target is not None and nozzle_c < nozzle_target - 5:
@@ -191,12 +191,18 @@ def _preparing_reason(raw: dict[str, Any]) -> str:
     return "purging"
 
 
-def _print_error_active(raw: dict[str, Any]) -> bool:
+def active_error_code(raw: dict[str, Any]) -> int | None:
+    """The printer's active device error, or None.
+
+    Mirrors OrcaSlicer: only the integer ``print_error`` counts and ``<= 0`` is
+    benign (StatusPanel::update_error_message). ``mc_print_error_code`` is
+    ignored; the P1S sends it as the string "0", which Orca never reads
+    (MachineObject::parse_json takes it only when it is a number).
+    """
     perr = raw.get("print_error")
-    if perr in (None, 0, "0", ""):
-        code = raw.get("mc_print_error_code")
-        return code not in (None, 0, "0", "")
-    return True
+    if isinstance(perr, int) and not isinstance(perr, bool) and perr > 0:
+        return perr
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +356,7 @@ def _headline(
             "indicator": "green",
         }
     if phase == "failed":
-        entry = hms_lookup(raw.get("mc_print_error_code") or raw.get("print_error"))
+        entry = hms_lookup(active_error_code(raw))
         return {
             "title": "Print failed",
             "subtitle": entry["user_message"],
@@ -772,8 +778,6 @@ def build_print_error(code: Any) -> dict[str, Any] | None:
     }
 
 
-def _print_error(raw: dict[str, Any]) -> dict[str, Any] | None:
-    return build_print_error(raw.get("mc_print_error_code") or raw.get("print_error"))
 
 
 # --------------------------------------------------------------------------- #

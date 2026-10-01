@@ -194,9 +194,6 @@ class Registry:
             recover_started_at=recover,
             load_filament_memory=load_mem,
             invalidate_filament_memory=invalidate_mem,
-            # Wave-1: nozzle_type gates the 300 °C allowance in api/control.py.
-            # None for legacy rows (stainless fallback → 280 °C ceiling).
-            nozzle_type=record.nozzle_type,
         )
 
     def _build_filament_memory_hooks(
