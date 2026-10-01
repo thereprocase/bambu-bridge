@@ -35,6 +35,7 @@
 //   - The speed level shown is the printer's reported spd_lvl.
 //
 // Other rules:
+//   - Skip objects opens skip-objects.js (Orca's PartSkipDialog).
 //   - Stop is the only confirming PRINT action; after confirm it shows
 //     "Stopping…" until the phase leaves the active print.
 //   - AMS labels are "Slot 1..4" (physical_slot); /ams/change target_tray is
@@ -48,6 +49,7 @@ import {
   el, clear, mountSheet, confirmSheet, toast, undoToast, errorCard, slotLabel,
 } from './ui.js';
 import { printerStateLabels } from './printer-state.js';
+import * as skipObjects from './skip-objects.js';
 
 // OrcaSlicer's jog steps (mm) and feed rates (mm/min). The bridge's
 // api/control.py ALLOWED_STEPS refuses any other step; a parity test keeps
@@ -59,6 +61,7 @@ const HOLD_UPDATES = 5;
 const NOZZLE_MAX_C = 300;   // Orca's default; a reported nozzle_temp_range wins
 const BED_MAX_C = 100;      // P1S; a reported bed_temp_range wins
 const BUSY_MESSAGE = 'The printer is busy with another print job.';
+const SKIP_STATES = new Set(['RUNNING', 'PAUSE']);
 const PAUSED_FILAMENT_MESSAGE =
   'When printing is paused, filament loading and unloading are only supported for external slots.';
 
@@ -186,6 +189,7 @@ function sheetState(app, pid) {
   const paused = vm.phase === 'paused';
   return {
     vm,
+    job: (snap && snap.job) || {},
     raw: (snap && snap._raw) || {},
     enabled: live && vm.phase !== 'unknown',
     active,
@@ -283,9 +287,19 @@ function printPanel(ctx) {
     },
   });
 
+  // Orca's part-skip button: shown when the printer reports support (fun
+  // bit 49), usable while RUNNING or PAUSE, labelled with the skipped count.
+  const skipBtn = el('button', {
+    class: 'btn', onClick: () => skipObjects.open(ctx.app, ctx.pid),
+  });
+
   const hint = el('div', { class: 'field__hint', text: 'No active print.' });
 
   ctx.update((st) => {
+    const skipped = (st.job.skipped_objects || []).length;
+    skipBtn.hidden = !st.job.part_skip_supported;
+    skipBtn.textContent = skipped ? `Skip objects (${skipped})` : 'Skip objects';
+    skipBtn.disabled = !(st.enabled && SKIP_STATES.has(st.raw.gcode_state));
     pauseResumeBtn.textContent = st.paused ? 'Resume' : 'Pause';
     pauseResumeBtn.disabled = !(st.enabled && st.active);
     stopBtn.textContent = local.stopping ? 'Stopping…' : 'Stop';
@@ -295,7 +309,7 @@ function printPanel(ctx) {
 
   return el('div', {}, [
     el('div', { class: 't-section', style: { marginBottom: 'var(--space-2)' }, text: 'PRINT' }),
-    el('div', { class: 'row gap-2' }, [pauseResumeBtn, stopBtn]),
+    el('div', { class: 'row gap-2' }, [pauseResumeBtn, stopBtn, skipBtn]),
     hint,
   ]);
 }

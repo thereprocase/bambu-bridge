@@ -194,3 +194,18 @@ test('disconnected: the whole sheet is disabled', () => {
   store.setConnected(PID, false);
   assert.match(text(), /Disconnected — controls disabled/);
 });
+
+test('Skip objects follows Orca: shown with fun bit 49, usable while RUNNING/PAUSE', () => {
+  openSheet();
+  const skipBtn = () => find(body(), (n) => n.tagName === 'BUTTON' && /^Skip objects/.test(n.textContent))[0];
+  assert.equal(skipBtn().hidden, true, 'hidden until the printer reports support');
+  telemetry({ job: { part_skip_supported: true, skipped_objects: [] } });
+  assert.equal(skipBtn().hidden, false);
+  assert.equal(skipBtn().disabled, false);
+  telemetry({ job: { skipped_objects: [63, 74] } });
+  assert.equal(skipBtn().textContent, 'Skip objects (2)');
+  telemetry({ _raw: { gcode_state: 'PREPARE' } });
+  assert.equal(skipBtn().disabled, true);
+  telemetry({ _raw: { gcode_state: 'PAUSE' }, phase: 'paused' });
+  assert.equal(skipBtn().disabled, false);
+});
