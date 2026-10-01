@@ -41,3 +41,13 @@ def test_project_file_command_uses_confirmed_scheme() -> None:
     assert cmd["bed_type"] == "textured_plate"
     # idempotent on an already-suffixed name
     assert sd_filename("3DBenchy.gcode.3mf") == "3DBenchy.gcode.3mf"
+
+
+def test_start_command_addresses_the_uploaded_basename() -> None:
+    # FtpsTransfer STORs PurePosixPath(name).name; the url must match it.
+    for name in ("cache/old.gcode.3mf", "..\\old.gcode.3mf", "/sdcard/old.3mf"):
+        assert sd_filename(name) == "old.gcode.3mf"
+        cmd = project_file_command(name, use_ams=True, ams_mapping=[0])
+        assert cmd["url"] == "file:///sdcard/old.gcode.3mf"
+        assert cmd["subtask_name"] == "old"
+    assert sd_filename("") == "upload.gcode.3mf"

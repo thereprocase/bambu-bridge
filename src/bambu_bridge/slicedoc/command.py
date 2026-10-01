@@ -11,14 +11,19 @@ The accepted form is `REPORT.md` §6.2 verbatim. Two corrections vs. the old
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any
 
 from bambu_bridge.slicedoc.validate import GCODE_MEMBER
 
 
 def sd_filename(name: str) -> str:
-    """The on-SD-card name. Stored at the card root, not ``model/``."""
-    stem = name
+    """The on-SD-card name. Stored at the card root, not ``model/``.
+
+    Reduced to its last path component, as FtpsTransfer stores it, so the
+    project_file url and subtask name address the file that was uploaded.
+    """
+    stem = PurePosixPath(name.replace("\\", "/")).name or "upload"
     for suffix in (".gcode.3mf", ".3mf", ".gcode"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
