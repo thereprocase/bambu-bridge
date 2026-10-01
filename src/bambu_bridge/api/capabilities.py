@@ -129,10 +129,18 @@ async def control_capability_gate(request: Request) -> None:
         isinstance(n, dict) and n.get("node") == "work_light" for n in raw.get("lights_report", [])
     ):
         unavailable("Not available on P1S")
+    if not (suffix.startswith("ams/") or suffix == "print_option"):
+        return
+    body = await request.json()
+    if not isinstance(body, dict):
+        return  # the route's body model rejects it with 422 before the handler runs
     if suffix.startswith("ams/"):
         units = (raw.get("ams") or {}).get("ams") or []
-        body = await request.json()
-        unit = next((u for u in units if str(u.get("id")) == str(body.get("ams_id"))), None)
+        if not units:
+            unavailable("AMS requires a current hardware report")
+        if "ams_id" not in body:
+            return  # ams/control addresses the AMS system, not one unit
+        unit = next((u for u in units if str(u.get("id")) == str(body["ams_id"])), None)
         if unit is None:
             unavailable("Selected AMS requires a current hardware report")
         if suffix in {"ams/rfid", "ams/filament_setting"}:
@@ -140,7 +148,6 @@ async def control_capability_gate(request: Request) -> None:
             if not any(str(t.get("id")) == str(slot) for t in unit.get("tray", [])):
                 unavailable("Selected tray requires a current hardware report")
     if suffix == "print_option":
-        body = await request.json()
         flag = raw.get("home_flag")
         for name in body:
             if name == "auto_recovery":

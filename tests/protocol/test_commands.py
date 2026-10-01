@@ -90,8 +90,9 @@ def test_chamber_light_steady_on_off() -> None:
 
 def test_ams_and_filament() -> None:
     assert _body(commands.ams_control("resume"), "print")["param"] == "resume"
-    with pytest.raises(ValueError, match="ams action"):
-        commands.ams_control("eject")
+    for action in ("eject", "pause", "reset"):
+        with pytest.raises(ValueError, match="ams action"):
+            commands.ams_control(action)
     chg = _body(commands.ams_change_filament(1, cur_temp=240, tar_temp=240), "print")
     assert chg["command"] == "ams_change_filament"
     assert chg["target"] == 1

@@ -247,7 +247,7 @@ the print, watch the live dashboard to confirm it actually happened.
 | Set a fan speed | `POST .../fan` | Part / aux / chamber, 0–100%. |
 | Set the print speed preset | `POST .../speed` | 1 silent · 2 standard · 3 sport · 4 ludicrous. |
 | Home the axes / jog the toolhead | `POST .../home`, `.../move` | Safety-gated: jog only after homing, only in safe steps, only within the build envelope. |
-| AMS pause/resume/reset, change filament | `POST .../ams/control`, `.../ams/change` | Filament change confirms when the printer reports the new slot engaged. |
+| AMS resume, change filament | `POST .../ams/control`, `.../ams/change` | Filament change confirms when the printer reports the new slot engaged. |
 | Send raw G-code | `POST .../gcode` | Gated behind a deliberate confirmation in the app. For people who know exactly what they're sending. |
 
 The actions you'll most want to **confirm by watching state** rather than

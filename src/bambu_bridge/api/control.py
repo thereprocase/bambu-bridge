@@ -483,7 +483,7 @@ async def move(
 
 
 class AmsControlBody(BaseModel):
-    action: str = Field(examples=["pause", "resume", "reset"])
+    action: str = Field(examples=["resume"])
 
 
 @router.post("/{printer_id}/ams/control")

@@ -704,7 +704,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
 | POST | `/home` | — | G28 home all axes | v0.1 |
 | POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog | v0.1 |
-| POST | `/ams/control` | `{"action": "pause\|resume\|reset"}` | AMS state machine control | v0.1 |
+| POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
 | POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | mid-print filament change. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
 | POST | `/filament/unload` | — | unload current filament | v0.1 |
 | POST | `/work_light` | `{"mode": "on\|off\|flashing", "loop_times": int?, "interval_time": int?}` | work/task light; mode `"flashing"` accepts `loop_times` (default 1; 0=forever) and `interval_time` ms (default 500). Not all P1S configs have this node; printer ignores when absent. | v0.1 |
