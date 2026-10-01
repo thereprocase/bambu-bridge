@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -65,6 +66,56 @@ async def test_quiet_websocket_refreshes_telemetry_watermark(
         "type": "delta",
         "data": {"session": {"last_telemetry_at": "2026-09-27T12:00:05Z"}},
     } in sent
+
+
+def test_clock_probe_reply_echoes_t0_with_bridge_time() -> None:
+    assert status_api.clock_reply('{"type": "clock", "t0": 1700000000123.5}', now_ms=42.0) == {
+        "type": "clock", "t0": 1700000000123.5, "t1": 42.0}
+    before = time.time() * 1000
+    reply = status_api.clock_reply('{"type": "clock", "t0": 1}')
+    assert reply is not None and before <= reply["t1"] <= time.time() * 1000
+    for frame in ['{"type": "pong"}', "not json", "[]", '{"type": "clock"}',
+                  '{"type": "clock", "t0": "x"}', '{"type": "clock", "t0": true}',
+                  '{"type": "clock", "t0": NaN}']:
+        assert status_api.clock_reply(frame) is None, frame
+
+
+@pytest.mark.asyncio
+async def test_clock_replies_interleave_safely_with_drain() -> None:
+    frames = ['{"type": "pong"}', '{"type": "clock", "t0": 5}', '{"type": "clock", "t0": 6}']
+    sent: list[dict[str, Any]] = []
+
+    class Socket:
+        async def receive_text(self) -> str:
+            if not frames:
+                raise status_api.WebSocketDisconnect()
+            return frames.pop(0)
+
+        async def send_json(self, data: dict[str, Any]) -> None:
+            sent.append(data)
+
+    await status_api._drain_client(status_api._LockedSocket(Socket()))
+    assert [m["t0"] for m in sent] == [5, 6] and all(m["type"] == "clock" for m in sent)
+    # RFC 5905 on-wire stamps: receive t1 never after transmit t2.
+    assert all(m["t1"] <= m["t2"] for m in sent)
+
+
+@pytest.mark.asyncio
+async def test_clock_transmit_stamp_excludes_queueing_behind_status() -> None:
+    sent: list[dict[str, Any]] = []
+
+    class Socket:
+        async def send_json(self, data: dict[str, Any]) -> None:
+            sent.append(data)
+            if data.get("type") == "delta":
+                await asyncio.sleep(0.05)       # a slow status frame holds the lock
+
+    locked = status_api._LockedSocket(Socket())
+    reply = status_api.clock_reply('{"type": "clock", "t0": 1}')
+    assert reply is not None
+    await asyncio.gather(locked.send_json({"type": "delta", "data": {}}), locked.send_json(reply))
+    clock = next(m for m in sent if m["type"] == "clock")
+    assert clock["t2"] - clock["t1"] >= 40      # the wait shows up as server hold time, not offset
 
 
 @pytest.fixture(autouse=True)
