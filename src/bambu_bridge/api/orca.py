@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from bambu_bridge import __version__
 from bambu_bridge.api import errors
@@ -25,6 +25,7 @@ from bambu_bridge.api.auth import require_owner
 from bambu_bridge.api.capabilities import reported_nozzle
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.orca import OrcaStore
+from bambu_bridge.protocol.commands import AmsMapping
 from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.registry import PrinterNotFoundError
 from bambu_bridge.slicedoc import validate
@@ -57,15 +58,9 @@ def printer_for(request: Request, printer_id: str) -> Any:
 class ClientRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[^\x00-\x1f\x7f]+$")
     printer_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    # null = upload only; [] = external spool; [0..15] = physical AMS slots.
-    ams_mapping: list[int] | None = Field(default=None, max_length=16)
-
-    @field_validator("ams_mapping")
-    @classmethod
-    def mapping_valid(cls, value: list[int] | None) -> list[int] | None:
-        if value is not None and any(not 0 <= n <= 15 for n in value):
-            raise ValueError("AMS slots must be numbered 0 to 15")
-        return value
+    # null = upload only; [] = external spool; else Orca's ams_mapping: one
+    # tray (0 = slot 1) or -1 (unused) per project filament.
+    ams_mapping: AmsMapping | None = None
 
 
 @management.get("", dependencies=[Depends(secure_owner)])

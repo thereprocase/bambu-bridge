@@ -131,3 +131,41 @@ def test_sparse_ams_address_rejected_before_publication(rig):
     response = client.post("/printers/p/ams/rfid", json={"ams_id": 1, "slot_id": 3})
     assert response.status_code == 200, response.text
     service.send_raw.assert_awaited_once()
+
+
+def _with_ams(snapshot):
+    snapshot["_raw"]["ams"] = {"ams": [{"id": "0", "tray": [{"id": "0"}, {"id": "1"}]}]}
+
+
+def test_ams_resume_reaches_printer_without_unit_id(rig):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    response = client.post("/printers/p/ams/control", json={"action": "resume"})
+    assert response.status_code == 200, response.text
+    assert service.send_raw.await_args.args[0]["print"]["param"] == "resume"
+
+
+@pytest.mark.parametrize("action", ["pause", "reset"])
+def test_ams_actions_orca_never_sends_are_refused(rig, action):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    assert client.post("/printers/p/ams/control", json={"action": action}).status_code == 422
+    service.send_raw.assert_not_awaited()
+
+
+def test_ams_control_needs_a_reported_ams(rig):
+    client, service, _ = rig
+    assert client.post("/printers/p/ams/control", json={"action": "resume"}).status_code == 409
+    service.send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize("path", ["ams/rfid", "ams/control", "ams/user_setting", "print_option"])
+@pytest.mark.parametrize("body", [b"[1]", b"7", b"null", b"not json"])
+def test_non_object_bodies_are_422_not_500(rig, path, body):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    response = client.post(
+        f"/printers/p/{path}", content=body, headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422, response.text
+    service.send_raw.assert_not_awaited()

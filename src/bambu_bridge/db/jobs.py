@@ -206,8 +206,29 @@ class Database:
         # 0-row no-ops).
         for ddl in _MIGRATION_UPDATES:
             await self._conn.execute(ddl)
+        await self._migrate_queue_trays()
         await self._conn.commit()
         log.info("db.connected", path=self._path)
+
+    async def _migrate_queue_trays(self) -> None:
+        """Version 1: queued ``ams_mapping`` moves from physical slots (1-4) to
+        Orca's 0-based trays. Old rows were validated as 1-4, so ``x - 1`` is
+        exact; ``user_version`` makes the rewrite happen once."""
+        async with self.conn.execute("PRAGMA user_version") as cur:
+            row = await cur.fetchone()
+        if row is not None and row[0] >= 1:
+            return
+        async with self.conn.execute(
+            "SELECT id, ams_mapping_json FROM print_queue WHERE ams_mapping_json IS NOT NULL"
+        ) as cur:
+            rows = await cur.fetchall()
+        for item_id, mapping in rows:
+            trays = [slot - 1 for slot in json.loads(mapping)]
+            await self.conn.execute(
+                "UPDATE print_queue SET ams_mapping_json = ? WHERE id = ?",
+                (json.dumps(trays), item_id),
+            )
+        await self.conn.execute("PRAGMA user_version = 1")
 
     async def close(self) -> None:
         if self._conn is not None:

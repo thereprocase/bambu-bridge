@@ -93,7 +93,7 @@ export function move(
   );
 }
 
-export function amsControl(id: string, action: "pause" | "resume" | "reset") {
+export function amsControl(id: string, action: "resume") {
   return tracked(
     `ams_${action}`,
     request<{ sent: unknown }>(`/printers/${id}/ams/control`, { method: "POST", body: { action } }),

@@ -20,12 +20,14 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pydantic import TypeAdapter
 
 from bambu_bridge.api import errors as api_errors
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.db.jobs import JobState
+from bambu_bridge.protocol.commands import AmsMapping
 from bambu_bridge.service.jobs import JobManager, JobNotFoundError
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.slicedoc import validate as slice_validate
@@ -37,15 +39,20 @@ def get_jobs(request: Request) -> JobManager:
     return request.app.state.jobs  # type: ignore[no-any-return]
 
 
+_AMS_MAPPING = TypeAdapter(AmsMapping)
+
+
 def _parse_ams(raw: str | None) -> list[int] | None:
+    """Orca's ams_mapping as a comma list: one tray (0-15) or -1 per project filament."""
     if not raw:
         return None
     try:
-        return [int(x) for x in raw.split(",") if x.strip() != ""]
-    except ValueError as exc:
+        return _AMS_MAPPING.validate_python([int(x) for x in raw.split(",") if x.strip() != ""])
+    except ValueError as exc:  # pydantic's ValidationError is a ValueError
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="ams_mapping must be comma-separated integers",
+            detail="ams_mapping must be comma-separated AMS trays: one per project filament, "
+            "0-15 (0 = slot 1) or -1 for unused",
         ) from exc
 
 

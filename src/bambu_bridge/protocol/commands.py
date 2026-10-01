@@ -27,7 +27,9 @@ for any endpoint where the contract documents physical slots.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from bambu_bridge.protocol.models import build_command
 
@@ -44,7 +46,17 @@ BED_MAX_C = 100  # Qualified adapter: P1S (manufacturer C12 profile).
 SPEED_LEVELS = {1: "silent", 2: "standard", 3: "sport", 4: "ludicrous"}
 # print.gcode_line fan index per Bambu convention.
 _FAN_PARTS = {"part": 1, "aux": 2, "chamber": 3}
-AMS_ACTIONS = frozenset({"pause", "resume", "reset"})
+# The project_file ``ams_mapping`` exactly as Orca builds it
+# (SelectMachineDialog::get_ams_mapping_result): one entry per PROJECT filament,
+# in project order, each the global AMS tray ``ams_id * 4 + slot`` (0 = physical
+# slot 1 of the first AMS ... 3 = slot 4) or -1 for a filament that is unused or
+# fed from the external spool. Every bridge path stores and forwards it as is.
+AmsMapping = Annotated[list[Annotated[int, Field(ge=-1, le=15)]], Field(max_length=64)]
+
+# Orca's GUI only ever sends "resume" to a P1S AMS (DeviceErrorDialog CONTINUE /
+# RETRY_FILAMENT_EXTRUDED, StatusPanel ExtruderSwithingStatus::on_retry); it has
+# no pause or reset control, so the bridge offers none either.
+AMS_ACTIONS = frozenset({"resume"})
 
 # P1S MQTT receive-buffer ceiling (research/02 §4).  Payloads larger than this
 # risk silently overflowing the printer's RX buffer and being discarded.
@@ -351,7 +363,7 @@ def ipcam_timelapse(enabled: bool) -> Envelope:
 
 
 def ams_control(action: str) -> Envelope:
-    """AMS handshake control: pause | resume | reset (e.g. after a runout)."""
+    """AMS handshake control: resume (e.g. after a runout or a failed feed)."""
     if action not in AMS_ACTIONS:
         raise ValueError(f"ams action must be one of {sorted(AMS_ACTIONS)}")
     return build_command("print", "ams_control", param=action)

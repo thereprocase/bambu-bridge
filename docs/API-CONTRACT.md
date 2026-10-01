@@ -452,7 +452,7 @@ If you skip this rule and render `mc_percent` during `preparing`, the APK shows 
 | `ams.slots[].physical_slot` | array index of `ams.tray[]` | **physical_slot = raw_id + 1**. `_raw_id` retains the 0-based. |
 | `ams.engaged_slot` | `ams.tray_now` | `255 → null` (nothing engaged), `254 → "external"`, `0-3 → 1-4` (physical slot). The §6.3 feed-confirmation signal. |
 
-**AMS tray/slot numbering convention (canonical):** Tray/slot indices are **0-based protocol indices end-to-end** on the wire between the bridge and the printer. The `_raw_id` field in `ams.slots[]` carries the 0-based value; `physical_slot` is `_raw_id + 1` for display. The `/ams/change` endpoint takes `target_tray` as a 0-based protocol index (0–3). The APK MUST NOT pass physical slots (1–4) to `/ams/change` without subtracting 1 first. The `/jobs` submission endpoint uses `ams_mapping` in physical-slot space (1–4) because that is what the user selects; the bridge converts internally.
+**AMS tray/slot numbering convention (canonical):** Tray/slot indices are **0-based protocol indices end-to-end** on the wire between the bridge and the printer. The `_raw_id` field in `ams.slots[]` carries the 0-based value; `physical_slot` is `_raw_id + 1` for display. The `/ams/change` endpoint takes `target_tray` as a 0-based protocol index (0–3). The APK MUST NOT pass physical slots (1–4) to `/ams/change` without subtracting 1 first. `ams_mapping` (on `/jobs`, the queue and Orca keys) is likewise **0-based and in Orca's own format** (§7.1); physical slot numbers are display labels only and the bridge never converts them.
 | `print_error` | `print_error` (int) + HMS table | When 0/null: `null`. When non-zero: `{code, hex, text, category, severity, _raw}`. Decode hex from int (`50348044 → 0x0300400C`). Text from HMS lookup (ship a copy of the ha-bambulab `hms_error_text/` table). **The `print_error` channel is SEPARATE from the `hms[]` string array.** |
 | `session.last_telemetry_at` | bridge bookkeeping (touch on every report) | ISO 8601 UTC |
 | `session.last_connect_attempt` | bridge bookkeeping | ISO 8601 UTC |
@@ -509,11 +509,16 @@ Authorization: Bearer <key>
 Content-Type: multipart/form-data
 
 file: <binary .gcode.3mf>
-ams_mapping: "1,3"             // optional; comma-separated PHYSICAL slot numbers (1-4)
-external_spool: "false"        // optional; if "true", use external spool (vt_tray)
+ams_mapping: "-1,1,-1,0"       // optional; Orca's ams_mapping as a comma list
 ```
 
-**`ams_mapping` is in PHYSICAL-SLOT space** (1-4), not the 0-based protocol space. Bridge maps to `0-3` internally. **APK MUST NOT pass 0.** If 0 appears, return 422.
+**`ams_mapping` is Orca's own `project_file` field**, exactly as Orca's Send dialog builds it (`SelectMachineDialog::get_ams_mapping_result`):
+
+- **one entry per project filament**, in project order (the count is the length of the per-filament arrays in `Metadata/project_settings.config`, e.g. `filament_settings_id`), not only the filaments this plate uses;
+- each entry is the **0-based global AMS tray** `ams_id * 4 + slot`: `0` = physical slot 1 … `3` = slot 4 on the first AMS (up to `15`);
+- **`-1`** for a filament the plate does not use or that runs from the external spool.
+
+Example: a 4-filament project whose plate uses filament 2 from physical slot 2 and filament 4 from slot 1 sends `"-1,1,-1,0"`. A one-filament project on physical slot 2 sends `"1"`. The bridge stores and forwards the list **unchanged** (POST /jobs, the queue, Orca print-host keys and native Orca starts alike) and sets `use_ams` as Orca does: true when any entry is a tray, false when all are `-1`. Omitting `ams_mapping` prints from the external spool. Values outside `-1..15` or more than 64 entries are `422 invalid_input`; G5 checks the entries against the slice's filaments.
 
 ### 7.2 Synchronous pre-validation (BEFORE 201)
 
@@ -537,9 +542,7 @@ Gates G1–G6 from `slicedoc/validate.py`: bounded zip integrity, required membe
 
 Other 422 reasons:
 - `printer_offline` — bridge can't reach printer right now (also a class of "no point uploading")
-- `ams_slot_invalid` — passed `ams_mapping: [0]` or a slot not in 1-4
-- `ams_slot_empty` — passed `ams_mapping: [2]` but slot 2 is empty per current AMS state
-- `ams_material_mismatch` — bridge knows the slice expects PETG and the chosen slot has ASA. **Warning, returnable as `422` only when client passed `confirm_mismatch: false`**; if `confirm_mismatch: true`, accepted
+- `invalid_input` — `ams_mapping` is not a comma list of integers in `-1..15` (at most 64 entries)
 
 ### 7.3 Success response (201)
 
@@ -550,7 +553,7 @@ Other 422 reasons:
   "state": "queued",
   "file_name": "Benchy_PETG.gcode.3mf",
   "queued_at": "2026-05-20T03:13:55.000Z",
-  "ams_mapping": [2],
+  "ams_mapping": [1],
   "validation": { "ok": true, "gates_passed": ["G1","G2","G3","G4","G5"] }
 }
 ```
@@ -704,7 +707,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
 | POST | `/home` | — | G28 home all axes | v0.1 |
 | POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog | v0.1 |
-| POST | `/ams/control` | `{"action": "pause\|resume\|reset"}` | AMS state machine control | v0.1 |
+| POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
 | POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | mid-print filament change. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
 | POST | `/filament/unload` | — | unload current filament | v0.1 |
 | POST | `/work_light` | `{"mode": "on\|off\|flashing", "loop_times": int?, "interval_time": int?}` | work/task light; mode `"flashing"` accepts `loop_times` (default 1; 0=forever) and `interval_time` ms (default 500). Not all P1S configs have this node; printer ignores when absent. | v0.1 |

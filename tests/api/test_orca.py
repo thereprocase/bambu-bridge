@@ -220,7 +220,7 @@ def test_external_spool_and_invalid_client_config(client: TestClient) -> None:
     two = _container(_info(1, 2), b"M620 S0A\nT0\nM621 S0A\nM620 S1A\nT1\nM621 S1A\n")
     response = send(client, auth, data=two, fields={"print": "true"})
     assert response.status_code == 422 and "external spool feeds one" in response.text
-    for mapping in [[-1], [16], list(range(17))]:
+    for mapping in [[-2], [16], [0] * 65]:  # -1 (unused filament) is valid Orca
         assert (
             client.post(
                 MANAGE,

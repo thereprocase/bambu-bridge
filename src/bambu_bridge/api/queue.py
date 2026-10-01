@@ -24,6 +24,7 @@ from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.db.jobs import QueueRepo
+from bambu_bridge.protocol.commands import AmsMapping
 from bambu_bridge.service.jobs import JobManager
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 
@@ -42,9 +43,10 @@ class AddQueueItem(BaseModel):
         min_length=1, description="Path on printer storage (returned by POST /files)"
     )
     file_name: str = Field(min_length=1, description="Display name shown in the UI")
-    ams_mapping: list[int] | None = Field(
+    ams_mapping: AmsMapping | None = Field(
         default=None,
-        description="Physical slot numbers (1-4). NOT 0-based protocol indices.",
+        description="Orca's ams_mapping: one AMS tray per project filament "
+        "(0 = slot 1 ... 3 = slot 4), -1 for unused. Stored and sent unchanged.",
     )
     notes: str | None = Field(default=None, max_length=500)
 
@@ -66,25 +68,6 @@ def _queue_repo(request: Request) -> QueueRepo:
 
 def _job_manager(request: Request) -> JobManager:
     return request.app.state.jobs  # type: ignore[no-any-return]
-
-
-def _validate_ams(slots: list[int] | None) -> None:
-    if slots is None:
-        return
-    for s in slots:
-        if not (1 <= s <= 4):
-            # Surface as a structured 422 so the APK can render the bad slot.
-            raise _slot_error(s)
-
-
-def _slot_error(value: int) -> _SlotError:
-    return _SlotError(value)
-
-
-class _SlotError(Exception):
-    def __init__(self, value: int) -> None:
-        self.value = value
-        super().__init__(f"physical_slot must be 1-4, got {value}")
 
 
 # --------------------------------------------------------------------------- #
@@ -117,19 +100,6 @@ async def add_to_queue(
         registry.get(printer_id)
     except PrinterNotFoundError:
         return errors.not_found("printer", printer_id)
-    try:
-        _validate_ams(body.ams_mapping)
-    except _SlotError as exc:
-        return errors.invalid_input(
-            f"physical_slot must be 1-4, got {exc.value}",
-            issues=[
-                {
-                    "code": "ams_slot_invalid",
-                    "category": "ams",
-                    "message": f"physical_slot must be 1-4, got {exc.value}",
-                }
-            ],
-        )
     item = await _queue_repo(request).add(
         item_id=uuid.uuid4().hex,
         printer_id=printer_id,
@@ -183,24 +153,10 @@ async def start_queue_item(
         # Printer was deleted while item was queued — drop the orphan.
         await repo.delete(item_id)
         return errors.not_found("printer", item.printer_id)
-    # Re-validate ams_mapping at start time in case slot range tightened.
     from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
 
     require_p1s(service)
     require_start_ready(service, "a stored file")
-    try:
-        _validate_ams(item.ams_mapping)
-    except _SlotError as exc:
-        return errors.invalid_input(
-            f"physical_slot must be 1-4, got {exc.value}",
-            issues=[
-                {
-                    "code": "ams_slot_invalid",
-                    "category": "ams",
-                    "message": f"physical_slot must be 1-4, got {exc.value}",
-                }
-            ],
-        )
     # Pull bytes from FTPS so JobManager.submit() can re-validate the 3MF.
     # The .gcode.3mf was already uploaded; we just round-trip to validate.
     from bambu_bridge.protocol.ftps import FtpsTransfer
