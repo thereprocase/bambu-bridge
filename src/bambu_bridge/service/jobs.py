@@ -56,7 +56,7 @@ from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.events import Event
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.service.viz_cache import VizCache
-from bambu_bridge.slicedoc import project_file_command, sd_filename, validate
+from bambu_bridge.slicedoc import project_file_command, sd_filename
 from bambu_bridge.vision import SpaghettiMonitor
 
 if TYPE_CHECKING:
@@ -537,14 +537,8 @@ class JobRun:
             await self._set(JobState.CANCELED, "canceled_before_upload")
             return
 
-        # Gate the .gcode.3mf BEFORE touching the printer. This is the §6.3
-        # fix: an inconsistent AMS binding, bad md5, or unsafe temperature is
-        # rejected here — not discovered as "printed air" 17 min in.
-        report = validate(self._file_bytes, expected_ams_mapping=self._ams_mapping)
-        if not report.ok:
-            await self._fail(f"invalid_3mf: {'; '.join(report.issues)}")
-            return
-
+        # Every submit() caller (POST /jobs, queue start, Orca upload) has
+        # already run slicedoc.validate() on these exact bytes.
         # queued -> uploading -> started (spec 5.2: distinct transitions)
         await self._set(JobState.UPLOADING, "ftps_begin")
         ftps = FtpsTransfer(service.ip, service.access_code, port=self._ftps_port)

@@ -8,6 +8,7 @@ job plus its full event log.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import (
@@ -100,7 +101,8 @@ async def submit_job(
     require_start_ready(service)
     data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
-    report = slice_validate(
+    report = await asyncio.to_thread(
+        slice_validate,
         data,
         expected_ams_mapping=ams,
         expected_nozzle=reported_nozzle(service),

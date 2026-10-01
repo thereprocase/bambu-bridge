@@ -11,6 +11,7 @@ remaining items to keep positions dense; ``DELETE /queue/{id}`` likewise.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -221,7 +222,8 @@ async def start_queue_item(
         )
     from bambu_bridge.slicedoc import validate
 
-    report = validate(
+    report = await asyncio.to_thread(
+        validate,
         data,
         expected_ams_mapping=item.ams_mapping,
         expected_nozzle=reported_nozzle(service),
