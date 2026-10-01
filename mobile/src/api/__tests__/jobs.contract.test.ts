@@ -4,12 +4,12 @@ import { request } from "../client";
 jest.mock("../client", () => ({ request: jest.fn() }));
 beforeEach(() => jest.mocked(request).mockReset());
 
-it("starts a stored file through the current queue contract with physical AMS slots", async () => {
+it("starts a stored file through the queue with Orca's 0-based tray mapping", async () => {
   jest.mocked(request).mockResolvedValueOnce({ id: "queue-1" }).mockResolvedValueOnce({ id: "job-1", state: "queued" });
-  await expect(submitPrint({ printer_id: "synthetic", filename: "part.gcode.3mf", ams_mapping: [4] }))
+  await expect(submitPrint({ printer_id: "synthetic", filename: "part.gcode.3mf", ams_mapping: [3] }))
     .resolves.toEqual({ job_id: "job-1", state: "queued" });
   expect(request).toHaveBeenNthCalledWith(1, "/printers/synthetic/queue", { method: "POST",
-    body: { file_path: "/part.gcode.3mf", file_name: "part.gcode.3mf", ams_mapping: [4] } });
+    body: { file_path: "/part.gcode.3mf", file_name: "part.gcode.3mf", ams_mapping: [3] } });
   expect(request).toHaveBeenNthCalledWith(2, "/queue/queue-1/start", { method: "POST", timeoutMs: 60_000 });
 });
 
@@ -21,9 +21,9 @@ it("retains a queued item after an uncertain start without retrying or deleting 
 
 it("uses the current queue add and delete endpoints", async () => {
   jest.mocked(request).mockResolvedValue({ id: "queue-2" });
-  await enqueue("synthetic", { filename: "part.gcode.3mf", physical_slot: 1 });
+  await enqueue("synthetic", { filename: "part.gcode.3mf", tray: 0 });
   expect(request).toHaveBeenCalledWith("/printers/synthetic/queue", { method: "POST",
-    body: { file_path: "/part.gcode.3mf", file_name: "part.gcode.3mf", ams_mapping: [1] } });
+    body: { file_path: "/part.gcode.3mf", file_name: "part.gcode.3mf", ams_mapping: [0] } });
   await dequeue("synthetic", "queue-2");
   expect(request).toHaveBeenLastCalledWith("/queue/queue-2", { method: "DELETE" });
 });
