@@ -501,6 +501,8 @@ class JobRun:
         """Normalise bus events into FSM signals.
 
         - ``running`` — gcode_state crossed into RUNNING (submitted → preparing)
+        - ``preparing`` — gcode_state is PREPARE: the printer accepted the job and is
+          reading/heating/levelling (submitted → preparing, no deadline)
         - ``layer_advanced`` — layer_num crossed 0 → positive (preparing → printing)
         - ``progress`` — AMS engaged (FED_NO_PROGRESS watchdog satisfaction)
         - ``completed`` / ``failed`` / ``stopped`` — terminal signals
@@ -523,6 +525,8 @@ class JobRun:
                 gs = _gcode_state(ev.data)
                 if gs in ("IDLE", "FAILED", "FINISH"):
                     self._signals.put_nowait("stopped")
+                if gs == "PREPARE":
+                    self._signals.put_nowait("preparing")
                 if _ams_engaged(ev.data):
                     self._signals.put_nowait("progress")
                 if _layer_advanced(ev.data):
@@ -567,16 +571,30 @@ class JobRun:
             ),
         )
 
-        # submitted -> preparing  (RUNNING within 60 s, else timeout-fail)
-        sig = await self._wait_signal({"running", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S)
+        # submitted -> preparing. The printer must acknowledge the job within
+        # 60 s: PREPARE (reading the file, heating, levelling) or RUNNING.
+        # Silence means the command was lost (error code kept for clients).
+        sig = await self._wait_signal(
+            {"running", "preparing", "cancel", "failed"}, timeout=_RUNNING_TIMEOUT_S
+        )
+        if sig == "preparing":
+            # PREPARE is the printer's own "working on it" state and can far
+            # outlast 60 s on a large file or a cold bed (2026-10-01: a 9 MB
+            # plate was marked failed while the printer went on to print it).
+            # Wait as long as the printer prepares; only its own outcome ends it.
+            await self._set(JobState.PREPARING, "printer_preparing")
+            sig = await self._wait_signal({"running", "cancel", "failed", "stopped"})
+            if sig == "stopped":
+                sig = "failed"      # PREPARE -> IDLE/FAILED/FINISH without starting
         if sig == "cancel":
-            await self._do_cancel(service, acked=False)
+            await self._do_cancel(service, acked=self._job.state is JobState.PREPARING)
             return
         if sig in (None, "failed"):
             reason = "no_running_within_60s" if sig is None else "printer_error"
             await self._fail(reason)
             return
-        await self._set(JobState.PREPARING, "gcode_running")
+        if self._job.state is not JobState.PREPARING:
+            await self._set(JobState.PREPARING, "gcode_running")
 
         # preparing -> printing  (layer_num > 0 OR completion, with the
         # FED_NO_PROGRESS watchdog still in force as the §6.3 hard safety).
