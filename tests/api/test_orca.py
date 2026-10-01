@@ -19,7 +19,7 @@ from bambu_bridge.main import create_app
 from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.registry import PrinterNotFoundError
 from tests.conftest import ACCESS_CODE
-from tests.slicedoc.test_validate_source_agnostic import _SINGLE_PETG, _container
+from tests.slicedoc.test_validate_source_agnostic import _SINGLE_PETG, _container, _info
 
 OWNER = {"Authorization": "Bearer orca-fixture-owner"}
 SERIAL = "ORCA_TEST_PRINTER"
@@ -183,8 +183,9 @@ def test_bad_uploads_never_touch_printer(client, fields, data, name, status):
 
 
 def test_multiple_plates_and_wrong_mapping_rejected(client: TestClient) -> None:
-    _, auth = key(client, [0, 1])
-    assert send(client, auth, fields={"print": "true"}).status_code == 422
+    _, auth = key(client, [0])  # project filament 2 has no tray
+    two = _container(_info(1, 2), b"M620 S0A\nT0\nM621 S0A\nM620 S1A\nT1\nM621 S1A\n")
+    assert send(client, auth, data=two, fields={"print": "true"}).status_code == 422
     buf = io.BytesIO(SLICE)
     with zipfile.ZipFile(buf, "a") as archive:
         archive.writestr("Metadata/plate_2.gcode", "M104 S220\n")

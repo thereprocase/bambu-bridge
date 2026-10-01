@@ -393,7 +393,7 @@ async def test_two_filament_layer_list_is_a_clean_422_not_a_500(
     await asyncio.to_thread(run)
     assert captured["status"] == 422, captured
     messages = " ".join(i["message"] for i in captured["body"]["issues"])  # type: ignore[index]
-    assert "ams_mapping arity 1" in messages, captured
+    assert "[2] have no AMS tray" in messages, captured
 
 
 async def _submit_and_wait(tmp_path: Path, mqtt_broker: int, ftps_port: int, payload: bytes,

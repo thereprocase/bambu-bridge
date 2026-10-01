@@ -458,23 +458,8 @@ ORCA_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "orca"
 
 @pytest.fixture(scope="session")
 def valid_gcode_3mf() -> bytes:
-    """A real OrcaSlicer 2.4.2 CLI slice: one cube, project filament 1 (G-code S0A).
-
-    The CLI leaves ``printer_model_id`` empty; it is stamped C12 here until
-    validate() reads the model from the G-code header.
-    """
-    import io
-    import zipfile
-
-    raw = (ORCA_FIXTURES / "single1.gcode.3mf").read_bytes()
-    out = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(raw)) as src, zipfile.ZipFile(out, "w") as dst:
-        for info in src.infolist():
-            data = src.read(info)
-            if info.filename == "Metadata/slice_info.config":
-                data = data.replace(b'_model_id" value=""', b'_model_id" value="C12"')
-            dst.writestr(info, data)
-    return out.getvalue()
+    """A real OrcaSlicer 2.4.2 CLI slice: one cube, project filament 1 (G-code S0A)."""
+    return (ORCA_FIXTURES / "single1.gcode.3mf").read_bytes()
 
 
 class FakeCamera:

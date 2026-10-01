@@ -1,26 +1,20 @@
-"""Read — and normalize — the AMS binding in sliced gcode.
+"""Scan sliced G-code for the two things the bridge gates on.
 
-The firmware binds an AMS tray from a *handshake* in the gcode:
-``M620 S<n>A`` (load) … ``M621 S<n>A`` (finish) plus the initial ``T<n>``
-tool select. **All of these must reference the same physical tray.** The
-real-hardware §6.3 recurrence (2026-05-19) was caused by a hand-patched slice
-whose ``M620 S1A`` (load tray 1) disagreed with ``M621 S0A`` (finish tray 0):
-the AMS never engaged, the printer extruded air for 43 layers,
-``print_error:50348044``.
+* The temperature envelope (bridge safety policy).
+* The AMS handshake. OrcaSlicer / Bambu Studio write each filament change as
+  ``M620 S<n>A`` (load) … ``T<n>`` … ``M621 S<n>A`` (finish), where ``n`` is the
+  0-based *project* filament index and ``A`` tells the firmware to remap it
+  through the start command's ``ams_mapping``. The real-hardware §6.3 failure
+  (2026-05-19) was a hand-patched file whose ``M620 S1A`` disagreed with
+  ``M621 S0A``: the AMS never engaged and the printer extruded air.
 
-So this module does two jobs:
+Orca indents the first load inside the start G-code (``    T[initial_extruder]``,
+``    M109 S…``), so every pattern allows leading whitespace. Indices of 64 and
+above are not filament binds: ``255`` is the external-spool unload sentinel and
+``T1000``/``T1100`` are flush pseudo-tools. ``M620.1``/``M620.11``/``M620 M`` do
+not match.
 
-* :func:`scan_gcode` — extract loads / finishes / real tool selects (and the
-  temperature envelope). ``M620.1``/``M620.11`` (calibration), ``M620 M``,
-  flush pseudo-tools ``T1000``/``T1100`` and the ``255`` external sentinel are
-  *not* tray binds and are excluded.
-* :func:`normalize_ams_selectors` — rewrite every executable real-tray
-  ``M620 S<n>A`` / ``M621 S<n>A`` / ``T<n>`` to a single bound tray, so the
-  handshake is internally coherent. Comment/metadata lines, the ``255``
-  sentinels, calibration and flush tools are left untouched. Self-consistency
-  becomes a *post-rewrite* invariant.
-
-Pure: bytes in, bytes/dataclass out. No printer, no I/O.
+Pure: bytes in, dataclass out.
 """
 
 from __future__ import annotations
@@ -28,55 +22,39 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-# Physical-safety envelope (design review §5 gates 4/5).
+# Physical-safety envelope.
 MAX_NOZZLE_C = 280
 MAX_BED_C = 100  # P1S manufacturer limit; other adapters require separate policy.
 
-EXTERNAL_SENTINEL = 255  # M620 S255 / T255 = external/virtual spool, not a bind
-_MAX_REAL_TRAY = 15  # 4 AMS units × 4 trays; >this = flush/external pseudo-tool
-
-# Anchored at real line start (re.MULTILINE) — comment lines (";…") and the
-# single-line embedded machine_start_gcode template never match.
-_LOAD_RE = re.compile(rb"^M620[ \t]+S(\d+)A?\b", re.MULTILINE)
-_FINISH_RE = re.compile(rb"^M621[ \t]+S(\d+)A?\b", re.MULTILINE)
-_TOOL_RE = re.compile(rb"^T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
-_NOZZLE_RE = re.compile(rb"^M10[49][ \t]+S(\d+)", re.MULTILINE)
-_BED_RE = re.compile(rb"^M1[49]0[ \t]+S(\d+)", re.MULTILINE)
-
-
-def _real(values: list[int]) -> frozenset[int]:
-    """Keep only real AMS tray indices (drop 255 / flush pseudo-tools)."""
-    return frozenset(v for v in values if 0 <= v <= _MAX_REAL_TRAY)
+_FILAMENTS = 64  # Orca's project filament limit; larger indices are sentinels
+_SELECT_RE = re.compile(rb"^[ \t]*(M620|M621)[ \t]+S(\d+)A?\b", re.MULTILINE)
+_TOOL_RE = re.compile(rb"^[ \t]*T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
+_NOZZLE_RE = re.compile(rb"^[ \t]*M10[49][ \t]+S(\d+)", re.MULTILINE)
+_BED_RE = re.compile(rb"^[ \t]*M1[49]0[ \t]+S(\d+)", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
 class GcodeScan:
-    load_trays: frozenset[int]  # real M620 S<n>A loads (255 excluded)
-    finish_trays: frozenset[int]  # real M621 S<n>A finishes
-    tool_trays: frozenset[int]  # real ``T<n>`` selects (flush/255 excluded)
-    has_external: bool  # any S255/T255 seen (end-gcode unload, expected)
+    loads: frozenset[int]  # M620 S<n>A, 0-based project filament indices
+    finishes: frozenset[int]  # M621 S<n>A
+    tools: frozenset[int]  # T<n>
     max_nozzle_c: int | None
     max_bed_c: int | None
 
     @property
-    def bound_trays(self) -> frozenset[int]:
-        """Every real tray the handshake actually references."""
-        return self.load_trays | self.finish_trays | self.tool_trays
+    def used(self) -> frozenset[int]:
+        """Every project filament the handshake references."""
+        return self.loads | self.finishes | self.tools
 
 
 def scan_gcode(gcode: bytes) -> GcodeScan:
-    loads = [int(m) for m in _LOAD_RE.findall(gcode)]
-    finishes = [int(m) for m in _FINISH_RE.findall(gcode)]
-    tools = [int(m) for m in _TOOL_RE.findall(gcode)]
+    selects = [(cmd, int(n)) for cmd, n in _SELECT_RE.findall(gcode)]
     nozzles = [int(m) for m in _NOZZLE_RE.findall(gcode)]
     beds = [int(m) for m in _BED_RE.findall(gcode)]
     return GcodeScan(
-        load_trays=_real(loads),
-        finish_trays=_real(finishes),
-        tool_trays=_real(tools),
-        has_external=any(
-            v == EXTERNAL_SENTINEL for v in loads + finishes + tools
-        ),
+        loads=frozenset(n for cmd, n in selects if cmd == b"M620" and n < _FILAMENTS),
+        finishes=frozenset(n for cmd, n in selects if cmd == b"M621" and n < _FILAMENTS),
+        tools=frozenset(n for n in map(int, _TOOL_RE.findall(gcode)) if n < _FILAMENTS),
         max_nozzle_c=max(nozzles) if nozzles else None,
         max_bed_c=max(beds) if beds else None,
     )

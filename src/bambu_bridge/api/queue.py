@@ -224,7 +224,6 @@ async def start_queue_item(
     report = validate(
         data,
         expected_ams_mapping=item.ams_mapping,
-        expected_model="C12",
         expected_nozzle=reported_nozzle(service),
     )
     if not report.ok:

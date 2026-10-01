@@ -23,13 +23,11 @@ _GCODE = (
 
 def test_scan_separates_trays_from_temps() -> None:
     scan = scan_gcode(_GCODE)
-    # 255 sentinels go to has_external, not the real-tray sets; M620.1 and
-    # the flush T1000 are excluded entirely.
-    assert scan.load_trays == frozenset({1})
-    assert scan.finish_trays == frozenset({0})
-    assert scan.tool_trays == frozenset()  # T1000 (flush) + T255 excluded
-    assert scan.has_external is True  # M620 S255 / T255 / M621 S255 seen
-    assert scan.bound_trays == frozenset({0, 1})  # the §6.3 incoherence
+    # 255 sentinels, M620 M, M620.1 and the flush T1000 are not binds.
+    assert scan.loads == frozenset({1})
+    assert scan.finishes == frozenset({0})
+    assert scan.tools == frozenset()
+    assert scan.used == frozenset({0, 1})  # the §6.3 incoherence
     assert scan.max_nozzle_c == 255  # M104 S255-style is a temp, not a tray
     assert scan.max_bed_c == 70
 

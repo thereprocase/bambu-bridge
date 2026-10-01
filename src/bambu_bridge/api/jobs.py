@@ -54,6 +54,7 @@ _GATE_CATEGORY = {
     "G3": "checksum",  # md5 integrity
     "G4": "thermal",  # safe temperature range
     "G5": "ams",  # filament / AMS mapping coherence
+    "G6": "printer",  # sliced for this printer model and nozzle
 }
 
 
@@ -102,7 +103,6 @@ async def submit_job(
     report = slice_validate(
         data,
         expected_ams_mapping=ams,
-        expected_model="C12",
         expected_nozzle=reported_nozzle(service),
     )
     if not report.ok:
