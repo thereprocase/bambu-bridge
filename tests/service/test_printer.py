@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from bambu_bridge import hms
 from bambu_bridge.service.events import Event
 from bambu_bridge.service.printer import PrinterService
 from tests.conftest import ACCESS_CODE, SERIAL, MockPrinter
@@ -129,21 +130,23 @@ async def test_connection_lost_event_on_link_drop(
 async def test_error_event_emitted_once_per_transition(
     mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
+    """Only the integer print_error drives events (as in OrcaSlicer); the
+    P1S's string mc_print_error_code "0" rides along and must not mask it."""
     service = _service(mqtt_broker)
     async with service.bus.subscribe() as sub:
         await service.start()
         try:
             await _next(sub, lambda e: e.type == "snapshot")
             await mock_printer.push_report(
-                {"print": {"mc_print_error_code": "0500_0100_0001_0001"}}
+                {"print": {"mc_print_error_code": "0", "print_error": 0x05008013}}
             )
             err = await _next(sub, lambda e: e.name == "error")
             # §12.2: `error` carries the structured print_error object.
-            assert err.data["print_error"]["code"] == "0500_0100_0001_0001"
+            assert err.data["print_error"]["code"] == str(0x05008013)
 
             # Same error repeated in the next push must NOT re-emit.
             await mock_printer.push_report(
-                {"print": {"mc_print_error_code": "0500_0100_0001_0001", "msg": 1}}
+                {"print": {"print_error": 0x05008013, "msg": 1}}
             )
             with pytest.raises(TimeoutError):
                 await _next(sub, lambda e: e.name == "error", timeout=1.0)
@@ -153,21 +156,25 @@ async def test_error_event_emitted_once_per_transition(
 
 @pytest.mark.asyncio
 async def test_filament_runout_event_is_code_and_slot(
-    mqtt_broker: int, mock_printer: MockPrinter
+    mqtt_broker: int, mock_printer: MockPrinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A runout-category HMS code emits `filament_runout` with the §12.2
     `{code, slot}` shape — not the generic `error` envelope."""
+    monkeypatch.setitem(hms._TABLE, "0700_8011_0000_0000", {
+        "severity": "warn", "category": "ams",
+        "user_message": "Filament runout — AMS spool empty.", "remediation": None,
+    })
     service = _service(mqtt_broker)
     async with service.bus.subscribe() as sub:
         await service.start()
         try:
             await _next(sub, lambda e: e.type == "snapshot")
             await mock_printer.push_report(
-                {"print": {"mc_print_error_code": "0300_0d00_0003_0001"}}
+                {"print": {"print_error": 0x07008011}}
             )
             runout = await _next(sub, lambda e: e.name == "filament_runout")
             assert set(runout.data.keys()) == {"code", "slot"}
-            assert runout.data["code"] == "0300_0d00_0003_0001"
+            assert runout.data["code"] == str(0x07008011)
             # slot is a physical 1-4 int, "external", or None — never a raw id.
             assert runout.data["slot"] in (None, "external", 1, 2, 3, 4)
         finally:
@@ -176,10 +183,14 @@ async def test_filament_runout_event_is_code_and_slot(
 
 @pytest.mark.asyncio
 async def test_print_failed_event_carries_structured_print_error(
-    mqtt_broker: int, mock_printer: MockPrinter
+    mqtt_broker: int, mock_printer: MockPrinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """gcode_state → FAILED emits `print_failed` with the §12.2 nested
     `print_error` object (the shared `build_print_error` builder)."""
+    monkeypatch.setitem(hms._TABLE, "0300_4002_0000_0000", {
+        "severity": "error", "category": "thermal",
+        "user_message": "Nozzle heating failed.", "remediation": None,
+    })
     service = _service(mqtt_broker)
     async with service.bus.subscribe() as sub:
         await service.start()
@@ -189,13 +200,14 @@ async def test_print_failed_event_carries_structured_print_error(
                 {
                     "print": {
                         "gcode_state": "FAILED",
-                        "mc_print_error_code": "0300_0200_0001_0001",
+                        "mc_print_error_code": "0",
+                        "print_error": 0x03004002,
                     }
                 }
             )
             failed = await _next(sub, lambda e: e.name == "print_failed")
             err = failed.data["print_error"]
-            assert err["code"] == "0300_0200_0001_0001"
+            assert err["code"] == str(0x03004002)
             assert err["category"] == "thermal"
             assert err["severity"] == "error"
             assert "layer_num" in failed.data

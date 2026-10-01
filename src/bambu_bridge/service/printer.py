@@ -32,6 +32,7 @@ from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.translate import (
     SnapshotContext,
     _started_at_iso,
+    active_error_code,
     build_print_error,
     engaged_slot,
     translate_snapshot,
@@ -220,7 +221,7 @@ class PrinterService:
         self._ever_connected = False
         self._need_seed = True
         self._gcode_state: GcodeState | None = None
-        self._error_signature: tuple[Any, Any] | None = None
+        self._error_signature: int | None = None
         # Bridge-synthesized print start time (UTC). The P1S ships NO start-time
         # field in push_status (verified on hardware: 64 raw keys, none of them
         # gcode_start_time/start_time), so the bridge is the only source of
@@ -799,10 +800,7 @@ class PrinterService:
             # Seed the error signature too so _maybe_emit_error doesn't fire
             # on a pre-existing print_error left over from before we connected.
             self._events_seeded = True
-            code = self._state.get("mc_print_error_code")
-            perr = self._state.get("print_error")
-            has_error = (code not in (None, "0", "")) or bool(perr)
-            self._error_signature = (code, perr) if has_error else None
+            self._error_signature = active_error_code(self._state)
             return
         cur = self._gcode_state
         if cur is not None and cur != prev:
@@ -844,10 +842,7 @@ class PrinterService:
                     Event(
                         "event",
                         {
-                            "print_error": build_print_error(
-                                self._state.get("mc_print_error_code")
-                                or self._state.get("print_error")
-                            ),
+                            "print_error": build_print_error(active_error_code(self._state)),
                             "layer_num": self._state.get("layer_num"),
                         },
                         name="print_failed",
@@ -896,16 +891,12 @@ class PrinterService:
         The persisted row's severity bucket (info/warn/error) is assigned
         downstream by the EventPersister for the NotificationsScreen filter.
         """
-        code = self._state.get("mc_print_error_code")
-        perr = self._state.get("print_error")
-        has_error = (code not in (None, "0", "")) or bool(perr)
-        signature = (code, perr) if has_error else None
-        if signature == self._error_signature:
+        raw_code = active_error_code(self._state)
+        if raw_code == self._error_signature:
             return  # unchanged — already reported (or still clear)
-        self._error_signature = signature
-        if not has_error:
+        self._error_signature = raw_code
+        if raw_code is None:
             return  # error just cleared
-        raw_code = code or perr
         entry = hms_lookup(raw_code)
         # Bucketed event name — the §8.4 catalog distinguishes
         # `filament_runout` from generic `error` so the APK can render
