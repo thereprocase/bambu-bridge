@@ -164,6 +164,16 @@ def _deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any
         cur = out.get(key)
         if isinstance(cur, dict) and isinstance(value, dict):
             out[key] = _deep_merge(cur, value)
+        elif key == "ams" and isinstance(cur, list) and isinstance(value, list):
+            # AMS units, as Orca's DevFilaSystemParser::ParseV1_0 does: the
+            # incoming list says which units exist, and a unit that arrives
+            # without ``tray`` (or humidity, ...) keeps the fields it had.
+            # Trays themselves are replaced whole, so an emptied slot does not
+            # keep its old material.
+            old = {u.get("id"): u for u in cur if isinstance(u, dict)}
+            out[key] = [
+                {**old.get(u.get("id"), {}), **u} if isinstance(u, dict) else u for u in value
+            ]
         else:
             out[key] = value
     return out
@@ -653,7 +663,9 @@ class PrinterService:
         if report.print is not None:
             # mode="json": enums -> str, so snapshots/deltas are wire-ready
             # and diff_state compares like-typed values across reports.
-            incoming = report.print.model_dump(mode="json", exclude_none=True)
+            # exclude_unset: a partial ``ams`` delta must not dump the model's
+            # empty-list defaults over the stored units and trays.
+            incoming = report.print.model_dump(mode="json", exclude_none=True, exclude_unset=True)
         for category, payload in (report.model_extra or {}).items():
             if isinstance(payload, dict):
                 incoming[category] = payload
