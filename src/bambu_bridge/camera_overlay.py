@@ -358,7 +358,7 @@ class OverlayStream:
                 snapshot: dict[str, Any] = {}
                 receipts: list[dict[str, Any]] = []
                 status_at = float("-inf")
-                next_at = time.monotonic()
+                started = next_at = time.monotonic()
                 while True:
                     got_frame = False
                     try:
@@ -380,13 +380,9 @@ class OverlayStream:
                         last_frame = tick
                         got_frame = True
                     age = tick - last_frame if last_frame is not None else None
-                    if (
-                        not self.video
-                        and not got_frame
-                        and age is not None
-                        and age <= STALE_FRAME_S
-                    ):
-                        continue  # do not manufacture duplicate "live" frames between arrivals
+                    fresh = tick - (last_frame or started) <= STALE_FRAME_S
+                    if not self.video and not got_frame and fresh:
+                        continue  # no duplicate "live" frames, no placeholder while connecting
                     if tick - status_at >= 1:
                         snapshot, receipts = service.snapshot(), self.receipts()
                         status_at = tick
