@@ -11,6 +11,27 @@ export interface PrinterStateLabels {
 }
 
 const FRESH_MS = 15_000;
+// Phone and bridge clocks differ. Comparing the bridge's telemetry stamp with
+// the phone's clock hid live status whenever the phone ran even slightly
+// behind (every fresh stamp looked like it came from the future). Freshness
+// is now judged by when THIS device last saw the stamp change. Clock offsets
+// up to SKEW_MS either way are tolerated; beyond that the stamp is ignored as
+// implausible, so a long-cached snapshot still never looks live.
+const SKEW_MS = 600_000;
+const seen = new Map<string, { stamp: string; at: number }>();
+
+/** Test hook: forget when stamps were first seen. */
+export function resetTelemetryClock(): void { seen.clear(); }
+
+/** Local ms since this printer's telemetry stamp last changed. */
+function telemetryAge(key: string, stamp: string, now: number): number {
+  const prev = seen.get(key);
+  if (!prev || prev.stamp !== stamp || now < prev.at) {
+    seen.set(key, { stamp, at: now });
+    return 0;
+  }
+  return now - prev.at;
+}
 
 /** Independent facts: a lost connection never proves that power is off. */
 export function printerStateLabels(
@@ -37,8 +58,12 @@ export function printerStateLabels(
         ? "Connection error" : "Printer unreachable";
     return { power: "Unknown", connection, activity: "Unknown", issues: [], live: false, printerReady: false };
   }
-  const stamp = session.last_telemetry_at ? Date.parse(session.last_telemetry_at) : NaN;
-  if (!Number.isFinite(stamp) || now - stamp > FRESH_MS || stamp > now) {
+  const stampText = session.last_telemetry_at ?? "";
+  const stamp = stampText ? Date.parse(stampText) : NaN;
+  const key = String((snapshot as { printer_id?: string; serial?: string }).printer_id
+    ?? (snapshot as { serial?: string }).serial ?? "");
+  if (!Number.isFinite(stamp) || Math.abs(now - stamp) > FRESH_MS + SKEW_MS
+      || telemetryAge(key, stampText, now) > FRESH_MS) {
     return { power: "Unknown", connection: "Status stale", activity: "Unknown",
       issues: [], live: false, printerReady: false };
   }

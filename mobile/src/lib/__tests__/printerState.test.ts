@@ -1,6 +1,8 @@
 import type { PrinterSnapshot } from "../../api/types";
 import { ownerLabel, startLabel } from "../nativeState";
-import { printerStateLabels } from "../printerState";
+import { printerStateLabels, resetTelemetryClock } from "../printerState";
+
+beforeEach(() => resetTelemetryClock());
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
 
@@ -38,6 +40,7 @@ test("a dropped link does not prove printer power is off or preserve live activi
 
 test("stale telemetry and changed certificate cannot imply readiness", () => {
   const last = snapshot("IDLE");
+  expect(printerStateLabels(last, "open", NOW).live).toBe(true);
   expect(printerStateLabels(last, "open", NOW + 16_000)).toMatchObject({
     power: "Unknown", connection: "Status stale", activity: "Unknown", printerReady: false,
   });
@@ -64,4 +67,31 @@ test("start labels do not call a pending start a waiting-list item", () => {
   expect(ownerLabel({ start_owner: null } as never)).toBe("No bridge start in progress");
   expect(ownerLabel({ start_owner: "a", start_owner_state: "running" } as never))
     .toBe("Bridge print active");
+});
+
+test.each([
+  ["behind", -3_000], ["slightly behind", -300], ["ahead", 4_000], ["a minute ahead", 60_000],
+])("a phone clock %s the bridge still shows fresh telemetry as live", (_, offset) => {
+  // `now` is the phone's clock; stamps are the bridge's. Advance both.
+  const live = snapshot("RUNNING", 2);
+  for (let t = 0; t <= 30_000; t += 2_000) {
+    live.session.last_telemetry_at = new Date(NOW + t).toISOString();
+    expect(printerStateLabels(live, "open", NOW + t + offset + 50)).toMatchObject({
+      live: true, activity: "Printing",
+    });
+  }
+});
+
+test("telemetry that stops changing goes stale after 15 s of this device's time", () => {
+  const quiet = snapshot("RUNNING", 2);
+  const phone = NOW - 5_000;          // phone 5 s behind the bridge
+  expect(printerStateLabels(quiet, "open", phone).live).toBe(true);
+  expect(printerStateLabels(quiet, "open", phone + 15_000).live).toBe(true);
+  expect(printerStateLabels(quiet, "open", phone + 15_001)).toMatchObject({ live: false, connection: "Status stale" });
+});
+
+test("an implausibly old or future stamp is never live", () => {
+  const old = snapshot("RUNNING", 2);
+  expect(printerStateLabels(old, "open", NOW + 16 * 60_000).live).toBe(false);
+  expect(printerStateLabels(old, "open", NOW - 16 * 60_000).live).toBe(false);
 });
