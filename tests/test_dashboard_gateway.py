@@ -183,3 +183,22 @@ def test_native_credentials_and_revocation_through_gateway(tmp_path: Path) -> No
             pass
     with TestClient(wrapped, base_url=ORIGIN, client=("100.64.0.2", 5000)) as client:
         assert client.post("/api/v1/probe", headers=auth).status_code == 403
+
+
+def test_owner_dashboard_cannot_be_framed() -> None:
+    # *.ts.net is one site: another tailnet node's page may iframe the dashboard
+    # same-site, and the gateway injects the owner bearer. The browser must refuse.
+    framed = {
+        **HEADERS,
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "iframe",
+    }
+    with TestClient(gateway(), base_url=ORIGIN, client=("127.0.0.1", 5000)) as client:
+        for response in (
+            client.get("/api/test", headers=framed),
+            client.get("/app/session", headers=HEADERS),
+            client.get("/api/test"),  # rejected 403 too
+        ):
+            assert response.headers["x-frame-options"] == "DENY"
+            assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
