@@ -6,6 +6,7 @@ Identity refresh stays available while model discovery is pending.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,27 +35,34 @@ def require_p1s(service: Any) -> None:
         unavailable("Bridge control support requires a verified P1S identity")
 
 
-def reported_nozzle(service: Any) -> float:
+def reported_nozzle(service: Any) -> float | None:
+    """The printer's nozzle diameter, or None when it reports none.
+
+    Like Orca's _is_same_nozzle_diameters, an unknown (0) printer nozzle is
+    assumed to match the slice; any reported value must equal it.
+    """
     try:
-        diameter = float((service.snapshot().get("_raw") or {}).get("nozzle_diameter"))
+        diameter = float((service.snapshot().get("_raw") or {}).get("nozzle_diameter") or 0)
     except (TypeError, ValueError):
         diameter = 0
-    if diameter not in {0.2, 0.4, 0.6, 0.8}:
-        unavailable("Reported nozzle diameter required for file compatibility")
-    return diameter
+    return diameter or None
 
 
-def fresh_state(service: Any) -> str:
-    snapshot = service.snapshot()
-    session = snapshot.get("session") or {}
+def telemetry_fresh(service: Any) -> bool:
+    """Connected, with a status report no older than 15 s (5 s clock tolerance)."""
+    session = service.snapshot().get("session") or {}
     try:
         stamp = datetime.fromisoformat(session["last_telemetry_at"].replace("Z", "+00:00"))
         age = (datetime.now(UTC) - stamp).total_seconds()
     except (KeyError, TypeError, ValueError):
         age = float("inf")
-    if not session.get("connected") or not -5 <= age <= 15:
+    return bool(session.get("connected")) and -5 <= age <= 15
+
+
+def fresh_state(service: Any) -> str:
+    if not telemetry_fresh(service):
         unavailable("Fresh printer status required")
-    return str((snapshot.get("_raw") or {}).get("gcode_state", "UNKNOWN"))
+    return str((service.snapshot().get("_raw") or {}).get("gcode_state", "UNKNOWN"))
 
 
 # A P1S keeps reporting FAILED after a stopped or failed print until the next
@@ -69,6 +77,30 @@ def require_start_ready(service: Any, what: str = "a file") -> None:
         unavailable(f"Printer must be idle before starting {what}")
 
 
+def require_trusted_cert(service: Any) -> None:
+    """403 printer_cert_changed while the printer's certificate differs from its pin."""
+    from bambu_bridge.api import errors
+
+    gate = errors.cert_gate(service)
+    if gate is not None:
+        raise HTTPException(gate.status_code, json.loads(bytes(gate.body)))
+
+
+def require_start(service: Any, what: str = "a file") -> float | None:
+    """The one printer-side gate for every bridge-initiated print start.
+
+    The checks and their order follow Orca's pre-send checks in
+    SelectMachineDialog::update_show_status: a trusted printer, the right
+    machine (is_blocking_printing), fresh status that is not printing
+    (is_info_ready, is_in_printing). Returns the reported nozzle diameter the
+    slice must match (_is_same_nozzle_diameters), or None when unknown.
+    """
+    require_trusted_cert(service)
+    require_p1s(service)
+    require_start_ready(service, what)
+    return reported_nozzle(service)
+
+
 async def control_capability_gate(request: Request) -> None:
     """Protect every typed/raw route in the control routers before publication."""
     from bambu_bridge.api.printers import get_registry
@@ -79,13 +111,7 @@ async def control_capability_gate(request: Request) -> None:
         service = registry.get(request.path_params["printer_id"])
     except PrinterNotFoundError:
         raise HTTPException(404, "Printer not found") from None
-    from bambu_bridge.api import errors
-
-    gate = errors.cert_gate(service)
-    if gate is not None:
-        import json
-
-        raise HTTPException(gate.status_code, json.loads(bytes(gate.body)))
+    require_trusted_cert(service)
     suffix = request.url.path.split(f"/printers/{request.path_params['printer_id']}/", 1)[-1]
     if suffix == "get_version":
         return

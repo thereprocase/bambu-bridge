@@ -153,10 +153,9 @@ async def start_queue_item(
         # Printer was deleted while item was queued — drop the orphan.
         await repo.delete(item_id)
         return errors.not_found("printer", item.printer_id)
-    from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
+    from bambu_bridge.api.capabilities import require_start
 
-    require_p1s(service)
-    require_start_ready(service, "a stored file")
+    nozzle = require_start(service, "a stored file")
     # Pull bytes from FTPS so JobManager.submit() can re-validate the 3MF.
     # The .gcode.3mf was already uploaded; we just round-trip to validate.
     from bambu_bridge.protocol.ftps import FtpsTransfer
@@ -182,7 +181,7 @@ async def start_queue_item(
         validate,
         data,
         expected_ams_mapping=item.ams_mapping,
-        expected_nozzle=reported_nozzle(service),
+        expected_nozzle=nozzle,
     )
     if not report.ok:
         return errors.invalid_input("; ".join(report.issues))

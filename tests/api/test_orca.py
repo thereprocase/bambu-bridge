@@ -6,6 +6,7 @@ import asyncio
 import io
 import zipfile
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -40,12 +41,19 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         )
     )
     with TestClient(app, base_url="https://bridge.invalid") as c:
+        status = {"model": "P1S", "_raw": {"gcode_state": "IDLE", "nozzle_diameter": "0.4"}}
         service = SimpleNamespace(
             connected=True,
             ip="127.0.0.1",
             access_code="mock-only",
-            summary=lambda: {"gcode_state": "IDLE"},
-            snapshot=lambda: {"_raw": {"nozzle_diameter": "0.4"}},
+            status=status,
+            snapshot=lambda: {
+                **status,
+                "session": {
+                    "connected": True,
+                    "last_telemetry_at": datetime.now(UTC).isoformat(),
+                },
+            },
         )
 
         def get(printer_id: str) -> SimpleNamespace:
@@ -200,9 +208,11 @@ def test_busy_offline_and_transfer_failure(client: TestClient) -> None:
     service.connected = False
     assert send(client, auth).status_code == 409
     service.connected = True
-    service.summary = lambda: {"gcode_state": "RUNNING"}
-    assert send(client, auth, fields={"print": "true"}).status_code == 409
-    service.summary = lambda: {"gcode_state": "IDLE"}
+    service.status["_raw"]["gcode_state"] = "RUNNING"
+    busy = send(client, auth, fields={"print": "true"})
+    assert busy.status_code == 409
+    assert busy.json()["message"] == "Printer must be idle before starting a print"
+    service.status["_raw"]["gcode_state"] = "IDLE"
     client.app.state.jobs.history.return_value = [
         SimpleNamespace(state=SimpleNamespace(terminal=False))
     ]
