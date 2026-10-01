@@ -24,7 +24,7 @@ the bed ~200 mm into the toolhead. Instead the bridge dead-reckons position
 the estimate is unknown.
 
 Guard order (every jog, server-side, no human in the loop):
-  1. Step whitelist — distance_mm ∈ ±ALLOWED_STEPS {1, 10, 50}; else 422.
+  1. Step whitelist — distance_mm ∈ ±ALLOWED_STEPS {1, 10}; else 422.
      Closes the "client sends Z-200" attack vector.
   2. Homed gate — the axis ``home_flag`` bit must be set; absent/unknown → 409.
   3. Envelope, FAIL CLOSED on unknown position:
@@ -62,9 +62,11 @@ from bambu_bridge.protocol.models import build_command
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 
-# Discrete step sizes the UI offers.  Any other value is rejected to prevent
-# a malicious or buggy client from sending an unbounded distance (e.g. Z-200).
-ALLOWED_STEPS: frozenset[float] = frozenset({1.0, 10.0, 50.0})
+# Discrete step sizes the UIs offer: OrcaSlicer's jog steps, 1 and 10 mm for
+# XY and Z (StatusPanel::on_axis_ctrl_xy, on_axis_ctrl_z_*).  Any other value
+# is rejected so a buggy client cannot send an unbounded distance (e.g. Z-200).
+# tests/test_jog_step_parity.py keeps the web and app lists equal to this.
+ALLOWED_STEPS: frozenset[float] = frozenset({1.0, 10.0})
 
 # Physical envelope — refuse moves that would exit these bounds even if the
 # printer might (expensively) fault-handle them itself.
@@ -452,6 +454,34 @@ def _check_jog(service: PrinterService, axis: str, distance_mm: float) -> None:
         _jog_raise(errors.jog_out_of_envelope(axis, current, proposed, limit))
 
 
+# OrcaSlicer's busy rules (StatusPanel.cpp). While a print runs, motion and
+# AMS load/unload are refused (show_printing_status, update_ams_control_state);
+# a paused print allows motion again and filament moves on the external spool
+# only. Heaters, fans, speed and the light stay available in every state.
+_PRINTING_STATES = frozenset({"PREPARE", "RUNNING", "SLICING", "PAUSE"})
+_EXTERNAL_TRAY = 254
+BUSY_MESSAGE = "The printer is busy with another print job."
+PAUSED_FILAMENT_MESSAGE = (
+    "When printing is paused, filament loading and unloading are only "
+    "supported for external slots."
+)
+
+
+def require_not_busy(service: PrinterService, *, tray: int | None = None) -> None:
+    """409 when OrcaSlicer would disable this control in the current print state.
+
+    ``tray`` is None for motion; for a filament move it is the 0-based AMS
+    tray, or 254 for the external spool.
+    """
+    state = str(service._state.get("gcode_state") or "")  # noqa: SLF001 – internal read only
+    if state not in _PRINTING_STATES:
+        return
+    if state != "PAUSE":
+        _jog_raise(errors.conflict(BUSY_MESSAGE, gcode_state=state))
+    if tray is not None and tray != _EXTERNAL_TRAY:
+        _jog_raise(errors.conflict(PAUSED_FILAMENT_MESSAGE, gcode_state=state))
+
+
 class MoveBody(BaseModel):
     axis: str = Field(examples=["X", "Y", "Z"])
     distance_mm: float
@@ -465,13 +495,14 @@ async def move(
     """Relative single-axis jog. Moves the toolhead.
 
     Safety guards (defence-in-depth, fail closed):
-    - step must be in ALLOWED_STEPS (1, 10, 50 mm)
+    - step must be in ALLOWED_STEPS (1, 10 mm)
     - axis must be homed (home_flag bitmask in printer state)
     - the bridge's dead-reckoned position must be known and the result must
       stay within Z ∈ [SAFE_Z_FLOOR, 256], X/Y ∈ [0, 256] mm; an unknown
       position is rejected (re-home to recover).
     """
     service = _online(registry, printer_id)
+    require_not_busy(service)
     axis = body.axis.upper()
     _check_jog(service, axis, body.distance_mm)
     result = await _send(
@@ -517,6 +548,7 @@ async def ams_change(
     registry: Registry = Depends(get_registry),
 ) -> dict[str, Any]:
     service = _online(registry, printer_id)
+    require_not_busy(service, tray=body.target_tray)
     return await _send(
         service,
         _build(
@@ -533,7 +565,16 @@ async def unload_filament(
     printer_id: str, registry: Registry = Depends(get_registry)
 ) -> dict[str, Any]:
     service = _online(registry, printer_id)
+    loaded = _as_tray((service._state.get("ams") or {}).get("tray_now"))  # noqa: SLF001
+    require_not_busy(service, tray=loaded if loaded is not None else -1)
     return await _send(service, commands.unload_filament())
+
+
+def _as_tray(value: Any) -> int | None:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 # --------------------------------------------------------------------------- #

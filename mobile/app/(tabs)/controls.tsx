@@ -48,7 +48,9 @@ import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
 import { useTheme } from "../../src/theme/ThemeProvider";
 
-const STEP_MM = [1, 10, 50] as const;
+// OrcaSlicer's jog steps (StatusPanel::on_axis_ctrl_xy / on_axis_ctrl_z_*);
+// the bridge's ALLOWED_STEPS refuses anything else.
+const STEP_MM = [1, 10] as const;
 const SPEED_LEVELS = [
   { level: 1 as const, label: "Silent" },
   { level: 2 as const, label: "Standard" },
