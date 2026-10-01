@@ -89,21 +89,20 @@ async def submit_job(
     belt-and-suspenders against any future async re-entry.)
     """
     name = file.filename or "upload.3mf"
-    from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
+    from bambu_bridge.api.capabilities import require_start
 
     try:
         service = registry.get(printer_id)
     except PrinterNotFoundError:
         return api_errors.not_found("printer", printer_id)  # type: ignore[return-value]
-    require_p1s(service)
-    require_start_ready(service)
+    nozzle = require_start(service)
     data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
     report = slice_validate(
         data,
         expected_ams_mapping=ams,
         expected_model="C12",
-        expected_nozzle=reported_nozzle(service),
+        expected_nozzle=nozzle,
     )
     if not report.ok:
         return api_errors.envelope(  # type: ignore[return-value]

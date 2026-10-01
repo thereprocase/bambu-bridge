@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 from bambu_bridge import __version__
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_owner
+from bambu_bridge.api.capabilities import require_start
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.orca import OrcaStore
 from bambu_bridge.protocol.ftps import FtpsTransfer
@@ -197,8 +198,12 @@ async def upload(
             if len(list(xml.iter("filament"))) != 1:
                 raise HTTPException(422, "External-spool printing requires a single filament")
         jobs = request.app.state.jobs
-        if service.summary().get("gcode_state") not in ("IDLE", "FINISH", "FAILED"):
-            raise HTTPException(409, "Printer is busy or its idle state is not yet known")
+        try:
+            # Same printer checks as every other start; returns the reported nozzle.
+            require_start(service, "a print")
+        except HTTPException as exc:  # Orca shows the reason as plain text
+            detail: Any = exc.detail
+            raise HTTPException(exc.status_code, detail["message"]) from None
         if any(not j.state.terminal for j in await jobs.history(printer_id=printer_id, limit=200)):
             raise HTTPException(409, "A bridge job is already active for this printer")
         # Serialize concurrent Orca submissions across the queued-row DB write.

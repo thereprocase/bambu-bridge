@@ -183,10 +183,9 @@ async def start_queue_item(
         await repo.delete(item_id)
         return errors.not_found("printer", item.printer_id)
     # Re-validate ams_mapping at start time in case slot range tightened.
-    from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
+    from bambu_bridge.api.capabilities import require_start
 
-    require_p1s(service)
-    require_start_ready(service, "a stored file")
+    nozzle = require_start(service, "a stored file")
     try:
         _validate_ams(item.ams_mapping)
     except _SlotError as exc:
@@ -225,7 +224,7 @@ async def start_queue_item(
         data,
         expected_ams_mapping=item.ams_mapping,
         expected_model="C12",
-        expected_nozzle=reported_nozzle(service),
+        expected_nozzle=nozzle,
     )
     if not report.ok:
         return errors.invalid_input("; ".join(report.issues))
