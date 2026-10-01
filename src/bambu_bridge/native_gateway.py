@@ -661,11 +661,14 @@ class NativeGateway:
         inbox = self.inbox
         if inbox is None:
             return
+        # Runs inside the reporting printer's own handler. Observing a report is
+        # not a control action: skip the certificate gate in service(), or a
+        # changed certificate would raise here and drop the MQTT session in a loop.
         changed = await asyncio.to_thread(
             inbox.observe,
             cast(dict[str, str], self.config)["printer_id"],
             report,
-            self.service().native_snapshot(),
+            self.inbox_service.native_snapshot(),
         )
         if changed:
             previous = {row["id"]: row.get("code") for row in self.inbox_status}
@@ -736,12 +739,14 @@ class NativeGateway:
                         if current["command"]:
                             self.inbox_failure(current, "BBDELIVERY_FAILED")
                 async with self.inbox_dispatch_lock:
-                    service = self.service()
                     current = await asyncio.to_thread(inbox.get, identifier)
                     if current["state"] != "delivered" or current["start_state"] != "queued":
                         continue
                     await asyncio.to_thread(inbox.mark_readiness, identifier)
                     try:
+                        # A changed certificate blocks this start with its reason
+                        # instead of stopping the worker for every later upload.
+                        service = self.service()
                         await self.ensure_idle()
                         if current.get("replay_request_id"):
                             replay = getattr(self.app.state, "library_replay", None)

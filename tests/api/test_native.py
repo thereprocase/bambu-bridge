@@ -954,3 +954,36 @@ async def test_failed_enable_releases_the_inbox_and_can_be_retried(gateway):
     assert setup["enabled"] and gateway.inbox is not None
     await gateway.disable()
     assert gateway.inbox is None and gateway.config is None
+
+
+async def test_changed_certificate_never_raises_into_the_printer_report_path(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    gateway.app.state.registry.get(SERIAL).cert_status = "changed"
+    # Called from PrinterService._handle_report; raising here would drop the MQTT session.
+    await gateway.observe_inbox({"print": {"gcode_state": "IDLE"}})
+
+
+async def test_changed_certificate_blocks_a_queued_start_but_keeps_the_worker(
+    gateway, monkeypatch
+):
+    monkeypatch.setattr("bambu_bridge.native_gateway.INBOX_TICK", 0.01)
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    row = gateway.inbox.reserve(SERIAL, "/queued.3mf", 4)
+    with gateway.inbox.connect() as db:
+        db.execute(
+            "UPDATE uploads SET state='delivered',start_state='queued',command=? WHERE id=?",
+            ('{"print":{"command":"project_file","url":"file:///sdcard/queued.3mf"}}', row["id"]),
+        )
+    gateway.app.state.registry.get(SERIAL).cert_status = "changed"
+    gateway.inbox_wake.set()
+    async with asyncio.timeout(2):
+        while gateway.inbox.get(row["id"])["start_state"] != "blocked":
+            await asyncio.sleep(0.01)
+    assert "certificate" in gateway.inbox.get(row["id"])["code"]
+    gateway.app.state.registry.get(SERIAL).send_raw.assert_not_awaited()
+    await asyncio.sleep(0.05)
+    assert gateway.inbox_task is not None and not gateway.inbox_task.done()
