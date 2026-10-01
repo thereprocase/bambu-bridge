@@ -48,7 +48,6 @@ def service(monkeypatch: pytest.MonkeyPatch) -> PrinterService:
 
     monkeypatch.setattr(svc, "_tofu_compare", _quiet)
     monkeypatch.setattr(svc, "send_command", _quiet)
-    monkeypatch.setattr(svc, "_start_feed_warning_watchdog", lambda: None)
     return svc
 
 
