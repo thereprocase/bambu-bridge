@@ -1,5 +1,6 @@
 import type { PrinterSnapshot } from "../api/types";
 import type { LiveStatus } from "../ws/live";
+import { clockFor } from "./clockSync";
 
 export interface PrinterStateLabels {
   power: "On" | "Unknown";
@@ -8,15 +9,22 @@ export interface PrinterStateLabels {
   issues: string[];
   live: boolean;
   printerReady: boolean;
+  /** live <= LIVE_MS old; aging up to FRESH_MS (still live, labelled); else stale. */
+  freshness?: "live" | "aging" | "stale";
+  /** Age of the last printer report, in the bridge's time base when known. */
+  ageMs?: number;
 }
 
-const FRESH_MS = 15_000;
-// Phone and bridge clocks differ. Comparing the bridge's telemetry stamp with
-// the phone's clock hid live status whenever the phone ran even slightly
-// behind (every fresh stamp looked like it came from the future). Freshness
-// is now judged by when THIS device last saw the stamp change. Clock offsets
-// up to SKEW_MS either way are tolerated; beyond that the stamp is ignored as
-// implausible, so a long-cached snapshot still never looks live.
+/** A P1S reports every 2-4 s while printing; two missed reports is noticeable. */
+export const LIVE_MS = 5_000;
+/** Same 15 s the bridge requires before it accepts a control command. */
+export const FRESH_MS = 15_000;
+// Phone and bridge clocks differ, and the old check (stamp later than the
+// phone's "now" = stale) hid live status whenever the phone ran even slightly
+// behind. Age is now measured in the bridge's time base using the NTP-style
+// offset from clockSync. Until the first clock sample arrives, age is the time
+// since THIS device last saw the stamp change, and stamps more than SKEW_MS
+// off are ignored as implausible, so a long-cached snapshot never looks live.
 const SKEW_MS = 600_000;
 const seen = new Map<string, { stamp: string; at: number }>();
 
@@ -31,6 +39,23 @@ function telemetryAge(key: string, stamp: string, now: number): number {
     return 0;
   }
   return now - prev.at;
+}
+
+/**
+ * Age of the latest report. With a clock estimate: bridge time now minus the
+ * stamp, floored at zero. A stamp ahead of corrected bridge time by more than
+ * the estimate's uncertainty means the estimate is off (e.g. a clock stepped),
+ * so fall back to device receipt time. Null when the stamp is implausible.
+ */
+function telemetryAgeMs(key: string, stampText: string, stamp: number, now: number): number | null {
+  const receiptAge = telemetryAge(key, stampText, now);
+  const clock = clockFor(key);
+  if (clock) {
+    const age = now + clock.offsetMs - stamp;
+    if (age >= -(clock.rttMs / 2 + 250)) return Math.max(0, age);
+  }
+  if (Math.abs(now - stamp) > FRESH_MS + SKEW_MS) return null;
+  return receiptAge;
 }
 
 /** Independent facts: a lost connection never proves that power is off. */
@@ -62,11 +87,12 @@ export function printerStateLabels(
   const stamp = stampText ? Date.parse(stampText) : NaN;
   const key = String((snapshot as { printer_id?: string; serial?: string }).printer_id
     ?? (snapshot as { serial?: string }).serial ?? "");
-  if (!Number.isFinite(stamp) || Math.abs(now - stamp) > FRESH_MS + SKEW_MS
-      || telemetryAge(key, stampText, now) > FRESH_MS) {
+  const ageMs = Number.isFinite(stamp) ? telemetryAgeMs(key, stampText, stamp, now) : null;
+  if (ageMs === null || ageMs > FRESH_MS) {
     return { power: "Unknown", connection: "Status stale", activity: "Unknown",
-      issues: [], live: false, printerReady: false };
+      issues: [], live: false, printerReady: false, freshness: "stale", ageMs: ageMs ?? undefined };
   }
+  const freshness = ageMs <= LIVE_MS ? "live" : "aging";
 
   const raw = snapshot._raw as Record<string, unknown> | undefined;
   const state = raw?.gcode_state;
@@ -85,6 +111,7 @@ export function printerStateLabels(
   if (hms.some((item) => item.severity === "warn")) issues.push("Printer warning");
   if (hms.some((item) => item.severity !== "error" && item.severity !== "warn" && item.severity !== "info")) issues.push("Printer issue");
   if (snapshot.job_anomaly) issues.push("Job warning");
-  return { power: "On", connection: "Connected", activity, issues, live: true,
+  return { power: "On", connection: freshness === "live" ? "Connected" : `Updated ${Math.round(ageMs / 1000)} s ago`,
+    activity, issues, live: true, freshness, ageMs,
     printerReady: state === "IDLE" || state === "FINISH" || state === "FAILED" };
 }

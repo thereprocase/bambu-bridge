@@ -1,8 +1,9 @@
 import type { PrinterSnapshot } from "../../api/types";
 import { ownerLabel, startLabel } from "../nativeState";
+import { recordClockSample, resetClockSync } from "../clockSync";
 import { printerStateLabels, resetTelemetryClock } from "../printerState";
 
-beforeEach(() => resetTelemetryClock());
+beforeEach(() => { resetTelemetryClock(); resetClockSync(); });
 
 const NOW = Date.parse("2026-09-27T12:00:00Z");
 
@@ -94,4 +95,27 @@ test("an implausibly old or future stamp is never live", () => {
   const old = snapshot("RUNNING", 2);
   expect(printerStateLabels(old, "open", NOW + 16 * 60_000).live).toBe(false);
   expect(printerStateLabels(old, "open", NOW - 16 * 60_000).live).toBe(false);
+});
+
+test.each([-4_000, -300, 0, 2_500, 90_000])(
+  "with a clock estimate, age is exact for a phone %i ms off the bridge", (phoneOffset) => {
+  // phone = bridge + phoneOffset. Probe: 30 ms each way, bridge holds 5 ms.
+  const bridgeNow = NOW + 60_000;
+  const t0 = bridgeNow + phoneOffset, t1 = bridgeNow + 30, t2 = t1 + 5, t3 = t2 + 30 + phoneOffset;
+  recordClockSample("", t0, t1, t3, t2);
+  const s = snapshot("RUNNING", 2);
+  const phoneNow = bridgeNow + 1_000 + phoneOffset;
+  for (const [age, freshness, live] of [[1_000, "live", true], [9_000, "aging", true], [16_000, "stale", false]] as const) {
+    s.session.last_telemetry_at = new Date(bridgeNow + 1_000 - age).toISOString();
+    const out = printerStateLabels(s, "open", phoneNow);
+    expect(out).toMatchObject({ freshness, live });
+    expect(Math.abs(out.ageMs! - age)).toBeLessThanOrEqual(35);   // within half the delay
+  }
+});
+
+test("aging status is labelled with its age and still allows controls", () => {
+  recordClockSample("", NOW, NOW, NOW, NOW);
+  const s = snapshot("IDLE");
+  expect(printerStateLabels(s, "open", NOW + 9_000)).toMatchObject({
+    live: true, printerReady: true, freshness: "aging", connection: "Updated 9 s ago" });
 });
