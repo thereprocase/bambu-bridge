@@ -110,7 +110,8 @@ async def test_terminal_jobs_release_payload_and_manager_entry() -> None:
                          SimpleNamespace(get=lambda _: service))  # type: ignore[arg-type]
     runs = []
     for i in range(3):
-        job = await manager.submit("synthetic", bytes([i]) * 1024, f"job-{i}.3mf")
+        # One job per printer at a time (single-flight), so one printer each.
+        job = await manager.submit(f"synthetic-{i}", bytes([i]) * 1024, f"job-{i}.3mf")
         run = manager._runs[job.id]
         runs.append(run)
         await run.request_cancel()

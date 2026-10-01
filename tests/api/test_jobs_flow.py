@@ -279,7 +279,9 @@ async def test_fed_no_progress_watchdog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RUNNING but no progress → auto-stop + FAILED(FED_NO_PROGRESS)."""
-    monkeypatch.setattr(jobs_mod, "_FEED_DEADLINE_S", 0.5)
+    # Settings carries the deadline into JobManager(feed_deadline_s=...), which
+    # wins over the module default, so set it where Settings reads it.
+    monkeypatch.setenv("BRIDGE_FEED_DEADLINE_S", "0.5")
     ftps_port, _ = ftps_server
     app = build_app(
         tmp_path / "fed.db", mqtt_port=mqtt_broker, ftps_port=ftps_port
@@ -324,12 +326,18 @@ async def test_fed_no_progress_watchdog(
 @pytest.mark.asyncio
 async def test_cancel_before_printer_ack(
     tmp_path: Path,
+    mqtt_broker: int,
     ftps_server: tuple[int, Path],
     valid_gcode_3mf: bytes,
 ) -> None:
-    """Valid file, no broker -> never gets a printer ack; cancel => terminal."""
+    """An idle printer that never acknowledges; cancel right after submit ends the
+    job canceled, and a job canceled before its upload finished is never started."""
+    from tests.conftest import IDLE_PUSH_STATUS
+
+    printer = MockPrinter("127.0.0.1", mqtt_broker, IDLE_PUSH_STATUS)
+    await printer.start()
     ftps_port, _ = ftps_server
-    app = build_app(tmp_path / "cancel.db", mqtt_port=1, ftps_port=ftps_port)
+    app = build_app(tmp_path / "cancel.db", mqtt_port=mqtt_broker, ftps_port=ftps_port)
     captured: dict[str, object] = {}
 
     def run() -> None:
@@ -339,22 +347,21 @@ async def test_cancel_before_printer_ack(
                 f"/api/v1/printers/{SERIAL}/jobs",
                 headers=_AUTH,
                 data={"ams_mapping": "1"},
-                files={
-                    "file": (
-                        "x.3mf",
-                        valid_gcode_3mf,
-                        "application/octet-stream",
-                    )
-                },
+                files={"file": ("x.3mf", valid_gcode_3mf, "application/octet-stream")},
             )
+            assert sub.status_code == 201, sub.text
             job_id = sub.json()["id"]
             c.post(f"/api/v1/jobs/{job_id}/cancel", headers=_AUTH)
-            captured["state"] = _poll_terminal(c, job_id, timeout=15.0)[
-                "job"
-            ]["state"]
+            captured["job"] = _poll_terminal(c, job_id, timeout=15.0)["job"]
 
-    await asyncio.to_thread(run)
-    assert captured["state"] in ("canceled", "failed")
+    try:
+        await asyncio.to_thread(run)
+    finally:
+        await printer.stop()
+    job = captured["job"]
+    assert job["state"] == "canceled", job  # type: ignore[index]
+    commands = [r.get("print", {}).get("command") for r in printer.requests]
+    assert "project_file" not in commands or "stop" in commands
 
 
 def _two_filament_container(layer_list: str) -> bytes:

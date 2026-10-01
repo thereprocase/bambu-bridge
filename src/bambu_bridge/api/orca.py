@@ -27,6 +27,7 @@ from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.orca import OrcaStore
 from bambu_bridge.protocol.commands import AmsMapping
 from bambu_bridge.protocol.ftps import FtpsTransfer
+from bambu_bridge.service.jobs import PrinterBusyError
 from bambu_bridge.service.registry import PrinterNotFoundError
 from bambu_bridge.slicedoc import validate
 
@@ -191,13 +192,10 @@ async def upload(
             raise HTTPException(exc.status_code, detail["message"]) from None
         if any(not j.state.terminal for j in await jobs.history(printer_id=printer_id, limit=200)):
             raise HTTPException(409, "A bridge job is already active for this printer")
-        # Serialize concurrent Orca submissions across the queued-row DB write.
-        async with request.app.state.orca_submit_lock:
-            if any(
-                not j.state.terminal for j in await jobs.history(printer_id=printer_id, limit=200)
-            ):
-                raise HTTPException(409, "A bridge job is already active for this printer")
+        try:  # submit() claims the printer, so concurrent starts get 409 here
             job = await jobs.submit(printer_id, data, stored_name, ams_mapping=mapping or None)
+        except PrinterBusyError:
+            raise HTTPException(409, "A bridge job is already active for this printer") from None
         result.update(job_id=job.id, bridge_state="queued")
     else:
         try:

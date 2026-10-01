@@ -28,7 +28,7 @@ from bambu_bridge.api.printers import get_registry
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.db.jobs import JobState
 from bambu_bridge.protocol.commands import AmsMapping
-from bambu_bridge.service.jobs import JobManager, JobNotFoundError
+from bambu_bridge.service.jobs import JobManager, JobNotFoundError, PrinterBusyError
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.slicedoc import validate as slice_validate
 
@@ -125,6 +125,10 @@ async def submit_job(
         job = await jobs.submit(printer_id, data, name, ams_mapping=ams)
     except PrinterNotFoundError:
         return api_errors.not_found("printer", printer_id)  # type: ignore[return-value]
+    except PrinterBusyError:
+        return api_errors.conflict(  # type: ignore[return-value]
+            "A bridge job is already active for this printer"
+        )
     return job.model_dump(mode="json")
 
 
