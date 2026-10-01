@@ -936,3 +936,21 @@ async def test_native_overlay_sends_decodable_keyframe(gateway):
     finally:
         writer.close()
         await writer.wait_closed()
+
+
+async def test_failed_enable_releases_the_inbox_and_can_be_retried(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    printer = gateway.app.state.registry.get(SERIAL)
+    printer.cert_status = "changed"
+    with pytest.raises(ValueError, match="certificate"):
+        await gateway.enable(SERIAL)
+    assert gateway.config is None
+    assert gateway.inbox is None  # lock released, hooks removed
+    assert getattr(printer, "command_guard", None) is None
+    printer.cert_status = "trusted"
+    setup = await gateway.enable(SERIAL)
+    assert setup["enabled"] and gateway.inbox is not None
+    await gateway.disable()
+    assert gateway.inbox is None and gateway.config is None

@@ -375,6 +375,16 @@ class NativeGateway:
     async def start(self) -> None:
         if not self.config:
             return
+        # One handler for the whole start: a failure anywhere (a changed printer
+        # certificate, identity, listeners) releases the inbox lock and hooks.
+        try:
+            await self._start()
+        except Exception:
+            await self.close()
+            self.last_error = "Could not start native listeners; check the bind address and ports"
+            raise
+
+    async def _start(self) -> None:
         preview_task = asyncio.create_task(self.warm_preview())
         self.tasks.add(preview_task)
         preview_task.add_done_callback(self.tasks.discard)
@@ -412,35 +422,28 @@ class NativeGateway:
         self.data_context = data_context
         from bambu_bridge.native_ftps import serve_ftps
 
-        try:
-            for port, handler in zip(
-                (*self.ports, self.detect_port),
-                (self.mqtt, serve_ftps, self.camera, self.detect),
-                strict=True,
-            ):
+        for port, handler in zip(
+            (*self.ports, self.detect_port),
+            (self.mqtt, serve_ftps, self.camera, self.detect),
+            strict=True,
+        ):
 
-                def connected(
-                    reader: asyncio.StreamReader,
-                    writer: asyncio.StreamWriter,
-                    handler: Any = handler,
-                ) -> None:
-                    task = asyncio.create_task(self.client(handler, reader, writer))
-                    self.tasks.add(task)
-                    task.add_done_callback(self.tasks.discard)
+            def connected(
+                reader: asyncio.StreamReader,
+                writer: asyncio.StreamWriter,
+                handler: Any = handler,
+            ) -> None:
+                task = asyncio.create_task(self.client(handler, reader, writer))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
 
-                options: dict[str, Any] = {}
-                if handler != self.detect:
-                    options = {"ssl": context, "ssl_handshake_timeout": 10}
-                server = await asyncio.start_server(
-                    connected, self.host, port, limit=8192, **options
-                )
-                self.servers.append(server)
-            self.last_error = None
-            await self.video.start()
-        except Exception:
-            await self.close()
-            self.last_error = "Could not start native listeners; check the bind address and ports"
-            raise
+            options: dict[str, Any] = {}
+            if handler != self.detect:
+                options = {"ssl": context, "ssl_handshake_timeout": 10}
+            server = await asyncio.start_server(connected, self.host, port, limit=8192, **options)
+            self.servers.append(server)
+        self.last_error = None
+        await self.video.start()
 
     async def close(self) -> None:
         for task in list(self.tasks):
