@@ -1,7 +1,7 @@
 export type Availability = { available: boolean; reason: string };
 export type Feature = "identity" | "core" | "vision" | "airPrint" | "tangle" | "blob" | "sound" |
   "ams" | "drying" | "workLight" | "nozzleSetup" | "calibration" | "autoRecovery" |
-  "motion" | "filamentMotion" | "skipObjects" | "camera";
+  "motion" | "filamentMotion" | "camera";
 
 /** Manufacturer baseline: BambuStudio C12.json and DevPrintOptions.cpp.
  * Identity comes from the device, never its user-editable friendly name.
@@ -38,7 +38,7 @@ export function printerCapabilities(snapshot: any, registeredModel?: string | nu
       case "workLight": return known && Array.isArray(raw.lights_report) && raw.lights_report.some((l: any) => l.node === "work_light") ? yes : raw.lights_report == null ? unknown : known ? unavailable : unknown;
       case "nozzleSetup": return known ? unavailable : verifiedProtocol;
       case "calibration": return verifiedProtocol;
-      case "motion": case "filamentMotion": case "skipObjects": return verifiedProtocol;
+      case "motion": case "filamentMotion": return verifiedProtocol;
       case "camera": return known ? yes : { available: false, reason: "Camera support under review" };
       case "autoRecovery": return known ? yes : unknown;
     }
