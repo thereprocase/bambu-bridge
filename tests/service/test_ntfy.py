@@ -138,3 +138,24 @@ async def test_per_printer_prefs_disable(database: Database) -> None:
         assert sink == []  # disabled for this printer
     finally:
         await notifier.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_readded_printer_keeps_pushing(database: Database) -> None:
+    """Remove + re-add builds a new PrinterService (new bus); attach must follow it."""
+    sink: list[httpx.Request] = []
+    notifier = NotificationService(
+        NtfyDispatcher("https://ntfy.sh", "t", client=_capturing_client(sink)),
+        NotificationPrefsRepo(database),
+    )
+    old, new = _service(), _service()
+    await notifier.attach(old)
+    try:
+        await _wait(lambda: old.bus.subscriber_count >= 1)
+        await notifier.attach(new)
+        await _wait(lambda: new.bus.subscriber_count >= 1)
+        assert old.bus.subscriber_count == 0
+        new.bus.publish(Event("event", {"subtask_name": "benchy"}, name="print_completed"))
+        await _wait(lambda: len(sink) == 1)
+    finally:
+        await notifier.shutdown()

@@ -100,9 +100,12 @@ class NotificationService:
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
     async def attach(self, service: PrinterService) -> None:
-        """Registry listener: start watching this printer's bus."""
-        if service.serial in self._tasks:
-            return
+        """Registry listener: (re)watch this printer's bus; a re-added printer has a new one."""
+        prior = self._tasks.pop(service.serial, None)
+        if prior is not None:
+            prior.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await prior
         self._tasks[service.serial] = asyncio.create_task(self._watch(service))
 
     async def shutdown(self) -> None:
