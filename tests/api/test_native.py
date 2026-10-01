@@ -732,9 +732,63 @@ async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gat
     async with gateway.guard_managed_job(asyncio.Event()):
         await service.send_command("print", "project_file", url="file:///sdcard/managed.3mf")
         assert gateway.inbox.status()[0]["start_state"] == "sent"
-        with pytest.raises(ValueError, match="BBSTOP_START_NOT_CONFIRMED"):
-            await service.send_command("print", "stop")
-    service._mqtt.publish.assert_awaited_once()
+        # Like Orca's abort, the job's own stop is published whatever its start state.
+        await service.send_command("print", "stop")
+    assert service._mqtt.publish.await_count == 2
+
+
+async def test_managed_job_stops_its_running_print(gateway):
+    """The P1S reports gcode_file=Metadata/plate_1.gcode, never the archive name."""
+    from bambu_bridge.slicedoc import project_file_command
+
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    live = gateway.service().native_snapshot()["print"]
+    async with gateway.guard_managed_job(asyncio.Event()):
+        await service.send_command(
+            "print",
+            "project_file",
+            **project_file_command("benchy.gcode.3mf", use_ams=True, ams_mapping=[0]),
+        )
+        row = gateway.inbox.status()[0]
+        sequence = gateway.inbox.get(row["id"])["dispatch_seq"]
+        live.update(
+            gcode_state="RUNNING", gcode_file="Metadata/plate_1.gcode", subtask_name="benchy"
+        )
+        await gateway.observe_inbox(
+            {"print": {"command": "project_file", "sequence_id": sequence, "result": "SUCCESS"}}
+        )
+        await gateway.observe_inbox({"print": {"gcode_state": "RUNNING"}})
+        assert gateway.inbox.get(row["id"])["start_state"] == "running"
+        await service.send_command("print", "stop")
+        await service.send_command("print", "pause")
+    published = [call.args[0]["print"]["command"] for call in service._mqtt.publish.await_args_list]
+    assert published == ["project_file", "stop", "pause"]
+
+
+async def test_restore_during_managed_job_keeps_its_stop(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    backup = create_backup(gateway.inbox, gateway.store.directory, SERIAL)
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=gateway)))
+    async with gateway.guard_managed_job(asyncio.Event()):
+        await service.send_command("print", "project_file", url="file:///sdcard/m.gcode.3mf")
+        await recovery_restore(
+            backup["id"],
+            RestoreAction(confirm="Restore native inbox and review every pending start"),
+            request,
+        )
+        # The restored inbox no longer holds this job's row; its stop must still go out.
+        await service.send_command("print", "stop")
+    assert service._mqtt.publish.await_count == 2
 
 
 @pytest.mark.parametrize("protocol,version", [(b"MQTT", 4), (b"MQIsdp", 3)])

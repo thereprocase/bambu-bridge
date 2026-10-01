@@ -598,14 +598,23 @@ class NativeGateway:
             yield
             return
         command = payload.get("print", {}).get("command")
+        printer = cast(dict[str, str], self.config)["printer_id"]
+        if command in ("stop", "pause"):
+            # Like Orca (StatusPanel::on_subtask_abort -> MachineObject::command_task_abort),
+            # never condition a stop or pause on which job is running. The P1S names the
+            # inner Metadata/plate_N.gcode in gcode_file, so a file match cannot work anyway.
+            # It only drops starts still queued behind it.
+            async with self.inbox_dispatch_lock:
+                await asyncio.to_thread(self.inbox.cancel_queued, printer)
+                yield
+            self.inbox_wake.set()
+            return
         owner = self.inbox_owner.get()
         if owner is not None:
             row = await asyncio.to_thread(self.inbox.get, owner)
             if row["kind"] == "upload":
                 yield  # native worker already owns the dispatch lock and claim
                 return
-            if command in ("stop", "pause") and row["start_state"] != "running":
-                raise ValueError("BBSTOP_START_NOT_CONFIRMED")
             if command in ("project_file", "gcode_file"):
                 async with self.inbox_dispatch_lock:
                     await self.ensure_idle()
@@ -626,28 +635,11 @@ class NativeGateway:
             r"\bM(?:23|24|32|98)\b", str(payload["print"].get("param", "")), re.IGNORECASE
         ):
             raise ValueError("BBSTART_USE_FILE_COMMAND")
-        if command not in ("project_file", "gcode_file", "stop", "pause"):
+        if command not in ("project_file", "gcode_file"):
             yield
             return
         async with self.inbox_dispatch_lock:
             inbox = self.inbox
-            printer = cast(dict[str, str], self.config)["printer_id"]
-            if command in ("stop", "pause"):
-                if owner is not None:
-                    row = await asyncio.to_thread(inbox.get, owner)
-                    live = self.service().native_snapshot().get("print", {})
-                    filename = str(live.get("gcode_file", "")).rsplit("/", 1)[-1]
-                    if (
-                        row["start_state"] != "running"
-                        or not self.service().connected
-                        or filename != row["remote"].rsplit("/", 1)[-1]
-                        or live.get("gcode_state") not in ("PREPARE", "RUNNING", "PAUSE")
-                    ):
-                        raise ValueError("BBSTOP_START_NOT_CONFIRMED")
-                await asyncio.to_thread(inbox.cancel_queued, printer)
-                yield
-                self.inbox_wake.set()
-                return
             await self.recover_lost_start()
             await self.ensure_idle()
             identifier = await asyncio.to_thread(inbox.claim_external, printer, payload)
