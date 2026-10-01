@@ -145,6 +145,9 @@ class JobManager:
         self._feed_deadline_s = feed_deadline_s
         self._viz_cache = viz_cache
         self._runs: dict[str, JobRun] = {}
+        # Printers with a job between submit() and the end of its run: one at a
+        # time. Checked and claimed with no await in between (asyncio-atomic).
+        self._busy: set[str] = set()
         # Background tasks watching each printer's bus for external prints.
         self._watch_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -156,8 +159,24 @@ class JobManager:
         *,
         ams_mapping: list[int] | None = None,
     ) -> Job:
-        """Create a queued job and kick off its lifecycle task."""
+        """Create a queued job and kick off its lifecycle task.
+
+        Raises :class:`PrinterBusyError` while another bridge job for the
+        printer is still running (a double POST or two queue starts).
+        """
         self._registry.get(printer_id)  # PrinterNotFoundError -> 404 at API
+        if printer_id in self._busy:
+            raise PrinterBusyError(printer_id)
+        self._busy.add(printer_id)
+        try:
+            return await self._start(printer_id, file_bytes, file_name, ams_mapping)
+        except BaseException:
+            self._busy.discard(printer_id)
+            raise
+
+    async def _start(
+        self, printer_id: str, file_bytes: bytes, file_name: str, ams_mapping: list[int] | None
+    ) -> Job:
         job = Job(
             id=uuid.uuid4().hex,
             printer_id=printer_id,
@@ -187,7 +206,11 @@ class JobManager:
         self._runs[job.id] = run
         run.start()
         assert run._task is not None
-        run._task.add_done_callback(lambda _task: self._runs.pop(job.id, None))
+        def _done(_task: asyncio.Task[None]) -> None:
+            self._runs.pop(job.id, None)
+            self._busy.discard(printer_id)
+
+        run._task.add_done_callback(_done)
         return job
 
     async def cancel(self, job_id: str) -> Job:
@@ -417,6 +440,10 @@ class JobManager:
 
 class JobNotFoundError(KeyError):
     """No job with that id."""
+
+
+class PrinterBusyError(RuntimeError):
+    """A bridge job is already running on this printer."""
 
 
 class JobRun:

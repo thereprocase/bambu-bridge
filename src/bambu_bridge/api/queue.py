@@ -229,12 +229,17 @@ async def start_queue_item(
     )
     if not report.ok:
         return errors.invalid_input("; ".join(report.issues))
-    job = await _job_manager(request).submit(
-        item.printer_id,
-        data,
-        item.file_name,
-        ams_mapping=item.ams_mapping,
-    )
+    from bambu_bridge.service.jobs import PrinterBusyError
+
+    try:
+        job = await _job_manager(request).submit(
+            item.printer_id,
+            data,
+            item.file_name,
+            ams_mapping=item.ams_mapping,
+        )
+    except PrinterBusyError:
+        return errors.conflict("A bridge job is already active for this printer")
     # Remove from queue once accepted.
     await repo.delete(item_id)
     return job.model_dump(mode="json")
