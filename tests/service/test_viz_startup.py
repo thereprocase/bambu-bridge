@@ -39,6 +39,9 @@ async def test_delayed_job_name_warms_once_without_print_started(database: Datab
         def summary(self) -> dict[str, Any]:
             return {"gcode_state": "RUNNING", "subtask_name": self.name}
 
+        def print_view(self) -> dict[str, Any]:
+            return {"gcode_state": None, "layer_num": 0, "tray_now": None, "lost": False}
+
     cache = Mock(spec=VizCache)
     printer = Printer()
     manager = JobManager(JobRepo(database), EventRepo(database), Mock(), viz_cache=cache)

@@ -50,12 +50,7 @@ async def test_second_submit_refused_until_first_run_ends(
             await printer.upload.wait()  # a slow FTPS upload
             raise OSError("upload failed")
 
-    class _Ok:
-        ok = True
-        issues: list[str] = []
-
     monkeypatch.setattr(jobs_mod, "FtpsTransfer", _Ftps)
-    monkeypatch.setattr(jobs_mod, "validate", lambda *_a, **_k: _Ok(), raising=False)
     manager = JobManager(JobRepo(database), EventRepo(database), _Registry(printer))  # type: ignore[arg-type]
 
     first = await manager.submit(SERIAL, b"x", "a.gcode.3mf")

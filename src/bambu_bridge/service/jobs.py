@@ -15,27 +15,33 @@ single most important rule in the contract.
 
 Every transition is persisted to the ``events`` table (event_type
 ``state_change``); the job row's ``state`` is the latest transition.
-Driven by the printer's named bus events (M2):
 
-* ``print_started``   gcode_state -> RUNNING   => submitted -> preparing
-* ``print_progress``  layer_num crossed 0      => preparing -> printing
-* ``print_completed`` gcode_state -> FINISH    => * -> completed
-* ``print_failed`` / ``error``                 => -> failed
+Reconciled, not signalled. Like OrcaSlicer's monitor (StatusPanel::
+update_subtask), a job derives its phase from the printer's *current* state
+(``PrinterService.print_view()``) on every report, reconnect, cancel or
+deadline, so a missed, dropped or reordered event cannot strand it:
 
-A ``submitted`` job that never sees RUNNING within 60 s fails (MQTT
-timeout, spec 8). The FED_NO_PROGRESS watchdog (600 s, AMS engagement)
-runs from the preparing-onward window — it is the §6.3 hard-fail safety
-net independent of the layer_num signal.
+* PREPARE / RUNNING / PAUSE      => submitted -> preparing (Orca PrintJob
+  wait_fn: the printer accepted the job). PREPARE has no deadline.
+* layer_num > 0 or a tray newly engaged after RUNNING => preparing -> printing
+* FINISH => completed; FAILED => failed; IDLE with an empty job => interrupted
+* print_error / HMS codes never end a job (a pause is resumable); they only
+  feed notifications (Orca StatusPanel::update_error_message).
 
-External prints (screen/SD/Bambu-Studio-direct)
------------------------------------------------
+A ``submitted`` job the printer does not accept within 60 s fails. The
+FED_NO_PROGRESS watchdog (default 1800 s from RUNNING) stops a print that
+never progresses. Cancel, FED_NO_PROGRESS and spaghetti share one stop
+path: ``print stop`` is retried until delivered, and the job ends only
+when the printer reports it stopped.
+
+External prints and restarts
+----------------------------
 When the bridge witnesses a ``print_started`` event for printer P and no
 live (submitted/preparing/printing) job row exists, it inserts an
-"external" row so restart-recovery works for ALL prints — not just ones
-submitted through the bridge API.  The row carries ``{"origin":
-"external"}`` in ``metadata_json`` so the jobs-history UI can distinguish
-it.  On ``print_completed`` / ``print_failed`` the normal close-out path
-runs against that row via :meth:`JobManager.attach`.
+"external" row (``{"origin": "external"}`` in ``metadata_json``) so
+restart-recovery works for ALL prints. Live rows no JobRun owns (external
+prints, and bridge jobs left by a restart) are reconciled against the
+printer's state by :meth:`JobManager._close_orphans`.
 """
 
 from __future__ import annotations
@@ -56,7 +62,7 @@ from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.events import Event
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.service.viz_cache import VizCache
-from bambu_bridge.slicedoc import project_file_command, sd_filename, validate
+from bambu_bridge.slicedoc import project_file_command, sd_filename
 from bambu_bridge.vision import SpaghettiMonitor
 
 if TYPE_CHECKING:
@@ -76,7 +82,6 @@ _LIVE_STATES = frozenset(
         JobState.PRINTING,
     }
 )
-_CANCEL_CONFIRM_S = 30  # bound the wait for the printer to confirm a stop
 # Post-RUNNING: the AMS must actually engage a tray (ams.tray_now set) within
 # this, else FED_NO_PROGRESS. In §6.3 *and* the 2026-05-19 recurrence tray_now
 # was never set while the printer ran 40+ layers of air. On a healthy print
@@ -266,15 +271,21 @@ class JobManager:
         bridge-submitted jobs (they already have a live row — that is the
         existence check).
 
-        On ``print_completed`` / ``print_failed``: close out any external row
-        that is still in a live state (the normal FSM handles bridge-submitted
-        jobs; this path handles the external-origin rows only).
+        On every change of the printer's state, reconcile the live rows that
+        no JobRun owns (external prints, and bridge jobs from before a
+        restart) against it: see :meth:`_close_orphans`.
         """
         log_ = log.bind(printer_id=service.serial)
         warmed_job: str | None = None
+        seen: tuple[Any, ...] | None = None
         async with service.bus.subscribe() as sub:
             async for ev in sub:
                 try:
+                    view = service.print_view()
+                    key = (view["gcode_state"], view["lost"])
+                    if view["gcode_state"] is not None and key != seen:
+                        seen = key
+                        await self._close_orphans(service.serial, view, log_)
                     # On restart the job name may arrive after the RUNNING edge.
                     # Warm as soon as both are present, even without print_started.
                     if self._viz_cache is not None:
@@ -304,8 +315,6 @@ class JobManager:
                                 )
                                 warmed_job = job_name
                         await self._maybe_create_external_job(service.serial, ev, log_)
-                    elif ev.name in ("print_completed", "print_failed", "print_interrupted"):
-                        await self._maybe_close_external_job(service.serial, ev.name, log_)
                 except Exception:  # noqa: BLE001 — never let the watch task die
                     log_.exception("jobs.watch.error", ev_name=ev.name)
 
@@ -362,69 +371,60 @@ class JobManager:
         )
         log_.info("jobs.external_created", job_id=job.id, file_name=file_name)
 
-    async def _maybe_close_external_job(self, printer_id: str, event_name: str, log_: Any) -> None:
-        """Close an external-origin job row on completion or failure.
+    async def recover(self) -> None:
+        """Startup: a QUEUED/UPLOADING row has no run in a new process and can
+        never progress (its bytes are gone), so it fails instead of staying
+        live forever."""
+        for state in (JobState.QUEUED, JobState.UPLOADING):
+            for job in await self._jobs.list(state=state, limit=200):
+                if job.id not in self._runs:
+                    await self._close_row(job, JobState.FAILED, "bridge_restarted")
 
-        Only acts on rows whose metadata marks them as external and whose state
-        is still live.  Bridge-submitted jobs are closed by their own JobRun
-        instance; this path must not race with it.
+    async def _close_orphans(self, printer_id: str, view: dict[str, Any], log_: Any) -> None:
+        """Reconcile live rows that no JobRun owns against the printer's state.
+
+        Level-triggered (Orca is_printing_finished: FINISH/FAILED): external
+        prints and bridge jobs left by a restart end when the printer says so,
+        whether or not the bridge saw the edge.
         """
-        live = await self._jobs.list(printer_id=printer_id, limit=50)
-        for job in live:
-            if job.state not in _LIVE_STATES:
+        gs, lost = view["gcode_state"], view["lost"]
+        active = gs in ("PREPARE", "RUNNING", "PAUSE")
+        for job in await self._jobs.list(printer_id=printer_id, limit=50):
+            if job.state not in _LIVE_STATES or job.id in self._runs:
                 continue
-            meta: dict[str, Any] = {}
-            if job.metadata_json:
-                with contextlib.suppress(ValueError, TypeError):
-                    meta = json.loads(job.metadata_json)
-            recovered_active = (
-                event_name == "print_interrupted"
-                and job.state in (JobState.PREPARING, JobState.PRINTING)
-                and job.id not in self._runs
-            )
-            if meta.get("origin") != "external" and not recovered_active:
+            if job.state is JobState.SUBMITTED:
+                # Sent before a restart: the printer either took it or it is gone.
+                if active:
+                    await self._close_row(job, JobState.PREPARING, "printer_preparing")
+                elif time.time() - (job.started_at or 0) > _RUNNING_TIMEOUT_S:
+                    await self._close_row(job, JobState.FAILED, "no_running_within_60s")
                 continue
-            now = int(time.time())
-            if event_name == "print_completed":
-                started = job.started_at or now
-                await self._jobs.update(
-                    job.id,
-                    state=JobState.COMPLETED,
-                    progress_pct=100.0,
-                    finished_at=now,
-                    duration_s=now - started,
-                )
-                await self._events.add(
-                    printer_id=printer_id,
-                    job_id=job.id,
-                    event_type="state_change",
-                    payload={
-                        "from": job.state.value,
-                        "to": JobState.COMPLETED.value,
-                        "trigger": "gcode_finish",
-                    },
-                )
+            if gs == "FINISH":
+                await self._close_row(job, JobState.COMPLETED, "gcode_finish")
+            elif gs == "FAILED":
+                await self._close_row(job, JobState.FAILED, "printer_error")
+            elif lost:
+                await self._close_row(job, JobState.INTERRUPTED, "printer_job_lost")
             else:
-                interrupted = event_name == "print_interrupted"
-                await self._jobs.update(
-                    job.id,
-                    state=JobState.INTERRUPTED if interrupted else JobState.FAILED,
-                    finished_at=now,
-                    error_code="printer_job_lost" if interrupted else "printer_error",
-                )
-                await self._events.add(
-                    printer_id=printer_id,
-                    job_id=job.id,
-                    event_type="state_change",
-                    payload={
-                        "from": job.state.value,
-                        "to": JobState.INTERRUPTED.value if interrupted else JobState.FAILED.value,
-                        "trigger": "printer_job_lost" if interrupted else "printer_error",
-                    },
-                )
-            log_.info("jobs.external_closed", job_id=job.id, ev_name=event_name)
-            if event_name != "print_interrupted":
-                break  # only one external job expected per printer at a time
+                continue
+            log_.info("jobs.orphan_closed", job_id=job.id, gcode_state=gs)
+
+    async def _close_row(self, job: Job, state: JobState, trigger: str) -> None:
+        now = int(time.time())
+        fields: dict[str, Any] = {"state": state}
+        if state is JobState.COMPLETED:
+            fields.update(progress_pct=100.0, duration_s=now - (job.started_at or now))
+        elif state is not JobState.PREPARING:
+            fields["error_code"] = trigger
+        if state.terminal:
+            fields["finished_at"] = now
+        await self._jobs.update(job.id, **fields)
+        await self._events.add(
+            printer_id=job.printer_id,
+            job_id=job.id,
+            event_type="state_change",
+            payload={"from": job.state.value, "to": state.value, "trigger": trigger},
+        )
 
     async def shutdown(self) -> None:
         for task in self._watch_tasks.values():
@@ -475,6 +475,7 @@ class JobRun:
         self._wake = asyncio.Event()
         self._stop_reason: str | None = None   # user_cancel | FED_NO_PROGRESS | SPAGHETTI_DETECTED
         self._stop_sent = False
+        self._stop_failed = False
         self._task: asyncio.Task[None] | None = None
         self._log = log.bind(job_id=job.id, printer_id=job.printer_id)
 
@@ -494,9 +495,9 @@ class JobRun:
         self._request_stop("user_cancel")
 
     def _request_stop(self, reason: str) -> None:
-        if self._stop_reason is None:
+        if self._stop_reason is None:  # the first reason wins; one stop path
             self._stop_reason = reason
-        self._wake.set()
+            self._wake.set()
 
     # ------------------------------------------------------------------ #
 
@@ -541,14 +542,6 @@ class JobRun:
             await self._set(JobState.CANCELED, "canceled_before_upload")
             return
 
-        # Gate the .gcode.3mf BEFORE touching the printer. This is the §6.3
-        # fix: an inconsistent AMS binding, bad md5, or unsafe temperature is
-        # rejected here — not discovered as "printed air" 17 min in.
-        report = validate(self._file_bytes, expected_ams_mapping=self._ams_mapping)
-        if not report.ok:
-            await self._fail(f"invalid_3mf: {'; '.join(report.issues)}")
-            return
-
         # queued -> uploading -> started (spec 5.2: distinct transitions)
         await self._set(JobState.UPLOADING, "ftps_begin")
         ftps = FtpsTransfer(service.ip, service.access_code, port=self._ftps_port)
@@ -561,6 +554,9 @@ class JobRun:
             return
         self._file_bytes = b""
         await self._jobs.update(self._job.id, file_path=remote)
+        if self._cancel.is_set():  # canceled during the upload: never start it
+            await self._set(JobState.CANCELED, "canceled_before_start")
+            return
 
         await self._set(JobState.SUBMITTED, "project_file_published")
         before = service.print_view()
@@ -571,7 +567,7 @@ class JobRun:
             "project_file",
             **project_file_command(
                 self._job.file_name,
-                use_ams=bool(self._ams_mapping),
+                use_ams=any(t >= 0 for t in self._ams_mapping or []),
                 ams_mapping=self._ams_mapping or [],
             ),
         )
@@ -630,6 +626,12 @@ class JobRun:
                         ran = True
                         if feed_by is None:
                             feed_by = now + feed_s
+                    # FED_NO_PROGRESS (§6.3): after RUNNING, either layer_num > 0 or a
+                    # tray newly engaged since the submit counts as progress. Layers
+                    # also advance during an air print (2026-05-19: layer 43, tray
+                    # never set); the owner chose to keep this rule so external-spool
+                    # prints work and to rely on the printer's own air-print
+                    # detection for that case.
                     if state is JobState.PREPARING and ran:
                         progressed = v["layer_num"] > 0 or _tray_engaged_since(before, v)
                         if progressed:
@@ -638,11 +640,12 @@ class JobRun:
                             spaghetti = self._start_spaghetti_monitor(service)
                         elif feed_by is not None and now >= feed_by:
                             self._request_stop("FED_NO_PROGRESS")
-                            continue
 
-                deadlines = [d for d in (ack_by if state is JobState.SUBMITTED else None,
-                                         feed_by if self._job.state is JobState.PREPARING else None)
-                             if d is not None]
+                deadlines = []
+                if self._job.state is JobState.SUBMITTED:
+                    deadlines.append(ack_by)
+                if self._job.state is JobState.PREPARING and feed_by and not self._stop_reason:
+                    deadlines.append(feed_by)
                 timeout = max(0.0, min(deadlines) - loop.time()) if deadlines else None
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self._wake.wait(), timeout)
@@ -658,23 +661,24 @@ class JobRun:
             return
         try:
             await service.send_command("print", "stop")
-        except ValueError as exc:
-            if str(exc).startswith("BBSTOP_"):
-                await self._fail(
-                    "cancel_not_confirmed; check the printer and use printer stop controls"
-                )
-                return
-            raise
         except Exception as exc:  # noqa: BLE001 — link down: keep the job live, retry
             self._log.warning("job.stop_not_delivered", reason=self._stop_reason, error=str(exc))
-            await self._events.add(
-                printer_id=self._job.printer_id,
-                job_id=self._job.id,
-                event_type="stop_not_delivered",
-                payload={"reason": self._stop_reason, "error": str(exc)},
-            )
+            if not self._stop_failed:  # record the first failure, not every retry
+                self._stop_failed = True
+                await self._event("stop_not_delivered", reason=self._stop_reason, error=str(exc))
             return
         self._stop_sent = True
+        # The job ends only when the printer reports the stop (Orca
+        # command_task_abort keeps no local "canceled" state either).
+        await self._event("stop_sent", reason=self._stop_reason)
+
+    async def _event(self, event_type: str, **payload: Any) -> None:
+        await self._events.add(
+            printer_id=self._job.printer_id,
+            job_id=self._job.id,
+            event_type=event_type,
+            payload=payload,
+        )
 
     async def _close(self, gs: str, *, lost: bool, ran: bool) -> None:
         """The printer left the job: record how (Orca is_printing_finished = FINISH/FAILED)."""

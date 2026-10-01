@@ -136,6 +136,7 @@ def create_app(
         # get the external-print watcher attached on startup (same as
         # EventPersister and NotificationService).
         registry.add_listener(job_manager.attach)
+        await job_manager.recover()  # rows a previous process left mid-upload
         await registry.load()
 
         # Startup backfill: if any printer has a live job (submitted/preparing/
