@@ -168,7 +168,7 @@ def _preparing_reason(raw: dict[str, Any]) -> str:
         tn = str(ams.get("tray_now", "")).strip()
         if tn == "255" or tn == "":
             # Still preparing — feed hasn't engaged yet. Heuristic only;
-            # the 90s feed_warning watchdog is the alerting path.
+            # air printing is the printer's own air_print_detect alert.
             nozzle_c = _as_float(raw.get("nozzle_temper"))
             nozzle_target = _as_float(raw.get("nozzle_target_temper"))
             if nozzle_c is not None and nozzle_target is not None and nozzle_c < nozzle_target - 5:

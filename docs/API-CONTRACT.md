@@ -672,9 +672,9 @@ Query: `since=<ISO-8601>`, `until=<ISO-8601>`, `limit=` (default 50, max 200), `
 ]
 ```
 
-`kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `feed_warning`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
+`kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
 
-`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `feed_warning` / `spool_low` / `door`, `error` for `print_failed` / thermal / `error`.
+`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `spool_low` / `door`, `error` for `print_failed` / thermal / `error`.
 
 `title` + `detail` + `context` are pre-formatted (English-first; i18n is v0.1). APK renders verbatim.
 
@@ -891,7 +891,6 @@ The design's `AlertBanner` has 3 visual kinds (`door`, `runout`, `thermal`) — 
 | WS event | `data` shape | AlertBanner `kind` | severity | title template | detail template | action label |
 |---|---|---|---|---|---|---|
 | `filament_runout` | `{code, slot}` | `runout` | `warn` | `"Filament runout — Slot {slot}"` | `"{material name} ran out at layer {layer}. Swap spool and resume, or reassign."` | `"Swap & resume"` |
-| `feed_warning` | `{since_ms, advice}` | `runout`-styled (or `door` if user prefers a distinct kind) | `warn` | `"Print may not be feeding filament"` | `"The printer is heating and moving, but hasn't started laying plastic for {since_ms/1000}s. Likely a slot/filament mismatch."` | `"View camera"` + `"Stop"` |
 | `error` with `print_error.category="thermal"` | `{print_error: {code, text, category, severity}}` | `thermal` | `critical` | `"Thermal anomaly — {component}"` | `"{print_error.text}"` | `"Acknowledge"` |
 | `error` with `print_error.category="door"` (P1S has door sensor on some configs) | same | `door` | `warn` | `"Chamber door open"` | `"Print paused automatically. Close the door and resume."` | `"Resume"` |
 | `error` with other categories | same | derive from `print_error.category`; fallback `"error"` | `error.severity` (default `warn`) | `print_error.text` | (none — error remains sticky until ack) | `"Acknowledge"` |
@@ -917,7 +916,6 @@ All wrapped in `{type: "event", event: "<name>", data: {...}}`.
 | `filament_runout` | print_error matches runout codes | `{code, slot: physical_slot}` | Offer "swap filament" / "stop" |
 | `connection_lost` | MQTT link dropped | `{at}` | Dim cached state, "Reconnecting · last update Ns ago" |
 | `connection_restored` | MQTT reconnected after a loss | `{at, missed_ms}` | Brighten state; if `missed_ms > 30000`, show toast "Reconnected — state refreshed" |
-| `feed_warning` | RUNNING + temps at target + ams.engaged_slot==null + layer_num unchanged for ≥90s | `{since_ms, advice: "look at the plate"}` | **The headline v0 UX feature.** Non-blocking banner: "Print may not be feeding filament — view camera / stop print / keep waiting." Auto-clears when ANY of: layer_num advances, gcode_state leaves RUNNING, ams.engaged_slot changes off null. (PR B implements.) |
 | `job_state_change` | JobState transitions | `{job_id, from, to, trigger}` | Update job tab |
 
 ---
@@ -1037,7 +1035,7 @@ Minimum settings the APK exposes:
 **PR B — dashboard contract unblocker (~140 LOC):**
 1. In-place translation layer in `service/printer.py:snapshot()` + `summary()` — phase, headline, AMS dual-emission (+ `remaining_g`/`remaining_pct` per slot), fan native→percent, print_error int→HMS lookup, `print_params.{speed_mm_s, flow_pct}`
 2. JobState enum remap: `started`→`submitted`, +new `preparing` state, `printing` gated on `layer_num > 0`. (`canceled` stays — see §7.4 note.)
-3. `feed_warning` named event (90s timer, auto-clears per §13.2)
+3. ~~`feed_warning` named event~~ (retired: air printing is the printer's own `air_print_detect`, as in OrcaSlicer)
 4. `GET /api/v1/printers/{id}/events` flat event feed endpoint + `POST .../dismiss` (per §8.4–8.5)
 5. `api/files.py` + `api/control.py` envelope cleanups (typed-exception text, FTPS auth→401)
 

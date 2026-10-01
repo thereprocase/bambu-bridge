@@ -89,14 +89,6 @@ _INACTIVE_STATES = {
     GcodeState.UNKNOWN,
 }
 
-# Feed-warning watchdog (contract §12.2): once gcode_state is RUNNING and
-# 90s elapse without `ams.tray_now != 255`, fire a non-failing `feed_warning`
-# named event. Distinct from JobRun's 600s FED_NO_PROGRESS hard-fail — this
-# one is a UX nudge ("Is the filament loaded? AMS not feeding yet"), the
-# other is the §6.3 safety abort. The watchdog auto-clears on engagement.
-_FEED_WARNING_DELAY_S = 90.0
-
-
 def _iso(ts: float | None) -> str | None:
     """`time.time()` epoch float → ISO 8601 UTC string, or None pass-through."""
     if ts is None:
@@ -123,13 +115,6 @@ def _tray_now(state: dict[str, Any]) -> str | None:
     val = ams.get("tray_now")
     return str(val) if val is not None else None
 
-
-def _ams_currently_engaged(state: dict[str, Any]) -> bool:
-    """tray_now != 255 (and is a digit) means the feed is engaged."""
-    tn = _tray_now(state)
-    if tn is None or tn == "":
-        return False
-    return tn.isdigit() and tn != "255"
 
 
 def _per_slot_types(state: dict[str, Any]) -> dict[int, str]:
@@ -270,12 +255,8 @@ class PrinterService:
         # - `_last_layer_num` is the previous report's layer_num so we can
         #   detect the 0 → positive transition that emits `print_progress`
         #   (the §6.0.1 "now actually printing" signal).
-        # - `_feed_warning_*` drives the 90s `tray_now == 255` watchdog
-        #   that fires `feed_warning` once per RUNNING entry, then clears.
         self._last_telemetry_at: float | None = None
         self._last_layer_num: int = 0
-        self._feed_warning_task: asyncio.Task[None] | None = None
-        self._feed_warning_fired: bool = False
         self._last_connect_attempt_at: float | None = None
         # Epoch of the last MQTT drop — `connection_restored` reports
         # `missed_ms` (offline duration) off it (contract §12.2).
@@ -326,7 +307,6 @@ class PrinterService:
             self._log.info("printer.started")
 
     async def stop(self) -> None:
-        self._cancel_feed_warning_watchdog()
         if self._camera is not None:
             await self._camera.aclose()
             self._camera = None
@@ -693,7 +673,6 @@ class PrinterService:
         await self._maybe_invalidate_filament_memory()
         if empty_idle_report(raw.get("print", {}), self._state):
             self._print_started_at = None
-            self._cancel_feed_warning_watchdog()
             self.bus.publish(
                 Event("event", {"reason": "printer_job_lost"}, name="print_interrupted")
             )
@@ -828,14 +807,9 @@ class PrinterService:
                         name="print_started",
                     )
                 )
-                # RUNNING entered — start the feed-warning watchdog. If
-                # AMS engages within 90s the watchdog cancels itself; else
-                # it fires `feed_warning` once.
-                self._start_feed_warning_watchdog()
             elif cur is GcodeState.FINISH:
                 self._print_started_at = None
                 self.bus.publish(Event("event", self._completion_data(), name="print_completed"))
-                self._cancel_feed_warning_watchdog()
             elif cur is GcodeState.FAILED:
                 self._print_started_at = None
                 self.bus.publish(
@@ -848,7 +822,6 @@ class PrinterService:
                         name="print_failed",
                     )
                 )
-                self._cancel_feed_warning_watchdog()
 
         # `print_progress` — layer_num crossing 0 → positive (contract
         # §6.0.1). This is the canonical "printing actually began" signal
@@ -865,11 +838,6 @@ class PrinterService:
                     name="print_progress",
                 )
             )
-
-        # Feed-warning watchdog auto-clear: if the AMS just engaged
-        # (tray_now flipped off 255), cancel the pending watchdog.
-        if self._feed_warning_task is not None and _ams_currently_engaged(self._state):
-            self._cancel_feed_warning_watchdog()
 
         self._maybe_emit_error()
 
@@ -917,46 +885,3 @@ class PrinterService:
                     name="error",
                 )
             )
-
-    # ----------------------------------------------------------------- #
-    # Feed-warning watchdog (contract §12.2)
-    # ----------------------------------------------------------------- #
-
-    def _start_feed_warning_watchdog(self) -> None:
-        """Spawn (or restart) the 90s `tray_now == 255` watchdog.
-
-        Re-entry is safe: a fresh RUNNING transition cancels any prior
-        watchdog so the timer always reflects the latest start.
-        """
-        self._cancel_feed_warning_watchdog()
-        self._feed_warning_fired = False
-        self._feed_warning_task = asyncio.create_task(self._feed_warning_after_delay())
-
-    def _cancel_feed_warning_watchdog(self) -> None:
-        task = self._feed_warning_task
-        if task is not None:
-            task.cancel()
-            self._feed_warning_task = None
-
-    async def _feed_warning_after_delay(self) -> None:
-        try:
-            await asyncio.sleep(_FEED_WARNING_DELAY_S)
-        except asyncio.CancelledError:
-            return
-        if self._feed_warning_fired:
-            return
-        # Re-check the engagement condition at fire time — the loop above
-        # may have raced ahead.
-        if _ams_currently_engaged(self._state):
-            return
-        self._feed_warning_fired = True
-        self.bus.publish(
-            Event(
-                "event",
-                {
-                    "since_ms": int(_FEED_WARNING_DELAY_S * 1000),
-                    "advice": "look at the plate",
-                },
-                name="feed_warning",
-            )
-        )
