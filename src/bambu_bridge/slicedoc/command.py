@@ -1,9 +1,4 @@
-"""Build the ``project_file`` MQTT command from the same :class:`FeedPlan`.
-
-The §6.3 failure was four numbers that should have agreed and didn't. Three of
-them live in the container (`slice_info`); the fourth, ``ams_mapping``, lives
-in *this* command. Deriving it from the same plan closes the last gap — the
-command physically cannot disagree with the container it launches.
+"""Build the ``project_file`` MQTT command that starts an uploaded ``.gcode.3mf``.
 
 The accepted form is `REPORT.md` §6.2 verbatim. Two corrections vs. the old
 `service/jobs.py`:
@@ -16,15 +11,19 @@ The accepted form is `REPORT.md` §6.2 verbatim. Two corrections vs. the old
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Any
 
-from bambu_bridge.slicedoc.container import GCODE_MEMBER
-from bambu_bridge.slicedoc.feed import FeedPlan
+from bambu_bridge.slicedoc.validate import GCODE_MEMBER
 
 
 def sd_filename(name: str) -> str:
-    """The on-SD-card name. Stored at the card root, not ``model/``."""
-    stem = name
+    """The on-SD-card name. Stored at the card root, not ``model/``.
+
+    Reduced to its last path component, as FtpsTransfer stores it, so the
+    project_file url and subtask name address the file that was uploaded.
+    """
+    stem = PurePosixPath(name.replace("\\", "/")).name or "upload"
     for suffix in (".gcode.3mf", ".3mf", ".gcode"):
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
@@ -51,9 +50,8 @@ def project_file_command(
 ) -> dict[str, Any]:
     """The ``param``/fields for ``service.send_command("print",
     "project_file", **fields)`` — ``command``/``sequence_id`` are added by the
-    protocol layer. ``use_ams``/``ams_mapping`` should come from the same
-    :class:`FeedPlan` that produced the container (or, on the upload path,
-    from the validated container's own arity)."""
+    protocol layer. ``ams_mapping`` is the list the container was validated
+    against."""
     stem = sd_filename(name)[: -len(".gcode.3mf")]
     return {
         "param": GCODE_MEMBER,
@@ -72,12 +70,3 @@ def project_file_command(
         "task_id": "0",
         "subtask_id": "0",
     }
-
-
-def build_project_file_command(
-    feed: FeedPlan, name: str, **flags: Any
-) -> dict[str, Any]:
-    """Same, derived from a :class:`FeedPlan` (the single-source path)."""
-    return project_file_command(
-        name, use_ams=feed.use_ams, ams_mapping=feed.ams_mapping, **flags
-    )

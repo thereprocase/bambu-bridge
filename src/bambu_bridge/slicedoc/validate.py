@@ -1,44 +1,66 @@
-"""Gate a finished ``.gcode.3mf`` before it is ever uploaded.
+"""Gate a finished ``.gcode.3mf`` before it is uploaded and started.
 
-Defense in depth: :func:`synthesize` already makes an inconsistent container
-unconstructable, but a job may also be handed a `.gcode.3mf` built elsewhere
-(a real slicer, a user upload). This re-derives the §6.3 invariant *from the
-bytes*, **source-agnostically**, so the "printed air" config is caught no
-matter how the file was produced — and a genuinely self-consistent slicer
-container (no donor thumbnails, no Bambu ``filament_maps``) is *not* rejected.
+Accept what OrcaSlicer 2.4.2 / Bambu Studio produce, and check what Orca checks
+before it sends a job (``SelectMachineDialog::update_show_status`` in
+``src/slic3r/GUI/SelectMachine.cpp``), plus the bridge's temperature envelope:
 
-design review §5 gates 1–5:
+G1 archive: bounded, no duplicate or encrypted members (CRC checked on read)
+G2 the three members read here exist
+G3 ``plate_1.gcode.md5`` is the gcode's UPPERCASE md5, no newline
+G4 temperature envelope (physical safety; bridge policy, not Orca's)
+G5 AMS: the gcode handshake is coherent, selects exactly the filaments
+   slice_info declares, and every one of them has an AMS tray in
+   ``ams_mapping`` (or a single filament on the external spool)
+G6 printer: a P1S/P1P slice (``SelectMachineDialog::is_same_printer_model``)
+   for the reported nozzle (``_is_same_nozzle_diameters``)
 
-1. zip integrity
-2. the three members the gate reads are present (NOT the donor's full
-   15-member layout — a real OrcaSlicer container legitimately differs)
-3. md5 contract (UPPERCASE, no newline, matches the gcode)
-4. temperature envelope (≤ 280 °C nozzle / ≤ 120 °C bed) — physical safety
-5. AMS consistency in slice-filament-index space: <filament> arity ≡
-   len(ams_mapping); gcode handshake coherent (M620≡M621≡T) and only
-   referencing filaments the slice defines. ams_mapping *values* are the
-   physical remap and are deliberately not constrained here.
+Index spaces, as Orca writes them (see tests/fixtures/orca): ``<filament id>``
+is the 1-based *project* filament and only used filaments are listed;
+``M620 S<n>A`` / ``M621 S<n>A`` / ``T<n>`` carry the 0-based project index.
+``ams_mapping`` is Orca's v0 wire list
+(``SelectMachineDialog::get_ams_mapping_result``): indexed by project filament,
+value = AMS tray 0..15, -1 = not mapped. ``None`` = no start (upload only), so
+no mapping check; ``[]`` or all -1 = external spool.
+
+§6.3 ("printed air", 2026-05-19): a hand-patched file loaded ``M620 S1A`` but
+finished ``M621 S0A`` while slice_info declared only filament 5 and
+``ams_mapping`` was ``[1]``. G5's handshake, declared-set and mapping rules
+each reject it. The printer itself started that file, so these are not
+redundant with firmware checks.
 
 Collects every issue (does not raise) so the caller can report all at once.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
-from bambu_bridge.slicedoc.container import (
-    GATE_REQUIRED_MEMBERS,
-    GCODE_MEMBER,
-    MD5_MEMBER,
-    SLICE_INFO_MEMBER,
-    gcode_md5,
-)
-from bambu_bridge.slicedoc.errors import ContainerError
 from bambu_bridge.slicedoc.gcode import MAX_BED_C, MAX_NOZZLE_C, scan_gcode
+
+GCODE_MEMBER = "Metadata/plate_1.gcode"
+MD5_MEMBER = "Metadata/plate_1.gcode.md5"
+SLICE_INFO_MEMBER = "Metadata/slice_info.config"
+
+_MAX_MEMBERS = 4096
+_MAX_EXPANDED = 512 * 1024 * 1024
+_FILAMENT_ID = re.compile(r"[1-9][0-9]?")
+# The CLI leaves slice_info printer_model_id empty (it reads it from
+# resources/profiles/BBL/machine_full/, which Orca does not ship); the gcode
+# config block always names the printer and nozzle.
+_SETTING = re.compile(rb"^; (printer_model|nozzle_diameter) = ([^\r\n]*)", re.MULTILINE)
+# is_same_printer_model treats P1P (C11) and P1S (C12) slices as interchangeable.
+_P1 = frozenset({"C12", "C11", "Bambu Lab P1S", "Bambu Lab P1P"})
+
+
+def gcode_md5(gcode: bytes) -> str:
+    """The printer's md5 member format: UPPERCASE hex, no filename, no newline."""
+    return hashlib.md5(gcode, usedforsecurity=False).hexdigest().upper()
 
 
 @dataclass(slots=True)
@@ -49,176 +71,102 @@ class ValidationReport:
     def ok(self) -> bool:
         return not self.issues
 
-    def raise_for_issues(self) -> None:
-        if self.issues:
-            raise ContainerError("; ".join(self.issues))
+
+def _read(container: bytes, r: ValidationReport) -> tuple[bytes, bytes, bytes] | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(container)) as zf:
+            infos = zf.infolist()
+            names = [i.filename for i in infos]
+            if len(infos) > _MAX_MEMBERS or sum(i.file_size for i in infos) > _MAX_EXPANDED:
+                r.issues.append("G1 archive exceeds the 4096-member / 512 MiB expanded limit")
+            elif len(set(names)) != len(names) or any(i.flag_bits & 1 for i in infos):
+                r.issues.append("G1 duplicate or encrypted archive members")
+            elif missing := {GCODE_MEMBER, MD5_MEMBER, SLICE_INFO_MEMBER} - set(names):
+                r.issues.append(f"G2 missing members: {sorted(missing)}")
+            else:
+                # read() verifies each CRC; the declared sizes are bounded above.
+                return zf.read(GCODE_MEMBER), zf.read(MD5_MEMBER), zf.read(SLICE_INFO_MEMBER)
+    except (zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, EOFError) as exc:
+        r.issues.append(f"G1 not a valid zip: {exc}")
+    return None
 
 
-_INDEX = re.compile(r"-?[0-9]+")
-
-
-def _slice_info_arity(xml_bytes: bytes) -> tuple[int, int, set[int], list[str]]:
-    """``(filament_maps token count, <filament> count, filament_list idxs, unparseable values)``.
-
-    ``filament_list`` is a space-separated list: a layer range printed with several filaments
-    (OrcaSlicer's per-part colours, e.g. a flush inlay) is ``filament_list="0 1"``. A missing or
-    empty value counts as index -1 (reported as out of range); non-integer tokens are returned
-    as-is so the caller reports them instead of raising.
-    """
-    root = ET.fromstring(xml_bytes)  # noqa: S314 — our own generated XML
-    maps_tokens = 0
-    for md in root.iter("metadata"):
-        if md.get("key") == "filament_maps":
-            maps_tokens = len((md.get("value") or "").split())
-    filament_count = sum(1 for _ in root.iter("filament"))
-    fl_idxs: set[int] = set()
-    fl_bad: list[str] = []
-    for lfl in root.iter("layer_filament_list"):
-        raw = lfl.get("filament_list") or ""
-        tokens = raw.split() or ["-1"]
-        for token in tokens:
-            # ASCII digits only: int() alone also takes "1_0" and non-ASCII digits
-            if not _INDEX.fullmatch(token):
-                fl_bad.append(raw)
-                break
-            fl_idxs.add(int(token))
-    return maps_tokens, filament_count, fl_idxs, fl_bad
+def _check_mapping(mapping: list[int], need: list[int], r: ValidationReport) -> None:
+    if len(mapping) > 16 or any(not -1 <= v <= 15 for v in mapping):
+        r.issues.append(f"G5 ams_mapping {mapping} must be at most 16 trays in -1..15")
+    elif all(v == -1 for v in mapping):
+        if len(need) > 1:
+            r.issues.append(
+                f"G5 the external spool feeds one filament; slice uses {[n + 1 for n in need]}"
+            )
+    elif unmapped := [n + 1 for n in need if n >= len(mapping) or mapping[n] < 0]:
+        r.issues.append(
+            f"G5 project filament(s) {unmapped} have no AMS tray in ams_mapping {mapping}"
+        )
 
 
 def validate(
     container: bytes,
     *,
     expected_ams_mapping: list[int] | None = None,
-    expected_model: str | None = None,
     expected_nozzle: float | None = None,
 ) -> ValidationReport:
     r = ValidationReport()
-
-    # G1 — zip integrity
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(container))
-    except zipfile.BadZipFile as exc:
-        r.issues.append(f"G1 not a valid zip: {exc}")
+    members = _read(container, r)
+    if members is None:
         return r
-    with zf:
-        bad = zf.testzip()
-        if bad is not None:
-            r.issues.append(f"G1 corrupt member: {bad}")
-        names = set(zf.namelist())
+    gcode, md5, slice_xml = members
 
-        # G2 — required members. Only the three the gate actually reads; a
-        # real slicer container legitimately omits the donor's thumbnails.
-        missing = GATE_REQUIRED_MEMBERS - names
-        if missing:
-            r.issues.append(f"G2 missing members: {sorted(missing)}")
+    if md5 != gcode_md5(gcode).encode("ascii"):
+        r.issues.append("G3 md5 member is not the gcode's UPPERCASE md5 (no newline)")
 
-        gcode = zf.read(GCODE_MEMBER) if GCODE_MEMBER in names else b""
-        md5_raw = zf.read(MD5_MEMBER) if MD5_MEMBER in names else b""
-        slice_xml = zf.read(SLICE_INFO_MEMBER) if SLICE_INFO_MEMBER in names else b""
+    scan = scan_gcode(gcode)
+    if scan.max_nozzle_c is not None and scan.max_nozzle_c > MAX_NOZZLE_C:
+        r.issues.append(f"G4 nozzle {scan.max_nozzle_c} °C > {MAX_NOZZLE_C} °C")
+    if scan.max_bed_c is not None and scan.max_bed_c > MAX_BED_C:
+        r.issues.append(f"G4 bed {scan.max_bed_c} °C > {MAX_BED_C} °C")
 
-    # G3 — md5 contract
-    if gcode and md5_raw:
-        want = gcode_md5(gcode)
-        got = md5_raw.decode("ascii", "replace")
-        if got != got.strip():
-            r.issues.append("G3 md5 has surrounding whitespace/newline")
-        if got.strip() != got.strip().upper():
-            r.issues.append("G3 md5 is not UPPERCASE")
-        if got.strip() != want:
-            r.issues.append(f"G3 md5 mismatch: file={got.strip()!r} expected={want!r}")
-    elif GCODE_MEMBER in GATE_REQUIRED_MEMBERS and not r.issues:
-        r.issues.append("G3 cannot verify md5 (gcode or md5 member absent)")
+    try:
+        root = ET.fromstring(slice_xml)  # noqa: S314 — expat resolves no external entities
+    except ET.ParseError as exc:
+        r.issues.append(f"G5 slice_info.config not parseable: {exc}")
+        return r
+    meta = {m.get("key"): m.get("value") or "" for m in root.iter("metadata")}
+    ids = [f.get("id", "") for f in root.iter("filament")]
+    if not ids or not all(_FILAMENT_ID.fullmatch(i) for i in ids):
+        r.issues.append(f"G5 slice_info filament ids {ids} are not project filament numbers")
+        return r
+    declared = {int(i) - 1 for i in ids}
 
-    # G4 — temperature envelope
-    if gcode:
-        scan = scan_gcode(gcode)
-        if scan.max_nozzle_c is not None and scan.max_nozzle_c > MAX_NOZZLE_C:
-            r.issues.append(f"G4 nozzle {scan.max_nozzle_c} °C > {MAX_NOZZLE_C} °C")
-        if scan.max_bed_c is not None and scan.max_bed_c > MAX_BED_C:
-            r.issues.append(f"G4 bed {scan.max_bed_c} °C > {MAX_BED_C} °C")
+    # G5 — all in 0-based project-filament space.
+    if scan.loads != scan.finishes or (scan.tools and scan.tools != scan.loads):
+        r.issues.append(
+            f"G5 gcode handshake incoherent: loads={sorted(scan.loads)} "
+            f"finishes={sorted(scan.finishes)} tools={sorted(scan.tools)} "
+            "— M620≡M621≡T violated (§6.3)"
+        )
+    if scan.used and scan.used != declared:
+        r.issues.append(
+            f"G5 gcode selects project filament(s) {sorted(n + 1 for n in scan.used)} "
+            f"but slice_info declares {sorted(n + 1 for n in declared)}"
+        )
+    if expected_ams_mapping is not None:
+        _check_mapping(expected_ams_mapping, sorted(scan.used or declared), r)
 
-    # G5 — AMS consistency (the §6.3 invariant, re-derived from bytes).
-    #
-    # Reasoned in *slice-filament-index* space — the space the printer
-    # actually uses. gcode M620/M621/T carry slice-filament indices (0-based);
-    # ``ams_mapping`` is what remaps each to a *physical* AMS tray. The old
-    # gate compared gcode S-numbers directly to ams_mapping values, conflating
-    # the two — which rejected the hardware-correct print #4 slice (gcode S0,
-    # ams_mapping [1]). The real invariants are arity + range + handshake
-    # coherence, none of which constrain the physical ams_mapping *values*.
-    fil_n: int | None = None
-    if slice_xml:
+    # G6 — the slice must be for this printer and nozzle.
+    settings = {k.decode(): v.decode(errors="replace").strip() for k, v in _SETTING.findall(gcode)}
+    model = meta.get("printer_model_id") or settings.get("printer_model", "")
+    if model not in _P1:
+        r.issues.append(f"G6 slice is for {model or 'an unknown printer'!r}, not a P1S")
+    if expected_nozzle is not None:
+        sliced = meta.get("nozzle_diameters") or settings.get("nozzle_diameter", "")
         try:
-            meta = {m.get("key"): m.get("value") for m in ET.fromstring(slice_xml).iter("metadata")}
-            if expected_model is not None and meta.get("printer_model_id") != expected_model:
-                r.issues.append("G6 requires P1S (C12) slice metadata")
-            if expected_model is not None and meta.get("nozzle_diameters") not in {
-                "0.2",
-                "0.4",
-                "0.6",
-                "0.8",
-            }:
-                r.issues.append("G6 requires single-nozzle slice metadata")
-            if expected_nozzle is not None and meta.get("nozzle_diameters") != str(expected_nozzle):
-                r.issues.append("G6 sliced nozzle diameter differs from the reported nozzle")
-            maps_n, fil_n, fl_idxs, fl_bad = _slice_info_arity(slice_xml)
-            if expected_model is not None and expected_ams_mapping is None and fil_n > 1:
-                r.issues.append("G6 multi-filament files require a complete filament mapping")
-        except ET.ParseError as exc:
-            r.issues.append(f"G5 slice_info.config not parseable: {exc}")
-            fil_n = None
-        else:
-            # ``filament_maps`` is a Bambu-Studio key; OrcaSlicer omits it.
-            # It is a *cross-check when present* (a donor whose maps list
-            # disagreed with its <filament> records is the original §6.3
-            # trap) — its absence is not a defect.
-            if maps_n and maps_n != fil_n:
-                r.issues.append(
-                    f"G5 filament arity mismatch: filament_maps has "
-                    f"{maps_n} slots but {fil_n} <filament> record(s) "
-                    "(the §6.3 trap)"
-                )
-            for raw in fl_bad:
-                r.issues.append(
-                    f"G5 layer_filament_list filament_list={raw!r} is not a list of indices"
-                )
-            for idx in sorted(fl_idxs):
-                if not (0 <= idx < max(fil_n, 1)):
-                    r.issues.append(
-                        f"G5 layer_filament_list filament_list={idx} " f"outside 0..{fil_n - 1}"
-                    )
-            if expected_ams_mapping is not None and len(expected_ams_mapping) != fil_n:
-                r.issues.append(
-                    f"G5 ams_mapping arity {len(expected_ams_mapping)} != "
-                    f"slice_info <filament> count {fil_n}"
-                )
-
-    if gcode:
-        gs = scan_gcode(gcode)
-        # (a) Internal handshake coherence — M620(load) ≡ M621(finish) ≡
-        # T(tool). THIS is the actual 2026-05-19 recurrence (M620 S1A vs
-        # M621 S0A). Source-agnostic, independent of ams_mapping.
-        present = [s for s in (gs.load_trays, gs.finish_trays, gs.tool_trays) if s]
-        if len({frozenset(s) for s in present}) > 1:
+            same = float(sliced) == float(expected_nozzle)
+        except ValueError:
+            same = False
+        if not same:
             r.issues.append(
-                f"G5 gcode handshake incoherent: "
-                f"loads={sorted(gs.load_trays)} "
-                f"finishes={sorted(gs.finish_trays)} "
-                f"tools={sorted(gs.tool_trays)} — M620≡M621≡T violated "
-                f"(§6.3/2026-05-19)"
-            )
-        # (b) Exactly one coherent bind per slice filament. Source-agnostic
-        # by *count*, not value: a real slicer leaves slice-filament indices
-        # (the printer remaps them physically via ams_mapping); the donor
-        # synthesize path pre-bakes the physical tray. Either way a
-        # self-consistent N-filament slice binds N distinct trays — the
-        # §6.3 trap binds a different number (and (a) already flags the
-        # split handshake). We deliberately do not constrain *which*
-        # numbers, only that the arity matches.
-        if fil_n is not None and gs.bound_trays and len(gs.bound_trays) != fil_n:
-            r.issues.append(
-                f"G5 gcode binds {len(gs.bound_trays)} distinct tray(s) "
-                f"{sorted(gs.bound_trays)} but slice defines {fil_n} "
-                f"filament(s) (§6.3: one coherent bind per filament)"
+                f"G6 sliced nozzle {sliced or '?'} mm differs from the printer's "
+                f"{expected_nozzle} mm"
             )
     return r

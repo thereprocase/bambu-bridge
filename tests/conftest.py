@@ -35,14 +35,6 @@ from fastapi import FastAPI
 from bambu_bridge.config import Settings
 from bambu_bridge.db.jobs import Database, PrinterRepo
 from bambu_bridge.main import create_app
-from bambu_bridge.slicedoc import (
-    AmsFeed,
-    Filament,
-    PlateInfo,
-    StaticMembers,
-    read_member,
-    synthesize,
-)
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -461,44 +453,13 @@ async def stalling_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
         await printer.stop()
 
 
+ORCA_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "orca"
+
+
 @pytest.fixture(scope="session")
 def valid_gcode_3mf() -> bytes:
-    """A *consistent* single-tray ``.gcode.3mf`` synthesized from the real
-    probe's static members + gcode (gcode loads AMS tray 1 → bind tray 1).
-
-    This is the antidote to the old "any bytes pass" test: the job-flow tests
-    now upload something `slicedoc.validate` actually accepts.
-    """
-    probe = (
-        Path(__file__).resolve().parents[1]
-        / "probes"
-        / "3DBenchy_PETG_slot2.gcode.3mf"
-    )
-    if not probe.exists():
-        pytest.skip("probe .gcode.3mf fixture not present")
-    raw = probe.read_bytes()
-    feed = AmsFeed.single(
-        Filament("GFG96", "PETG", "#161616", 3.71, 11.33), tray=1
-    )
-    plate = PlateInfo(
-        printer_model_id="C12",
-        total_layers=200,
-        prediction_s=3382,
-        weight_g=11.33,
-        first_layer_time_s=470.344147,
-        object_id=83,
-        object_name="3DBenchy.drc",
-    )
-    # The donor gcode is internally inconsistent (M620 S1A vs M621 S0A) —
-    # normalize_ams rewrites every selector to the bound tray so the
-    # container is genuinely coherent (the 2026-05-19 fix).
-    return synthesize(
-        gcode=read_member(raw, "Metadata/plate_1.gcode"),
-        feed=feed,
-        plate=plate,
-        static=StaticMembers.from_zip(raw),
-        normalize_ams=True,
-    )
+    """A real OrcaSlicer 2.4.2 CLI slice: one cube, project filament 1 (G-code S0A)."""
+    return (ORCA_FIXTURES / "single1.gcode.3mf").read_bytes()
 
 
 class FakeCamera:

@@ -525,15 +525,15 @@ The bridge MUST run `slicedoc.validate()` synchronously inside `JobManager.submi
   "error": "invalid_3mf",
   "message": "This .gcode.3mf can't be printed safely.",
   "issues": [
-    { "code": "G3", "category": "md5",        "message": "md5 is not UPPERCASE" },
-    { "code": "G5", "category": "ams",        "message": "ams_mapping arity 1 != slice_info <filament> count 2 (§6.3 trap)" },
+    { "code": "G3", "category": "checksum",   "message": "md5 member is not the gcode's UPPERCASE md5 (no newline)" },
+    { "code": "G5", "category": "ams",        "message": "project filament(s) [2] have no AMS tray in ams_mapping [1]" },
     { "code": "G4", "category": "temperature", "message": "nozzle 320 °C > 280 °C" }
   ],
   "context": { "validator_version": "1" }
 }
 ```
 
-Gates G1–G5 from `slicedoc/validate.py`: zip integrity, required members, md5 contract, temperature envelope, AMS consistency. **All five are 422-class — fix the file, don't retry the same file.**
+Gates G1–G6 from `slicedoc/validate.py`: bounded zip integrity, required members, md5 contract, temperature envelope, AMS consistency (in Orca's `ams_mapping` format: index = project filament, value = AMS tray, -1 = unused), printer model and nozzle (as OrcaSlicer checks before sending). **All six are 422-class — fix the file, don't retry the same file.**
 
 Other 422 reasons:
 - `printer_offline` — bridge can't reach printer right now (also a class of "no point uploading")

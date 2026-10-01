@@ -8,6 +8,7 @@ job plus its full event log.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import (
@@ -54,6 +55,7 @@ _GATE_CATEGORY = {
     "G3": "checksum",  # md5 integrity
     "G4": "thermal",  # safe temperature range
     "G5": "ams",  # filament / AMS mapping coherence
+    "G6": "printer",  # sliced for this printer model and nozzle
 }
 
 
@@ -99,10 +101,10 @@ async def submit_job(
     require_start_ready(service)
     data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
-    report = slice_validate(
+    report = await asyncio.to_thread(
+        slice_validate,
         data,
         expected_ams_mapping=ams,
-        expected_model="C12",
         expected_nozzle=reported_nozzle(service),
     )
     if not report.ok:

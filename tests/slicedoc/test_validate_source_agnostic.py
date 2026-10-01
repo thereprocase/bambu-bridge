@@ -1,29 +1,45 @@
-"""validate() must be source-agnostic — the print-#4 lesson, locked in.
+"""validate() accepts what OrcaSlicer writes and sends, and rejects the §6.3 air print.
 
-The gate once required the donor's exact 15-member layout and compared gcode
-S-numbers directly to ams_mapping values. That rejected the *hardware-proven*
-OrcaSlicer slice (no thumbnails, no ``filament_maps``, gcode slice-index 0,
-``ams_mapping=[1]``) while the donor's "printed air" file had passed. These
-lock the corrected invariant: real-slicer shape passes, the §6.3 trap fails.
+Real fixtures (tests/fixtures/orca) are OrcaSlicer 2.4.2 CLI slices of a.stl/b.stl
+with the P1S profiles and three filaments in the project:
+
+* single1  — one filament project, cube on filament 1
+* sparse3  — three filaments, cube on filament 3 only (``--load-filament-ids 3``)
+* sparse13 — three filaments, cubes on filaments 1 and 3 (``--load-filament-ids 1,3``)
+
+All three have ``printer_model_id=""`` in slice_info (the CLI never fills it).
+``ams_mapping`` is Orca's v0 list: index = project filament, value = AMS tray,
+-1 = unused; ``[]``/all -1 = external spool.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from bambu_bridge.slicedoc import validate
 
+validate_module = importlib.import_module("bambu_bridge.slicedoc.validate")
 
-def _mk(members: dict[str, bytes]) -> bytes:
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "orca"
+
+
+def _mk(members: dict[str, bytes] | list[tuple[str, bytes]]) -> bytes:
     buf = io.BytesIO()
+    items = members.items() if isinstance(members, dict) else members
     with zipfile.ZipFile(buf, "w") as z:
-        for name, data in members.items():
+        for name, data in items:
             z.writestr(name, data)
     return buf.getvalue()
+
+
+def _md5(gcode: bytes) -> bytes:
+    return hashlib.md5(gcode).hexdigest().upper().encode()  # noqa: S324
 
 
 def _container(slice_info: str, gcode: bytes) -> bytes:
@@ -31,166 +47,237 @@ def _container(slice_info: str, gcode: bytes) -> bytes:
     return _mk(
         {
             "Metadata/plate_1.gcode": gcode,
-            "Metadata/plate_1.gcode.md5": hashlib.md5(gcode)  # noqa: S324
-            .hexdigest()
-            .upper()
-            .encode(),
+            "Metadata/plate_1.gcode.md5": _md5(gcode),
             "Metadata/slice_info.config": slice_info.encode(),
         }
     )
 
 
-_SINGLE_PETG = (
-    '<?xml version="1.0"?><config><plate>'
-    '<filament id="1" type="PETG" color="#161616"/>'
-    "</plate></config>"
-)
-
-
-def test_real_slicer_shape_passes_no_thumbnails_no_filament_maps() -> None:
-    # gcode in slice-filament-index space (S0); ams_mapping is the PHYSICAL
-    # remap to tray 1 — its value must NOT be compared to the gcode index.
-    gcode = b"M104 S250\nM140 S70\nM620 S0A\nT0\nG1 X1\nM621 S0A\n"
-    r = validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[1])
-    assert r.ok, r.issues
-
-
-def test_ams_mapping_value_is_not_constrained_to_gcode_index() -> None:
-    # Slice index 0, physically loaded in tray 3 — perfectly valid.
-    gcode = b"M620 S0A\nT0\nM621 S0A\n"
-    r = validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[3])
-    assert r.ok, r.issues
-
-
-def test_donor_synthesize_shape_passes_prebaked_physical_tray() -> None:
-    # The donor/normalize path pre-bakes the physical tray (all selectors
-    # rewritten to tray 1). Count == 1 filament -> still valid.
-    gcode = b"M620 S1A\nT1\nM621 S1A\n"
-    r = validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[1])
-    assert r.ok, r.issues
-
-
-def test_6_3_split_handshake_still_rejected() -> None:
-    # The 2026-05-19 recurrence: M620 S1A load disagrees with M621 S0A finish.
-    gcode = b"M620 S1A\nT0\nG1 X1\nM621 S0A\n"
-    r = validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[1])
-    assert not r.ok
-    joined = " ".join(r.issues)
-    assert "handshake incoherent" in joined  # (a) catches the split
-    assert "distinct tray" in joined  # (b) catches the arity too
-
-
-def test_arity_mismatch_between_ams_mapping_and_filaments_rejected() -> None:
-    gcode = b"M620 S0A\nT0\nM621 S0A\n"
-    r = validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[1, 2])
-    assert not r.ok
-    assert any("ams_mapping arity" in i for i in r.issues)
-
-
-def test_filament_maps_mismatch_still_caught_when_present() -> None:
-    # Bambu-Studio donor shape: a filament_maps token list that disagrees
-    # with the <filament> count is the original §6.3 trap.
-    slice_info = (
+def _info(*ids: int, model: str = "C12", nozzle: str = "0.4") -> str:
+    filaments = "".join(f'<filament id="{i}" type="PETG" color="#161616"/>' for i in ids)
+    return (
         '<?xml version="1.0"?><config><plate>'
-        '<metadata key="filament_maps" value="1 2 3"/>'
-        '<filament id="1" type="PETG" color="#161616"/>'
-        "</plate></config>"
+        f'<metadata key="printer_model_id" value="{model}"/>'
+        f'<metadata key="nozzle_diameters" value="{nozzle}"/>'
+        f"{filaments}</plate></config>"
     )
-    gcode = b"M620 S0A\nT0\nM621 S0A\n"
-    r = validate(_container(slice_info, gcode), expected_ams_mapping=[1])
-    assert not r.ok
-    assert any("filament arity mismatch" in i for i in r.issues)
+
+
+_SINGLE_PETG = _info(1)
+_BIND0 = b"M620 S0A\nT0\nM621 S0A\n"
+
+
+# --------------------------------------------------------------------------- #
+# Real OrcaSlicer output
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("fixture", "mapping", "issue"),
+    [
+        ("single1", [0], None),
+        ("single1", [3], None),  # tray value is the physical remap, not the gcode index
+        ("single1", None, None),  # upload only
+        ("single1", [], None),  # external spool
+        ("single1", [-1], None),  # Orca's external spool form
+        ("single1", [2, -1, -1, -1], None),  # longer than the project is harmless
+        ("single1", [-1, 2], "[1] have no AMS tray"),
+        ("sparse3", [-1, -1, 2], None),  # what Orca sends
+        ("sparse3", [0, 1, 2], None),
+        ("sparse3", [], None),
+        ("sparse3", [2], "[3] have no AMS tray"),  # the old used-filament-count format
+        ("sparse3", [0, 1, -1], "[3] have no AMS tray"),
+        ("sparse13", [0, -1, 2], None),  # what Orca sends
+        ("sparse13", [3, 1, 0, 2], None),
+        ("sparse13", [0, 2], "[3] have no AMS tray"),
+        ("sparse13", [], "external spool feeds one filament"),
+        ("sparse13", [-1, -1, -1], "external spool feeds one filament"),
+        ("sparse13", [16, -1, 0], "-1..15"),
+    ],
+)
+def test_real_orca_slices(fixture: str, mapping: list[int] | None, issue: str | None) -> None:
+    data = (FIXTURES / f"{fixture}.gcode.3mf").read_bytes()
+    with zipfile.ZipFile(io.BytesIO(data)) as z:  # the CLI leaves the model id empty
+        assert b'"printer_model_id" value=""' in z.read("Metadata/slice_info.config")
+    r = validate(data, expected_ams_mapping=mapping, expected_nozzle=0.4)
+    if issue is None:
+        assert r.ok, r.issues
+    else:
+        assert any(issue in i for i in r.issues), r.issues
+
+
+def test_real_slice_for_another_nozzle_is_rejected() -> None:
+    r = validate((FIXTURES / "single1.gcode.3mf").read_bytes(), expected_nozzle=0.6)
+    assert r.issues == ["G6 sliced nozzle 0.4 mm differs from the printer's 0.6 mm"]
+
+
+# --------------------------------------------------------------------------- #
+# G5 — the §6.3 air print and its parts
+# --------------------------------------------------------------------------- #
+
+
+def test_air_print_is_rejected_without_the_probe() -> None:
+    # The 2026-05-19 file in miniature: slice_info declares only filament 5,
+    # the G-code loads S1 but finishes S0 (with Orca's indented T0), and
+    # ams_mapping [1] has no entry for index 1.
+    gcode = b"M620 M\nM620 S1A\n    M109 S250\n    T0\nM621 S0A\nM620 S255\nT255\nM621 S255\n"
+    r = validate(_container(_info(5), gcode), expected_ams_mapping=[1])
+    joined = " ".join(r.issues)
+    assert "handshake incoherent: loads=[1] finishes=[0] tools=[0]" in joined
+    assert "selects project filament(s) [1, 2] but slice_info declares [5]" in joined
+    assert "[2] have no AMS tray in ams_mapping [1]" in joined
+
+
+def test_indented_tool_select_is_part_of_the_handshake() -> None:
+    r = validate(_container(_SINGLE_PETG, b"M620 S0A\n    T1\nM621 S0A\n"))
+    assert any("handshake incoherent" in i for i in r.issues), r.issues
+
+
+def test_sentinels_and_calibration_are_not_binds() -> None:
+    gcode = (
+        b"M620 M\nM620 S0A\n    T0\nM621 S0A\nM620.1 E F199 T260\nM620.11 S0\n"
+        b"T1000\nM620 S255\nT255\nM621 S255\n"
+    )
+    assert validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[2]).ok
+
+
+def test_two_filament_slice_with_both_layers_listed() -> None:
+    gcode = b"M620 S0A\nT0\nM621 S0A\nG1 X1\nM620 S1A\nT1\nM621 S1A\nM620 S0A\nT0\nM621 S0A\n"
+    r = validate(_container(_info(1, 2), gcode), expected_ams_mapping=[3, 1])
+    assert r.ok, r.issues
+
+
+def test_gcode_using_an_undeclared_filament_is_rejected() -> None:
+    r = validate(_container(_info(1), b"M620 S2A\nT2\nM621 S2A\n"))
+    assert any("selects project filament(s) [3]" in i for i in r.issues), r.issues
+
+
+@pytest.mark.parametrize("ids", [(), ("0",), ("x",), ("1", "")])
+def test_filament_ids_must_be_project_numbers(ids: tuple[str, ...]) -> None:
+    info = _info().replace("</plate>", "".join(f'<filament id="{i}"/>' for i in ids) + "</plate>")
+    r = validate(_container(info, _BIND0), expected_ams_mapping=[0])
+    assert any("are not project filament numbers" in i for i in r.issues), r.issues
+
+
+def test_unparseable_slice_info() -> None:
+    r = validate(_container("<config><plate>", _BIND0))
+    assert any(i.startswith("G5 slice_info.config not parseable") for i in r.issues)
+
+
+def test_mapping_longer_than_sixteen_is_rejected() -> None:
+    r = validate(_container(_SINGLE_PETG, _BIND0), expected_ams_mapping=[0] * 17)
+    assert any("at most 16" in i for i in r.issues), r.issues
+
+
+# --------------------------------------------------------------------------- #
+# G1–G4
+# --------------------------------------------------------------------------- #
+
+
+def test_not_a_zip() -> None:
+    assert validate(b"not a zip").issues[0].startswith("G1 not a valid zip")
+
+
+def test_duplicate_member_is_rejected() -> None:
+    # Python reads the last copy; which one the printer runs is unknown.
+    hot = b"M104 S350\n" + _BIND0
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        data = _mk(
+            [
+                ("Metadata/plate_1.gcode", hot),
+                ("Metadata/plate_1.gcode", _BIND0),
+                ("Metadata/plate_1.gcode.md5", _md5(_BIND0)),
+                ("Metadata/slice_info.config", _SINGLE_PETG.encode()),
+            ]
+        )
+    assert validate(data).issues == ["G1 duplicate or encrypted archive members"]
+
+
+def test_expanded_size_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(validate_module, "_MAX_EXPANDED", 10)
+    r = validate(_container(_SINGLE_PETG, _BIND0))
+    assert r.issues == ["G1 archive exceeds the 4096-member / 512 MiB expanded limit"]
 
 
 @pytest.mark.parametrize("missing", ["Metadata/plate_1.gcode", "Metadata/slice_info.config"])
 def test_gate_required_members_are_the_three_it_reads(missing: str) -> None:
     members = {
-        "Metadata/plate_1.gcode": b"M620 S0A\nM621 S0A\n",
-        "Metadata/plate_1.gcode.md5": hashlib.md5(  # noqa: S324
-            b"M620 S0A\nM621 S0A\n"
-        )
-        .hexdigest()
-        .upper()
-        .encode(),
+        "Metadata/plate_1.gcode": _BIND0,
+        "Metadata/plate_1.gcode.md5": _md5(_BIND0),
         "Metadata/slice_info.config": _SINGLE_PETG.encode(),
     }
     del members[missing]
     r = validate(_mk(members))
-    assert not r.ok
-    assert any(i.startswith("G2") for i in r.issues)
+    assert any(i.startswith("G2") for i in r.issues), r.issues
 
 
 @pytest.mark.parametrize(
-    ("model", "nozzle", "issue"),
+    "md5",
     [
-        ("C12", "0.4", None),
-        ("C11", "0.4", "requires P1S"),
-        ("C12", "0.6", "differs from the reported nozzle"),
-        ("C12", "0.4,0.4", "single-nozzle"),
-        ("", "", "requires P1S"),
+        hashlib.md5(_BIND0).hexdigest().encode(),  # noqa: S324 — lowercase
+        _md5(_BIND0) + b"\n",
+        _md5(b"other"),
     ],
 )
-def test_target_model_and_nozzle_qualification(model, nozzle, issue) -> None:
-    metadata = (
-        f'<metadata key="printer_model_id" value="{model}"/>'
-        f'<metadata key="nozzle_diameters" value="{nozzle}"/>'
+def test_md5_contract(md5: bytes) -> None:
+    data = _mk(
+        {
+            "Metadata/plate_1.gcode": _BIND0,
+            "Metadata/plate_1.gcode.md5": md5,
+            "Metadata/slice_info.config": _SINGLE_PETG.encode(),
+        }
     )
-    xml = _SINGLE_PETG.replace("<plate>", "<plate>" + metadata)
-    result = validate(
-        _container(xml, b"M620 S0A\nT0\nM621 S0A\n"),
-        expected_model="C12",
-        expected_nozzle=0.4,
-        expected_ams_mapping=[0],
-    )
-    if issue is None:
-        assert result.ok, result.issues
-    else:
-        assert not result.ok
-        assert any(issue in item for item in result.issues)
+    assert any(i.startswith("G3") for i in validate(data).issues)
 
 
-# A two-colour flush inlay sliced by OrcaSlicer 2.4.2 with per-part filaments: the layers that print
-# both colours list both slice indices, space-separated (captured from a real sliced plate).
-_TWO_FILAMENT_INLAY = (
-    '<?xml version="1.0"?><config><plate>'
-    '<metadata key="filament_maps" value="1 1"/>'
-    '<filament id="1" type="ASA" color="#161616"/>'
-    '<filament id="2" type="ASA" color="#FFF144"/>'
-    "<layer_filament_lists>"
-    '<layer_filament_list filament_list="0 1" layer_ranges="8 9" />'
-    '<layer_filament_list filament_list="0" layer_ranges="0 7" />'
-    "</layer_filament_lists>"
-    "</plate></config>"
+@pytest.mark.parametrize(
+    ("line", "issue"),
+    [
+        (b"M104 S300\n", "G4 nozzle 300"),
+        (b"    M109 S290\n", "G4 nozzle 290"),
+        (b"M190 S130\n", "G4 bed 130"),
+    ],
 )
-_TWO_FILAMENT_GCODE = (
-    b"M620 S0A\nT0\nM621 S0A\nG1 X1\n" b"M620 S1A\nT1\nM621 S1A\nM620 S0A\nT0\nM621 S0A\n"
+def test_temperature_envelope(line: bytes, issue: str) -> None:
+    r = validate(_container(_SINGLE_PETG, _BIND0 + line))
+    assert any(i.startswith(issue) for i in r.issues), r.issues
+
+
+# --------------------------------------------------------------------------- #
+# G6 — Orca's is_same_printer_model / _is_same_nozzle_diameters
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("model", "header", "ok"),
+    [
+        ("C12", b"", True),
+        ("C11", b"", True),  # Orca treats P1P and P1S slices as interchangeable
+        ("", b"; printer_model = Bambu Lab P1S\n", True),  # Orca CLI output
+        ("", b"; printer_model = Bambu Lab P1P\n", True),
+        ("", b"", False),
+        ("BL-P001", b"", False),  # X1C
+        ("", b"; printer_model = Bambu Lab X1 Carbon\n", False),
+    ],
 )
+def test_printer_model(model: str, header: bytes, ok: bool) -> None:
+    r = validate(_container(_info(1, model=model), header + _BIND0), expected_nozzle=0.4)
+    assert r.ok is ok, r.issues
+    if not ok:
+        assert any(i.startswith("G6 slice is for") for i in r.issues)
 
 
-def test_multi_filament_layer_list_is_parsed_not_a_crash() -> None:
-    # Regression: int("0 1") raised ValueError out of validate(), so every flush two-colour
-    # slice failed the jobs API, the Orca upload adapter and the queue with a server error.
-    r = validate(_container(_TWO_FILAMENT_INLAY, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
-    assert r.ok, r.issues
-
-
-@pytest.mark.parametrize("value", ["0 x", "one", "0,1", "1_0", "0 \u0661"])
-def test_unparseable_layer_list_is_an_issue_not_an_exception(value: str) -> None:
-    info = _TWO_FILAMENT_INLAY.replace('filament_list="0 1"', f'filament_list="{value}"')
-    r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
-    assert not r.ok
-    assert any("is not a list of indices" in issue for issue in r.issues), r.issues
-
-
-def test_layer_list_index_outside_the_filaments_still_rejected() -> None:
-    info = _TWO_FILAMENT_INLAY.replace('filament_list="0 1"', 'filament_list="0 2"')
-    r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
-    assert any("filament_list=2 outside 0..1" in issue for issue in r.issues), r.issues
-
-
-@pytest.mark.parametrize("attr", ['filament_list=""', ""])
-def test_missing_or_empty_layer_list_counts_as_out_of_range(attr: str) -> None:
-    info = _TWO_FILAMENT_INLAY.replace('filament_list="0 1"', attr)
-    r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
-    assert not r.ok
-    assert any("filament_list=-1 outside 0..1" in issue for issue in r.issues), r.issues
+@pytest.mark.parametrize(
+    ("meta", "header", "ok"),
+    [
+        ("0.4", b"", True),
+        ("0.40", b"", True),
+        ("", b"; nozzle_diameter = 0.4\n", True),
+        ("0.6", b"", False),
+        ("0.4,0.4", b"", False),  # dual-nozzle slice
+        ("", b"", False),
+    ],
+)
+def test_nozzle(meta: str, header: bytes, ok: bool) -> None:
+    r = validate(_container(_info(1, nozzle=meta), header + _BIND0), expected_nozzle=0.4)
+    assert r.ok is ok, r.issues
