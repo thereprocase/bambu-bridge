@@ -80,7 +80,7 @@ class NtfyDispatcher:
             )
             resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001 — push failure must not cascade
-            log.warning("ntfy.post_failed", error=str(exc))
+            log.warning("ntfy.post_failed", error=type(exc).__name__)  # str(exc) has the topic
             return False
         return True
 

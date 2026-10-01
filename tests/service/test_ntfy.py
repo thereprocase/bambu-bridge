@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -159,3 +160,29 @@ async def test_readded_printer_keeps_pushing(database: Database) -> None:
         await _wait(lambda: len(sink) == 1)
     finally:
         await notifier.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_topic_never_reaches_logs(capsys: pytest.CaptureFixture[str]) -> None:
+    """The topic is ntfy.sh's only credential; neither httpx nor our failure log may print it."""
+    from bambu_bridge.config import configure_logging
+
+    configure_logging("info", "json")
+    root = logging.getLogger()
+    previous = root.level
+    root.setLevel(logging.INFO)  # basicConfig is a no-op under pytest's own handlers
+    handler = logging.StreamHandler()
+    root.addHandler(handler)
+    try:
+        for status in (200, 500):
+            client = httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda _, code=status: httpx.Response(code))
+            )
+            d = NtfyDispatcher("https://ntfy.sh", "SECRET-TOPIC", client=client)
+            assert await d.notify(title="t", message="m") is (status == 200)
+            await client.aclose()
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+    out = capsys.readouterr()
+    assert "SECRET-TOPIC" not in out.out + out.err
