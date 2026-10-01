@@ -10,7 +10,6 @@ Wave 2 — YELLOW/GREEN (typed, phase-aware, clamped):
   POST /{id}/ams/rfid                 trigger RFID re-read for a slot
   POST /{id}/ams/drying               start AMS filament drying cycle
   POST /{id}/ams/user_setting         configure AMS RFID read behaviour
-  POST /{id}/skip_objects             per-object cancel mid-print
   POST /{id}/calibration              withheld pending protocol qualification
   POST /{id}/set_accessories/nozzle   set nozzle type + diameter
 
@@ -220,45 +219,6 @@ async def set_print_option(
             detail="print_option requires at least one flag",
         )
     return await _send(service, _build(commands.print_option, **flag_dict))
-
-
-# --------------------------------------------------------------------------- #
-# Wave-2: skip_objects (YELLOW)                                               #
-# --------------------------------------------------------------------------- #
-
-
-class SkipObjectsBody(BaseModel):
-    """Per-object cancellation.
-
-    ``obj_list`` must be a non-empty list of integer Bambu object IDs from
-    the slice (not user-facing indices).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    obj_list: list[int] = Field(
-        min_length=1,
-        description="non-empty list of Bambu object IDs from the slice",
-    )
-
-
-@router.post("/{printer_id}/skip_objects")
-async def skip_objects(
-    printer_id: str,
-    body: SkipObjectsBody,
-    registry: Registry = Depends(get_registry),
-) -> dict[str, Any]:
-    """Cancel specific objects mid-print without stopping the job.
-
-    Object IDs are the internal Bambu IDs from the slice, not user-facing
-    indices. Requires Bambu Studio to have sliced with object information
-    (the object map must be in the .gcode.3mf file).
-
-    Risk: YELLOW — removes objects from a running print; irreversible for
-    those objects but the remaining objects continue normally.
-    """
-    service = _online(registry, printer_id)
-    return await _send(service, _build(commands.skip_objects, body.obj_list))
 
 
 # --------------------------------------------------------------------------- #

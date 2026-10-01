@@ -370,17 +370,23 @@ class TestPrintOption:
 
 
 class TestSkipObjects:
-    """skip_objects: non-empty int list; timestamp auto-filled."""
+    """skip_objects: non-empty int list, Orca's command_task_partskip body."""
 
     def test_valid_obj_list(self) -> None:
         body = _body(commands.skip_objects([1, 2, 3]), "print")
         assert body["command"] == "skip_objects"
         assert body["obj_list"] == [1, 2, 3]
 
-    def test_timestamp_is_int(self) -> None:
-        body = _body(commands.skip_objects([0]), "print")
-        assert isinstance(body["timestamp"], int)
-        assert body["timestamp"] > 0
+    def test_exact_orca_body(self) -> None:
+        # MachineObject::command_task_partskip: command, obj_list, sequence_id.
+        body = _body(commands.skip_objects([63, 85]), "print")
+        assert set(body) == {"command", "obj_list", "sequence_id"}
+        assert body["obj_list"] == [63, 85]
+        assert isinstance(body["sequence_id"], str) and body["sequence_id"]
+
+    def test_bool_element_rejected(self) -> None:
+        with pytest.raises(ValueError, match="must be an int"):
+            commands.skip_objects([True])
 
     def test_empty_list_rejected(self) -> None:
         with pytest.raises(ValueError, match="non-empty"):

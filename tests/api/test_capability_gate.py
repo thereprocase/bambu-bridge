@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from bambu_bridge.api import advanced, control
+from bambu_bridge.api import advanced, control, skip_objects
 from bambu_bridge.api.auth import require_auth
 
 
@@ -36,6 +36,7 @@ def rig():
     app.dependency_overrides[require_auth] = lambda: None
     app.include_router(control.router)
     app.include_router(advanced.router)
+    app.include_router(skip_objects.router)
     with TestClient(app) as client:
         yield client, service, snapshot
 

@@ -32,6 +32,7 @@ from bambu_bridge.api import (
     pairing,
     printers,
     queue,
+    skip_objects,
     spools,
     status,
     viz,
@@ -254,6 +255,7 @@ def create_app(
     v1.include_router(status.router)
     v1.include_router(control.router)
     v1.include_router(advanced.router)
+    v1.include_router(skip_objects.router)
     v1.include_router(files.router)
     v1.include_router(jobs.router)
     v1.include_router(camera.router)

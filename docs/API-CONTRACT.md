@@ -819,7 +819,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be connec
 |---|---|---|---|---|
 | POST | `/xcam` | `{module_name, enabled, print_halt?}` | YELLOW | `module_name` whitelist-validated to matrix-confirmed P1S set. `print_halt=true` auto-pauses on detection. |
 | POST | `/print_option` | `{<flag_name>: bool, ...}` | YELLOW | Flags allowlist: `auto_recovery`, `air_print_detect`, `filament_tangle_detect`, `nozzle_blob_detect`, `sound_enable`. Unknown keys → 422. |
-| POST | `/skip_objects` | `{obj_list: [int, ...]}` | YELLOW | Non-empty int list of Bambu object IDs from slice. |
+| POST | `/skip_objects` | `{obj_list: [int, ...]}` | YELLOW | OrcaSlicer's part skip; see §11.4. Withheld (`409 capability_unavailable`, "Control support under review") unless `BRIDGE_ENABLE_SKIP_OBJECTS=1`. |
 | POST | `/ams/filament_setting` | `{ams_id, tray_id, tray_info_idx, tray_color, nozzle_temp_min, nozzle_temp_max, tray_type}` | YELLOW | `tray_color` = 8-char RRGGBBAA hex; `tray_type` from known materials list; `temp_min < temp_max ≤ 300`. |
 | POST | `/ams/rfid` | `{ams_id, slot_id}` | GREEN | Trigger RFID re-read; no physical motion. |
 | POST | `/ams/drying` | `{ams_id, temp, cooling_temp, duration, humidity, mode?, rotate_tray?}` | YELLOW | Starts AMS drying cycle; requires AMS firmware support. |
@@ -853,6 +853,18 @@ produces a typed error envelope (no bare `detail` string).
 **When to use:** firmware debugging, factory resets, one-off calibration sequences not covered by typed endpoints, testing new G-code command behaviour before writing a typed builder.
 
 ---
+
+### 11.4 Skip objects
+
+Mirrors OrcaSlicer 2.4.2's PartSkipDialog. The job's project is read from printer storage by the printer's `subtask_name` (the viewer's source cache).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/skip_objects` | `{job, plate, label_object_enabled, max_objects, objects: [{id, name, skipped}], map: {width, height, rows} \| null, available, reason}`. `rows[y]` is `[id, count, id, count, …]` of slice identify_ids per pick-image pixel (0 = no object); a tap at image pixel (x, y) hits that id. `available`/`reason` say whether a POST would be accepted now. |
+| GET | `/skip_objects/map.png?checked=1,2` | The plate in Orca's skip-canvas colours with those ids selected; skipped parts come from the printer's `s_obj`. Accepts `?token=` like the camera. |
+| POST | `/skip_objects` | `{obj_list}` (1-64 identify_ids). Refused (409, nothing published) unless: opt-in set; trusted P1S; fresh status in `RUNNING` or `PAUSE`; the printer reports part-skip support (`fun` bit 49); not a system/calibration print; the plate was sliced with `label_object_enabled` and has at most 64 objects. Ids that are not objects of the plate, or are already in `s_obj`, are 422. Publishes `{"print": {"command": "skip_objects", "obj_list": [...], "sequence_id"}}`; when no object would remain it publishes `stop` instead, as Orca does. Response adds `action: "skip" \| "stop"`. |
+
+The status snapshot's `job` block carries `skipped_objects` (the printer's `s_obj`) and `part_skip_supported`.
 
 ## 12. Camera
 

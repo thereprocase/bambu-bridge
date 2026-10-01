@@ -458,27 +458,20 @@ def print_option(**flags: bool) -> Envelope:
 
 
 def skip_objects(obj_list: list[int]) -> Envelope:
-    """Cancel specific objects mid-print without stopping the whole job.
+    """Skip objects mid-print without stopping the job.
 
-    ``obj_list`` must be a non-empty list of integer Bambu object IDs (from
-    the slice, not user-facing indices).  The ``timestamp`` field is the
-    current Unix epoch (seconds, integer) as required by the wire protocol
-    (OpenBambuAPI / ha-bambulab).
+    ``obj_list`` holds slice identify_ids (slice_info ``<object identify_id>``,
+    the G-code's ``; model label id:``). Same body as OrcaSlicer's
+    MachineObject::command_task_partskip: command, obj_list, sequence_id.
     """
     if not obj_list:
         raise ValueError("obj_list must be non-empty")
     for i, oid in enumerate(obj_list):
-        if not isinstance(oid, int):
+        if not isinstance(oid, int) or isinstance(oid, bool):
             raise ValueError(
                 f"obj_list[{i}] must be an int, got {type(oid).__name__!r}"
             )
-    import time as _time
-    return build_command(
-        "print",
-        "skip_objects",
-        timestamp=int(_time.time()),
-        obj_list=obj_list,
-    )
+    return build_command("print", "skip_objects", obj_list=obj_list)
 
 
 # --------------------------------------------------------------------------- #

@@ -41,6 +41,7 @@ from bambu_bridge.hms import (
 from bambu_bridge.hms import (
     wiki_url as hms_wiki_url,
 )
+from bambu_bridge.skip_objects import part_skip_supported, skipped_ids
 
 # --------------------------------------------------------------------------- #
 # Types
@@ -416,6 +417,9 @@ def _job_block(raw: dict[str, Any], phase: Phase, ctx: SnapshotContext) -> dict[
         "estimate_total_min": _as_int(raw.get("mc_estimated_time")),
         "remaining_min": _as_int(raw.get("mc_remaining_time")),
         "started_at": started_at,
+        # Orca's part skip: the printer's s_obj list and its fun bit 49.
+        "skipped_objects": skipped_ids(raw),
+        "part_skip_supported": part_skip_supported(raw),
     }
 
 

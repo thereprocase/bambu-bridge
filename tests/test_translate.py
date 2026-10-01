@@ -690,3 +690,13 @@ def test_reordered_sparse_multi_ams_uses_hardware_ids() -> None:
     assert ams["slots"][1]["remaining_g"] is None
     assert ams["slots"][1]["ams_id"] == 1
     assert ams["slots"][1]["tray_id"] == 3
+
+
+def test_job_carries_printer_skipped_objects_and_part_skip_support() -> None:
+    # MachineObject::parse_json: s_obj -> m_partskip_ids; fun bit 49 -> is_support_partskip.
+    raw = {"gcode_state": "RUNNING", "s_obj": [74, 85], "fun": format(1 << 49, "X")}
+    job = translate_snapshot(raw, _ctx())["job"]
+    assert job["skipped_objects"] == [74, 85]
+    assert job["part_skip_supported"] is True
+    job = translate_snapshot({"gcode_state": "RUNNING"}, _ctx())["job"]
+    assert job["skipped_objects"] == [] and job["part_skip_supported"] is False

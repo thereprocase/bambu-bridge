@@ -139,14 +139,20 @@ async def control_capability_gate(request: Request) -> None:
         "steppers/off",
         "filament/unload",
         "ams/change",
-        "skip_objects",
     }:
         unavailable("Control support under review")
+    if suffix == "skip_objects":
+        from bambu_bridge.skip_objects import enabled
+
+        if not enabled():
+            unavailable("Control support under review")
     state = fresh_state(service)
     allowed = {
         "print/pause": {"RUNNING", "PREPARE"},
         "print/resume": {"PAUSE"},
         "print/stop": {"RUNNING", "PREPARE", "PAUSE"},
+        # StatusPanel enables part skip while printing, not preparing.
+        "skip_objects": {"RUNNING", "PAUSE"},
     }
     if suffix in allowed and state not in allowed[suffix]:
         unavailable(f"Printer state: {state}")

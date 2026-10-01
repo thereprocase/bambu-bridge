@@ -429,59 +429,6 @@ async def test_print_option_multiple_flags_combined(
 
 
 # --------------------------------------------------------------------------- #
-# Wave-2: skip_objects (YELLOW)                                                #
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.asyncio
-async def test_skip_objects_reaches_printer(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
-    """Happy path: valid obj_list forwarded."""
-    app = build_app(tmp_path / "so.db", mqtt_port=mqtt_broker)
-
-    def run() -> None:
-        with TestClient(app) as c:
-            _register(c)
-            _wait_connected(c)
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/skip_objects",
-                headers=_AUTH,
-                json={"obj_list": [1, 2, 3]},
-            )
-            assert r.status_code == 200, r.text
-            req = _wait_request(
-                mock_printer,
-                lambda r: r.get("print", {}).get("command") == "skip_objects",
-            )
-            assert req["print"]["obj_list"] == [1, 2, 3]
-            assert isinstance(req["print"]["timestamp"], int)
-
-    await asyncio.to_thread(run)
-
-
-@pytest.mark.asyncio
-async def test_skip_objects_empty_list_is_422(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
-    """Guard: empty obj_list → 422."""
-    app = build_app(tmp_path / "so_empty.db", mqtt_port=mqtt_broker)
-
-    def run() -> None:
-        with TestClient(app) as c:
-            _register(c)
-            _wait_connected(c)
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/skip_objects",
-                headers=_AUTH,
-                json={"obj_list": []},
-            )
-            assert r.status_code == 422, r.text
-
-    await asyncio.to_thread(run)
-
-
-# --------------------------------------------------------------------------- #
 # Wave-2: AMS filament_setting (YELLOW)                                        #
 # --------------------------------------------------------------------------- #
 
