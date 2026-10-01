@@ -26,13 +26,7 @@ Pure: bytes in, bytes/dataclass out. No printer, no I/O.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
-
-from bambu_bridge.slicedoc.errors import (
-    SliceConsistencyError,
-    TemperatureEnvelopeError,
-)
 
 # Physical-safety envelope (design review §5 gates 4/5).
 MAX_NOZZLE_C = 280
@@ -48,11 +42,6 @@ _FINISH_RE = re.compile(rb"^M621[ \t]+S(\d+)A?\b", re.MULTILINE)
 _TOOL_RE = re.compile(rb"^T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
 _NOZZLE_RE = re.compile(rb"^M10[49][ \t]+S(\d+)", re.MULTILINE)
 _BED_RE = re.compile(rb"^M1[49]0[ \t]+S(\d+)", re.MULTILINE)
-
-# Rewrite forms: capture the lead, the digits, the tail so only digits change.
-_LOAD_SUB = re.compile(rb"(?m)^(M620[ \t]+S)(\d+)(A)")
-_FINISH_SUB = re.compile(rb"(?m)^(M621[ \t]+S)(\d+)(A)")
-_TOOL_SUB = re.compile(rb"(?m)^(T)(\d+)(?=[ \t;\r\n]|$)")
 
 
 def _real(values: list[int]) -> frozenset[int]:
@@ -91,67 +80,3 @@ def scan_gcode(gcode: bytes) -> GcodeScan:
         max_nozzle_c=max(nozzles) if nozzles else None,
         max_bed_c=max(beds) if beds else None,
     )
-
-
-def assert_temperature_envelope(scan: GcodeScan) -> None:
-    """Refuse a slice that commands a physically unsafe temperature."""
-    if scan.max_nozzle_c is not None and scan.max_nozzle_c > MAX_NOZZLE_C:
-        raise TemperatureEnvelopeError(
-            f"nozzle {scan.max_nozzle_c} °C exceeds the {MAX_NOZZLE_C} °C "
-            "safety envelope"
-        )
-    if scan.max_bed_c is not None and scan.max_bed_c > MAX_BED_C:
-        raise TemperatureEnvelopeError(
-            f"bed {scan.max_bed_c} °C exceeds the {MAX_BED_C} °C safety "
-            "envelope"
-        )
-
-
-def normalize_ams_selectors(
-    gcode: bytes, tray: int
-) -> tuple[bytes, list[tuple[int, str, str]]]:
-    """Rewrite every executable real-tray selector to ``tray``.
-
-    Returns ``(new_gcode, changes)`` where ``changes`` is
-    ``[(line_no, old, new), …]`` for the forensic audit trail. Single-tray
-    only — for one physical filament every load/finish/tool must point at the
-    one bound tray (the §6.3 contract). ``255`` sentinels (end-gcode unload),
-    ``M620.1``/``M620 M`` and flush ``T1000``/``T1100`` are preserved.
-    """
-    if not (0 <= tray <= _MAX_REAL_TRAY):
-        raise SliceConsistencyError(
-            f"bound tray {tray} out of range 0..{_MAX_REAL_TRAY}"
-        )
-    want = str(tray).encode("ascii")
-    changes: list[tuple[int, str, str]] = []
-
-    def repl(m: re.Match[bytes]) -> bytes:
-        whole = m.group(0)
-        n = int(m.group(2))  # group 2 is always the digits
-        if not (0 <= n <= _MAX_REAL_TRAY) or n == tray:
-            return whole  # 255 / flush / already-correct: untouched
-        tail = m.group(3) if m.re.groups >= 3 else b""
-        new = m.group(1) + want + tail
-        line_no = gcode.count(b"\n", 0, m.start()) + 1
-        changes.append(
-            (
-                line_no,
-                whole.decode("ascii", "replace"),
-                new.decode("ascii", "replace"),
-            )
-        )
-        return new
-
-    repl_fn: Callable[[re.Match[bytes]], bytes] = repl
-    out = _LOAD_SUB.sub(repl_fn, gcode)
-    out = _FINISH_SUB.sub(repl_fn, out)
-    out = _TOOL_SUB.sub(repl_fn, out)
-
-    after = scan_gcode(out)
-    stray = after.bound_trays - {tray}
-    if stray:
-        raise SliceConsistencyError(
-            f"normalize left stray tray refs {sorted(stray)} (expected only "
-            f"{tray}) — gcode shape unsupported, not normalizing blindly"
-        )
-    return out, changes

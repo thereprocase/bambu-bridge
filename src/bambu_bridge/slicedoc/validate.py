@@ -1,8 +1,7 @@
 """Gate a finished ``.gcode.3mf`` before it is ever uploaded.
 
-Defense in depth: :func:`synthesize` already makes an inconsistent container
-unconstructable, but a job may also be handed a `.gcode.3mf` built elsewhere
-(a real slicer, a user upload). This re-derives the §6.3 invariant *from the
+A job is handed a `.gcode.3mf` built elsewhere (a real slicer, a user
+upload). This re-derives the §6.3 invariant *from the
 bytes*, **source-agnostically**, so the "printed air" config is caught no
 matter how the file was produced — and a genuinely self-consistent slicer
 container (no donor thumbnails, no Bambu ``filament_maps``) is *not* rejected.
@@ -24,21 +23,24 @@ Collects every issue (does not raise) so the caller can report all at once.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 
-from bambu_bridge.slicedoc.container import (
-    GATE_REQUIRED_MEMBERS,
-    GCODE_MEMBER,
-    MD5_MEMBER,
-    SLICE_INFO_MEMBER,
-    gcode_md5,
-)
-from bambu_bridge.slicedoc.errors import ContainerError
 from bambu_bridge.slicedoc.gcode import MAX_BED_C, MAX_NOZZLE_C, scan_gcode
+
+GCODE_MEMBER = "Metadata/plate_1.gcode"
+MD5_MEMBER = "Metadata/plate_1.gcode.md5"
+SLICE_INFO_MEMBER = "Metadata/slice_info.config"
+GATE_REQUIRED_MEMBERS = frozenset({GCODE_MEMBER, MD5_MEMBER, SLICE_INFO_MEMBER})
+
+
+def gcode_md5(gcode: bytes) -> str:
+    """The printer's md5 member format: UPPERCASE hex, no filename, no newline."""
+    return hashlib.md5(gcode, usedforsecurity=False).hexdigest().upper()
 
 
 @dataclass(slots=True)
@@ -48,10 +50,6 @@ class ValidationReport:
     @property
     def ok(self) -> bool:
         return not self.issues
-
-    def raise_for_issues(self) -> None:
-        if self.issues:
-            raise ContainerError("; ".join(self.issues))
 
 
 _INDEX = re.compile(r"-?[0-9]+")
