@@ -35,6 +35,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -742,7 +743,7 @@ async def test_restart_recovery_works_for_external_row(
     )
     await jobs.create(external_row)
 
-    async def _recover() -> datetime | None:
+    async def _recover(_subtask: str | None = None) -> datetime | None:
         epoch = await jobs.latest_active_started_at(SERIAL)
         if epoch is None:
             return None
@@ -810,7 +811,7 @@ async def test_restart_recovery_works_when_paused_at_seed(
     )
     await jobs.create(external_row)
 
-    async def _recover() -> datetime | None:
+    async def _recover(_subtask: str | None = None) -> datetime | None:
         epoch = await jobs.latest_active_started_at(SERIAL)
         if epoch is None:
             return None
@@ -910,8 +911,14 @@ async def test_live_external_print_creates_row_via_mqtt(
         await registry.shutdown()
 
 
-def _view(gcode_state: str, *, lost: bool = False) -> dict[str, Any]:
-    return {"gcode_state": gcode_state, "layer_num": 0, "tray_now": None, "lost": lost}
+def _view(gcode_state: str, *, lost: bool = False, subtask: str | None = None) -> dict[str, Any]:
+    return {
+        "gcode_state": gcode_state,
+        "layer_num": 0,
+        "tray_now": None,
+        "lost": lost,
+        "subtask_name": subtask,
+    }
 
 
 async def test_interrupted_external_history_is_terminal_and_does_not_complete(database):
@@ -957,3 +964,44 @@ async def test_restarted_rows_reconcile_against_the_printer(database):
     assert (await jobs.get("stale")).error_code == "no_running_within_60s"
     await manager._close_orphans(SERIAL, _view("PREPARE"), structlog.get_logger())
     assert (await jobs.get("fresh")).state is JobState.PREPARING
+
+
+async def test_stale_live_row_is_not_the_printers_current_print(database):
+    """2026-10-01 deploy: a bridge row from 2026-09-27 was still 'printing' while
+    the printer ran another file. Orca names the current job by subtask_name, so
+    the stale row is closed as replaced; it neither lends its start time to the
+    new print nor completes when that print finishes."""
+    import structlog
+
+    from bambu_bridge.service.registry import Registry
+
+    await _seed_printer(database)
+    jobs = JobRepo(database)
+    manager = JobManager(jobs, EventRepo(database), _FakeRegistry())
+    for ident, name, started in [
+        ("stale", "arm_lower_plate_1.gcode.3mf", 1000),
+        ("current", "TW09-tweezer.gcode.3mf", 2000),
+    ]:
+        await jobs.create(
+            Job(id=ident, printer_id=SERIAL, file_name=name, state=JobState.PRINTING,
+                queued_at=started, started_at=started)
+        )
+
+    recover = Registry._build_recover_started_at(  # type: ignore[arg-type]
+        SimpleNamespace(_jobs=jobs), SERIAL
+    )
+    assert recover is not None
+    assert (await recover("TW09-tweezer")).timestamp() == 2000
+    assert (await recover("arm_lower_plate_1")).timestamp() == 1000
+    assert await recover("unknown-file") is None
+
+    log_ = structlog.get_logger()
+    await manager._close_orphans(SERIAL, _view("RUNNING", subtask="TW09-tweezer"), log_)
+    stale = await jobs.get("stale")
+    assert stale is not None and stale.state is JobState.INTERRUPTED
+    assert stale.error_code == "printer_job_replaced"
+    assert (await jobs.get("current")).state is JobState.PRINTING  # type: ignore[union-attr]
+
+    await manager._close_orphans(SERIAL, _view("FINISH", subtask="TW09-tweezer"), log_)
+    assert (await jobs.get("current")).state is JobState.COMPLETED  # type: ignore[union-attr]
+    assert (await jobs.get("stale")).state is JobState.INTERRUPTED  # type: ignore[union-attr]

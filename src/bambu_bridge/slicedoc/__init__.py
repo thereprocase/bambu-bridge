@@ -10,7 +10,7 @@ decides what is correct.
 
 from __future__ import annotations
 
-from bambu_bridge.slicedoc.command import project_file_command, sd_filename, sd_url
+from bambu_bridge.slicedoc.command import project_file_command, sd_filename, sd_url, subtask_name
 from bambu_bridge.slicedoc.gcode import GcodeScan, scan_gcode
 from bambu_bridge.slicedoc.validate import ValidationReport, gcode_md5, validate
 
@@ -22,5 +22,6 @@ __all__ = [
     "scan_gcode",
     "sd_filename",
     "sd_url",
+    "subtask_name",
     "validate",
 ]

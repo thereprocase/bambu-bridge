@@ -327,7 +327,7 @@ async def test_restart_recovery_uses_jobs_db_start_time(
     """
     recovered_dt = datetime(2026, 5, 20, 3, 14, 1, tzinfo=UTC)
 
-    async def _recover() -> datetime | None:
+    async def _recover(_subtask: str | None = None) -> datetime | None:
         return recovered_dt
 
     service = PrinterService(
@@ -356,7 +356,7 @@ async def test_restart_recovery_leaves_null_when_no_job_row(
     """A screen/SD-started print has no jobs.db row → recovery yields None →
     started_at stays null (honest unknown). We never fabricate now()."""
 
-    async def _recover() -> datetime | None:
+    async def _recover(_subtask: str | None = None) -> datetime | None:
         return None
 
     service = PrinterService(

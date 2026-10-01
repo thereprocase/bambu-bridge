@@ -31,6 +31,15 @@ def sd_filename(name: str) -> str:
     return f"{stem}.gcode.3mf"
 
 
+def subtask_name(name: str) -> str:
+    """The subtask_name the printer reports while printing ``name``.
+
+    Bridge rows store the uploaded file name and external rows the reported
+    subtask itself; both reduce to the same stem.
+    """
+    return sd_filename(name)[: -len(".gcode.3mf")]
+
+
 def sd_url(name: str) -> str:
     """The confirmed ``project_file`` url scheme (REPORT §6.2)."""
     return f"file:///sdcard/{sd_filename(name)}"
@@ -52,7 +61,7 @@ def project_file_command(
     "project_file", **fields)`` — ``command``/``sequence_id`` are added by the
     protocol layer. ``ams_mapping`` is the list the container was validated
     against."""
-    stem = sd_filename(name)[: -len(".gcode.3mf")]
+    stem = subtask_name(name)
     return {
         "param": GCODE_MEMBER,
         "url": sd_url(name),

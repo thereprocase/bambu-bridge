@@ -16,6 +16,7 @@ import structlog
 
 from bambu_bridge.db.jobs import FilamentMemory, FilamentMemoryRepo, JobRepo, Printer, PrinterRepo
 from bambu_bridge.service.printer import PrinterService
+from bambu_bridge.slicedoc import subtask_name
 
 PrinterListener = Callable[[PrinterService], Awaitable[None]]
 
@@ -225,8 +226,21 @@ class Registry:
         if jobs is None:
             return None
 
-        async def _recover() -> datetime | None:
-            epoch = await jobs.latest_active_started_at(printer_id)
+        async def _recover(subtask: str | None = None) -> datetime | None:
+            if subtask:
+                # Only the row for the print the printer reports (Orca names the
+                # job by subtask_name); a stale live row must not lend its time.
+                rows = await jobs.list(printer_id=printer_id, limit=50)
+                epochs = [
+                    j.started_at
+                    for j in rows
+                    if not j.state.terminal
+                    and j.started_at is not None
+                    and subtask_name(j.file_name) == subtask
+                ]
+                epoch = max(epochs, default=None)
+            else:
+                epoch = await jobs.latest_active_started_at(printer_id)
             if epoch is None:
                 return None
             return datetime.fromtimestamp(epoch, tz=UTC)

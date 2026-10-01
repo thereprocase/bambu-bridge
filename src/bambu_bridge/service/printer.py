@@ -44,7 +44,7 @@ TouchCallback = Callable[[], Awaitable[None]]
 # Restart-recovery hook: returns the start time (UTC) of the print this printer
 # is currently running, recovered from jobs.db, or None when the bridge has no
 # record (e.g. a screen/SD-started print, which never creates a job row).
-RecoverStartedAt = Callable[[], Awaitable[datetime | None]]
+RecoverStartedAt = Callable[[str | None], Awaitable[datetime | None]]
 # G3 hooks — filament memory.
 # Loader: called once on seed to populate the in-memory cache from the DB.
 LoadFilamentMemory = Callable[[], Awaitable[dict[int, FilamentMemory]]]
@@ -91,6 +91,7 @@ _INACTIVE_STATES = {
     GcodeState.UNKNOWN,
 }
 
+
 def _iso(ts: float | None) -> str | None:
     """`time.time()` epoch float → ISO 8601 UTC string, or None pass-through."""
     if ts is None:
@@ -116,7 +117,6 @@ def _tray_now(state: dict[str, Any]) -> str | None:
         return None
     val = ams.get("tray_now")
     return str(val) if val is not None else None
-
 
 
 def _per_slot_types(state: dict[str, Any]) -> dict[int, str]:
@@ -400,6 +400,7 @@ class PrinterService:
             "layer_num": self._last_layer_num,
             "tray_now": _tray_now(self._state),
             "lost": job_lost(self._state),
+            "subtask_name": self._state.get("subtask_name") or None,
         }
 
     def summary(self) -> dict[str, Any]:
@@ -747,7 +748,7 @@ class PrinterService:
         if self._print_started_at is not None:
             return
         try:
-            recovered = await self._recover_started_at()
+            recovered = await self._recover_started_at(self._state.get("subtask_name") or None)
         except Exception:  # noqa: BLE001 — recovery is best-effort, never fatal
             self._log.warning("started_at.recover_failed")
             return

@@ -62,7 +62,7 @@ from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.events import Event
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.service.viz_cache import VizCache
-from bambu_bridge.slicedoc import project_file_command, sd_filename
+from bambu_bridge.slicedoc import project_file_command, sd_filename, subtask_name
 from bambu_bridge.vision import SpaghettiMonitor
 
 if TYPE_CHECKING:
@@ -211,6 +211,7 @@ class JobManager:
         self._runs[job.id] = run
         run.start()
         assert run._task is not None
+
         def _done(_task: asyncio.Task[None]) -> None:
             self._runs.pop(job.id, None)
             self._busy.discard(printer_id)
@@ -282,7 +283,7 @@ class JobManager:
             async for ev in sub:
                 try:
                     view = service.print_view()
-                    key = (view["gcode_state"], view["lost"])
+                    key = (view["gcode_state"], view["lost"], view.get("subtask_name"))
                     if view["gcode_state"] is not None and key != seen:
                         seen = key
                         await self._close_orphans(service.serial, view, log_)
@@ -387,10 +388,16 @@ class JobManager:
         prints and bridge jobs left by a restart end when the printer says so,
         whether or not the bridge saw the edge.
         """
-        gs, lost = view["gcode_state"], view["lost"]
+        gs, lost, current = view["gcode_state"], view["lost"], view.get("subtask_name")
         active = gs in ("PREPARE", "RUNNING", "PAUSE")
         for job in await self._jobs.list(printer_id=printer_id, limit=50):
             if job.state not in _LIVE_STATES or job.id in self._runs:
+                continue
+            if current and gs != "IDLE" and subtask_name(job.file_name) != current:
+                # The printer is on another job (Orca names it by subtask_name),
+                # so this row's print is gone, whatever state the printer is in.
+                await self._close_row(job, JobState.INTERRUPTED, "printer_job_replaced")
+                log_.info("jobs.orphan_closed", job_id=job.id, gcode_state=gs)
                 continue
             if job.state is JobState.SUBMITTED:
                 # Sent before a restart: the printer either took it or it is gone.
@@ -473,7 +480,7 @@ class JobRun:
         self._feed_deadline_s = feed_deadline_s
         self._cancel = asyncio.Event()
         self._wake = asyncio.Event()
-        self._stop_reason: str | None = None   # user_cancel | FED_NO_PROGRESS | SPAGHETTI_DETECTED
+        self._stop_reason: str | None = None  # user_cancel | FED_NO_PROGRESS | SPAGHETTI_DETECTED
         self._stop_sent = False
         self._stop_failed = False
         self._task: asyncio.Task[None] | None = None
