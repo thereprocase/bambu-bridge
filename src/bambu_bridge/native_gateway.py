@@ -480,25 +480,15 @@ class NativeGateway:
         self.servers.clear()
 
     def require_idle(self) -> None:
+        """The start readiness the HTTP routes use (capabilities), as BBSTART codes."""
+        from bambu_bridge.api.capabilities import START_READY_STATES, telemetry_fresh
+
         service = self.service()
         state = service.native_snapshot().get("print", {}).get("gcode_state")
-        if not service.connected or state not in ("IDLE", "FINISH", "FAILED"):
+        if not service.connected or state not in START_READY_STATES:
             raise ValueError("BBSTART_NOT_IDLE")
-        if hasattr(service, "snapshot"):
-            from datetime import UTC, datetime
-
-            stamp = service.snapshot().get("session", {}).get("last_telemetry_at")
-            age = (
-                (
-                    (
-                        datetime.now(UTC) - datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-                    ).total_seconds()
-                )
-                if stamp
-                else 999
-            )
-            if not 0 <= age <= 15:
-                raise ValueError("BBSTART_STALE_TELEMETRY")
+        if not telemetry_fresh(service):
+            raise ValueError("BBSTART_STALE_TELEMETRY")
 
     async def ensure_idle(self, *, timeout: float = 10, force_refresh: bool = False) -> None:
         """Refresh an idle printer's quiet telemetry before rejecting a new start."""

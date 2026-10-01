@@ -12,6 +12,7 @@ import ssl
 import struct
 import threading
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -71,6 +72,10 @@ async def gateway(tmp_path):
         raw_bus=EventBus(),
         send_raw=AsyncMock(),
         native_snapshot=lambda: snapshot,
+        # A live printer streams status; start readiness requires it to be fresh.
+        snapshot=lambda: {
+            "session": {"connected": True, "last_telemetry_at": datetime.now(UTC).isoformat()}
+        },
         camera=SimpleNamespace(subscribe=frames),
     )
     app = SimpleNamespace(
