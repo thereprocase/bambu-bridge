@@ -65,15 +65,6 @@ START_READY_STATES = frozenset({"IDLE", "FINISH", "FAILED"})
 
 
 def require_start_ready(service: Any, what: str = "a file") -> None:
-    # A print never starts on a printer whose certificate no longer matches
-    # its TOFU pin; the same 403 the control routes return (contract §4.5).
-    from bambu_bridge.api import errors
-
-    gate = errors.cert_gate(service)
-    if gate is not None:
-        import json
-
-        raise HTTPException(gate.status_code, json.loads(bytes(gate.body)))
     if fresh_state(service) not in START_READY_STATES:
         unavailable(f"Printer must be idle before starting {what}")
 
