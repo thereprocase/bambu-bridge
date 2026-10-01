@@ -24,7 +24,7 @@ from bambu_bridge.db.jobs import FilamentMemory
 from bambu_bridge.hms import lookup as hms_lookup
 from bambu_bridge.protocol import tls as tls_probe
 from bambu_bridge.protocol.camera import CameraStream
-from bambu_bridge.protocol.job_identity import empty_idle_report
+from bambu_bridge.protocol.job_identity import empty_idle_report, job_lost
 from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_command
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.events import Event, EventBus, diff_state
@@ -79,6 +79,8 @@ CertStatus = Literal["unknown", "trusted", "changed"]
 # resume and is deliberately not reported as print_started (contract
 # §6.0.1: PREPARE is part of "preparing", not "printing" — the §6.3
 # boundary lives at layer_num > 0, fired separately as `print_progress`).
+_IN_FLIGHT = {GcodeState.PREPARE, GcodeState.RUNNING, GcodeState.PAUSE}
+
 _INACTIVE_STATES = {
     None,
     GcodeState.IDLE,
@@ -220,6 +222,13 @@ class PrinterService:
         self._ever_connected = False
         self._need_seed = True
         self._gcode_state: GcodeState | None = None
+        # gcode_state has been reported since the last (re)connect (OrcaSlicer
+        # MachineObject::reset clears print_status on connect; it is unknown until
+        # a report carries it). Job reconciliation waits for it.
+        self._gcode_fresh = False
+        # A print is in flight (Orca is_in_printing_status: PREPARE/RUNNING/PAUSE),
+        # kept across reconnects so a job lost during a drop still reads as lost.
+        self._in_flight = False
         self._error_signature: tuple[Any, Any] | None = None
         # Bridge-synthesized print start time (UTC). The P1S ships NO start-time
         # field in push_status (verified on hardware: 64 raw keys, none of them
@@ -238,13 +247,6 @@ class PrinterService:
         self._filament_memory: dict[int, FilamentMemory] | None = None
         self._load_filament_memory = load_filament_memory
         self._invalidate_filament_memory = invalidate_filament_memory
-        # True once we've absorbed the *first* report after a (re)connect.
-        # Named events are *transitions*, not seed observations — a printer
-        # that's already RUNNING/FINISH/FAILED when the bridge connects must
-        # NOT fire spurious print_started / print_completed / error events
-        # (design review CRIT #2; would let a fresh JobRun consume some
-        # other transition as its own RUNNING signal).
-        self._events_seeded = False
 
         # TOFU cert state (PR A.2; contract §4.5). `expected_fingerprint` is
         # what the registry loaded from `printers.cert_fingerprint`; `None`
@@ -353,6 +355,7 @@ class PrinterService:
         await self.stop()
         self._mqtt = self._build_mqtt()
         self._need_seed = True
+        self._gcode_fresh = False
         await self.start()
 
     # ----------------------------------------------------------------- #
@@ -395,6 +398,22 @@ class PrinterService:
         if "print" in snapshot:
             snapshot["print"] = {**snapshot["print"], "command": "push_status", "msg": 0}
         return snapshot
+
+    def print_view(self) -> dict[str, Any]:
+        """The printer's current print, as levels a job reconciles against.
+
+        ``gcode_state`` is None until a report since the last (re)connect has
+        carried it (OrcaSlicer MachineObject::reset clears print_status on
+        connect; parse_json sets it from the next report that has it).
+        ``lost`` is IDLE with an empty job identity (nothing to resume).
+        """
+        state = self._gcode_state if self._gcode_fresh else None
+        return {
+            "gcode_state": state.value if state is not None else None,
+            "layer_num": self._last_layer_num,
+            "tray_now": _tray_now(self._state),
+            "lost": job_lost(self._state),
+        }
 
     def summary(self) -> dict[str, Any]:
         """Compact last-known state for the printer list (spec 6 GET /printers)."""
@@ -508,10 +527,10 @@ class PrinterService:
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
-        # Re-seed event classification after a (re)connect — the printer may
-        # have transitioned states while we were disconnected; absorb the
-        # first post-reconnect report as the new baseline, don't replay it.
-        self._events_seeded = False
+        # Keep the pre-disconnect state: the next report is classified against
+        # it, so a print that ended during the drop still ends (Orca keeps its
+        # attributes until a report carries a new value).
+        self._gcode_fresh = False
         # Successful connect clears the previous session_error surface — a
         # stale "tls_handshake failed 10 min ago" would actively mislead
         # the APK's status dot once the link is back up.
@@ -668,20 +687,22 @@ class PrinterService:
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
 
-        if self._need_seed:
-            self._state = incoming
-            self._need_seed = False
-            self._refresh_gcode_state()
+        # OrcaSlicer DeviceManager.cpp MachineObject::parse_json: a report only
+        # updates the fields it carries; msg==0 marks the full (pushall) report.
+        # A partial frame never replaces what is known.
+        merged = _deep_merge(prev_state, incoming)
+        delta = diff_state(prev_state, merged)
+        self._state = merged
+        self._refresh_gcode_state()
+        if not self._gcode_fresh and "gcode_state" in incoming:
+            self._gcode_fresh = True
             await self._maybe_recover_started_at()
             await self._maybe_load_filament_memory()
+        if self._need_seed or (report.print is not None and report.print.msg == 0):
+            self._need_seed = False  # first report after connect: send it whole
             self.bus.publish(Event("snapshot", dict(self._state)))
-        else:
-            merged = _deep_merge(prev_state, incoming)
-            delta = diff_state(prev_state, merged)
-            self._state = merged
-            self._refresh_gcode_state()
-            if delta:
-                self.bus.publish(Event("delta", delta))
+        elif delta:
+            self.bus.publish(Event("delta", delta))
 
         # Re-read layer_num *after* the merge so we see the printer's view.
         try:
@@ -690,13 +711,18 @@ class PrinterService:
             self._last_layer_num = 0
 
         await self._maybe_invalidate_filament_memory()
-        if empty_idle_report(raw.get("print", {}), self._state):
+        lost = empty_idle_report(raw.get("print", {}), self._state)
+        if lost and self._in_flight and prev_gcode is not None:
             self._print_started_at = None
             self._cancel_feed_warning_watchdog()
             self.bus.publish(
                 Event("event", {"reason": "printer_job_lost"}, name="print_interrupted")
             )
         self._emit_named_events(prev_gcode, prev_layer_num)
+        if self._gcode_state in _IN_FLIGHT:
+            self._in_flight = True
+        elif lost or self._gcode_state in (GcodeState.FINISH, GcodeState.FAILED):
+            self._in_flight = False
 
     # ----------------------------------------------------------------- #
     # Event classification
@@ -794,11 +820,14 @@ class PrinterService:
                         self._log.warning("filament_memory.invalidate_db_failed", slot=slot)
 
     def _emit_named_events(self, prev: GcodeState | None, prev_layer_num: int) -> None:
-        if not self._events_seeded:
-            # First report after (re)connect — establish the baseline silently.
-            # Seed the error signature too so _maybe_emit_error doesn't fire
-            # on a pre-existing print_error left over from before we connected.
-            self._events_seeded = True
+        if prev is None:
+            # Nothing was known before this report (bridge start): it is the
+            # baseline, not a transition. Seed the error signature too so a
+            # pre-existing print_error is not re-announced. Reconnects keep
+            # their pre-drop baseline (Orca StatusPanel::update_error_message
+            # keeps last_error across reconnects).
+            if self._gcode_state is None:
+                return
             code = self._state.get("mc_print_error_code")
             perr = self._state.get("print_error")
             has_error = (code not in (None, "0", "")) or bool(perr)
