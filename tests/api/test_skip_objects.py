@@ -70,7 +70,9 @@ def test_get_lists_the_running_plate(rig):
         {"id": 74, "name": "bar.stl", "skipped": True},
         {"id": 85, "name": "frame.stl", "skipped": False},
     ]
-    assert body["map"] is None   # CLI slices carry no pick image
+    # CLI slices carry no pick image: the map is the G-code footprint.
+    assert body["map_source"] == "gcode"
+    assert {v for row in body["map"]["rows"] for v in row[0::2]} == {0, 63, 74, 85}
     assert body["available"] is True and body["reason"] is None
     # Looked up by the printer's subtask_name, like the viewer.
     assert rig.source.await_args.args[2] == "multi3"
@@ -95,6 +97,7 @@ def test_pick_map_rows_and_rendered_png(rig):
     rig.source.return_value = (FIXTURES / "gui_pick1.3mf").read_bytes()
     rig.raw["subtask_name"] = "Brushwarden_Base"
     body = rig.client.get("/printers/p/skip_objects").json()
+    assert body["map_source"] == "pick"
     grid = body["map"]
     assert (grid["width"], grid["height"]) == (512, 512) and len(grid["rows"]) == 512
     assert all(sum(row[1::2]) == 512 for row in grid["rows"])
@@ -107,8 +110,22 @@ def test_pick_map_rows_and_rendered_png(rig):
     assert bad.status_code == 422
 
 
-def test_map_of_a_file_without_pick_image_is_404(rig):
+def test_map_of_a_file_without_any_map_is_404(rig):
+    rig.source.return_value = (FIXTURES / "gui_pick1.3mf").read_bytes().replace(
+        b"Metadata/pick_1.png", b"Metadata/pick_9.png")
+    rig.raw["subtask_name"] = "Brushwarden_Base"
+    assert rig.client.get("/printers/p/skip_objects").json()["map"] is None
     assert rig.client.get("/printers/p/skip_objects/map.png").status_code == 404
+
+
+def test_parsed_job_is_reused_for_the_same_file(rig, monkeypatch):
+    calls = []
+    real = skip_objects.skip.read_job
+    monkeypatch.setattr(skip_objects.skip, "read_job", lambda *a: calls.append(1) or real(*a))
+    rig.client.get("/printers/p/skip_objects")
+    rig.client.get("/printers/p/skip_objects")
+    assert rig.client.get("/printers/p/skip_objects/map.png").status_code == 200
+    assert len(calls) == 1
 
 
 def test_skip_publishes_orcas_exact_command(rig):

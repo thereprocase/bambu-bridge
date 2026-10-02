@@ -2,7 +2,9 @@
 
 * ``GET  /printers/{id}/skip_objects`` — the running plate's objects (id,
   name, skipped), the pick map as run-length rows for hit-testing a tap, and
-  whether a skip would be accepted now (``available`` + ``reason``).
+  whether a skip would be accepted now (``available`` + ``reason``). The map
+  is Orca's pick image, or for a slice without one (the CLI renders none)
+  the objects' printed footprint from the plate G-code (``map_source``).
 * ``GET  /printers/{id}/skip_objects/map.png?checked=1,2`` — the plate drawn
   in Orca's skip-canvas colours with those ids selected.
 * ``POST /printers/{id}/skip_objects`` ``{obj_list: [...]}`` — validated like
@@ -19,6 +21,7 @@ SIZE/MDTM), and parsed once per job for the map route.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -64,15 +67,20 @@ async def _load(request: Request, printer_id: str, service: Any) -> skip.SkipJob
         raise HTTPException(404, exc.detail) from exc
     except Exception as exc:  # noqa: BLE001 — FTPS failure
         raise HTTPException(502, f"Could not read the print file: {exc}") from exc
-    try:
-        job = await asyncio.to_thread(skip.read_job, data, plate)
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
     jobs = getattr(request.app.state, _JOBS_KEY, None)
     if jobs is None:
         jobs = {}
         setattr(request.app.state, _JOBS_KEY, jobs)
-    jobs[printer_id] = (job_name, plate, job)
+    # A G-code footprint takes seconds on a 20 MB plate: parse each file once.
+    digest = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
+    hit = jobs.get(printer_id)
+    if hit and hit[:3] == (job_name, plate, digest):
+        return hit[3]  # type: ignore[no-any-return]
+    try:
+        job = await asyncio.to_thread(skip.read_job, data, plate)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    jobs[printer_id] = (job_name, plate, digest, job)
     return job
 
 
@@ -80,7 +88,7 @@ async def _cached(request: Request, printer_id: str, service: Any) -> skip.SkipJ
     raw = _raw(service)
     hit = (getattr(request.app.state, _JOBS_KEY, None) or {}).get(printer_id)
     if hit and hit[0] == raw.get("subtask_name") and hit[1] == skip.plate_index(raw):
-        return hit[2]  # type: ignore[no-any-return]
+        return hit[3]  # type: ignore[no-any-return]
     return await _load(request, printer_id, service)
 
 
@@ -118,6 +126,7 @@ async def get_skip_objects(
         "job": raw.get("subtask_name"),
         "plate": job.plate,
         "label_object_enabled": job.label_object_enabled,
+        "map_source": job.map_source,
         "max_objects": skip.MAX_OBJECTS,
         "objects": [{"id": o.id, "name": o.name, "skipped": o.id in skipped} for o in job.objects],
         "map": None

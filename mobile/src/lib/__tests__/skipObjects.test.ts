@@ -12,7 +12,7 @@ const MAP: SkipMap = {
 const IDS = new Set([63, 74]);
 
 const INFO: SkipObjectsInfo = {
-  job: "multi3", plate: 1, label_object_enabled: true, max_objects: 64, available: true, reason: null,
+  job: "multi3", plate: 1, label_object_enabled: true, map_source: "gcode", max_objects: 64, available: true, reason: null,
   map: MAP,
   objects: [
     { id: 63, name: "cube.stl", skipped: false },

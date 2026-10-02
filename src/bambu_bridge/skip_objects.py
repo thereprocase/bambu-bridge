@@ -24,7 +24,10 @@ storage (found by ``subtask_name``, like the viewer).
 
 from __future__ import annotations
 
+import contextlib
 import io
+import json
+import math
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -70,8 +73,10 @@ class SkipJob:
     plate: int
     label_object_enabled: bool
     objects: tuple[PartObject, ...]
-    # identify_id per pick-image pixel (0 = no listed object), or None.
+    # identify_id per map pixel (0 = no listed object), or None.
     pick: np.ndarray | None = field(default=None, repr=False)
+    # "pick" (Orca's pick_<plate>.png) or "gcode" (printed footprint).
+    map_source: str | None = None
 
     @property
     def ids(self) -> frozenset[int]:
@@ -172,21 +177,38 @@ def _model_settings_objects(root: ET.Element | None, plate: int) -> list[PartObj
 
 
 def read_job(data: bytes, plate: int) -> SkipJob:
-    """Parse the plate's objects and pick map from a project archive.
+    """Parse the plate's objects and map from a project archive.
 
-    Raises ValueError when the archive is unreadable.
+    The map is Orca's pick image when the project has one; otherwise (CLI
+    slices, which render no thumbnails) the objects' printed footprint from
+    the plate's G-code. Raises ValueError when the archive is unreadable.
     """
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             slice_info = _xml(zf, "Metadata/slice_info.config")
             model_settings = _xml(zf, "Metadata/model_settings.config")
+            objects = _objects(slice_info, model_settings, plate)
+            ids = frozenset(o.id for o in objects[1])
             try:
-                pick_png: bytes | None = zf.read(f"Metadata/pick_{plate}.png")
+                pick = decode_pick(zf.read(f"Metadata/pick_{plate}.png"), ids)
+                source = "pick" if pick is not None else None
             except KeyError:
-                pick_png = None
-    except (zipfile.BadZipFile, OSError) as exc:
+                pick, source = None, None
+            if pick is None and ids:
+                try:
+                    with zf.open(f"Metadata/plate_{plate}.gcode") as gcode:
+                        pick = gcode_footprint(gcode, ids, _bed(zf))
+                    source = "gcode" if pick is not None else None
+                except KeyError:
+                    pass
+    except (zipfile.BadZipFile, OSError, EOFError) as exc:
         raise ValueError(f"project archive unreadable: {exc}") from exc
+    return SkipJob(plate, objects[0], objects[1], pick, source)
 
+
+def _objects(
+    slice_info: ET.Element | None, model_settings: ET.Element | None, plate: int
+) -> tuple[bool, tuple[PartObject, ...]]:
     label_enabled = False
     objects: list[PartObject] = []
     for p in slice_info.findall("plate") if slice_info is not None else []:
@@ -200,9 +222,167 @@ def read_job(data: bytes, plate: int) -> SkipJob:
         objects = _model_settings_objects(model_settings, plate)
     # PartSkipDialog keeps parts in a std::map keyed by id: listed by id.
     by_id = {o.id: o for o in objects}
-    ordered = tuple(by_id[i] for i in sorted(by_id))
-    pick = decode_pick(pick_png, frozenset(by_id)) if pick_png else None
-    return SkipJob(plate, label_enabled, ordered, pick)
+    return label_enabled, tuple(by_id[i] for i in sorted(by_id))
+
+
+# G-code footprint map ------------------------------------------------------ #
+
+PX_PER_MM = 2.0
+_DEFAULT_WIDTH_MM = 0.45
+_BED_MM = (0.0, 0.0, 256.0, 256.0)   # P1S printable_area
+_START = b"; start printing object, unique label id:"
+_STOP = b"; stop printing object"
+_WIDTH = b"; LINE_WIDTH:"
+_ARC_STEP_MM = 1.0
+
+
+def _bed(zf: zipfile.ZipFile) -> tuple[float, float, float, float]:
+    """The printable_area bounds (min x, min y, max x, max y) in mm."""
+    try:
+        area = json.loads(zf.read("Metadata/project_settings.config"))["printable_area"]
+        pts = [tuple(float(v) for v in p.split("x")) for p in area]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        if max(xs) > min(xs) and max(ys) > min(ys):
+            return min(xs), min(ys), max(xs), max(ys)
+    except (KeyError, ValueError, TypeError, IndexError):
+        pass
+    return _BED_MM
+
+
+def gcode_footprint(
+    lines: Any, ids: frozenset[int], bed: tuple[float, float, float, float] = _BED_MM
+) -> np.ndarray | None:
+    """identify_id per pixel of the bed from the objects' extrusions, or None.
+
+    Every extruding move between "; start printing object, unique label id: N"
+    and "; stop printing object" is drawn at its LINE_WIDTH (else 0.45 mm),
+    the union over all layers, with holes inside each object filled. Pixels
+    are PX_PER_MM, X to the right and Y up, as Orca's top-down pick image
+    shows the plate. ``lines`` yields bytes lines (a streamed member).
+    """
+    segments: dict[int, set[tuple[int, int, int, int, int]]] = {}
+    x0, y0, x1, y1 = bed
+    width = int(round((x1 - x0) * PX_PER_MM))
+    height = int(round((y1 - y0) * PX_PER_MM))
+
+    def px(x: float, y: float) -> tuple[int, int]:
+        return round((x - x0) * PX_PER_MM), round((y1 - y) * PX_PER_MM)
+
+    x = y = e = 0.0
+    abs_xy, abs_e = True, False
+    current: set[tuple[int, int, int, int, int]] | None = None
+    line_px = max(1, round(_DEFAULT_WIDTH_MM * PX_PER_MM))
+    for raw in lines:
+        head = raw[:1]
+        if head == b";":
+            if raw.startswith(_START):
+                try:
+                    object_id = int(raw[len(_START):])
+                except ValueError:
+                    object_id = 0
+                current = segments.setdefault(object_id, set()) if object_id in ids else None
+            elif raw.startswith(_STOP):
+                current = None
+            elif raw.startswith(_WIDTH):
+                with contextlib.suppress(ValueError):
+                    line_px = max(1, round(float(raw[len(_WIDTH):]) * PX_PER_MM))
+            continue
+        if head not in (b"G", b"M"):
+            continue
+        words = raw.split(b";", 1)[0].split()
+        if not words:
+            continue
+        cmd = words[0]
+        if cmd == b"G90":
+            abs_xy = True
+        elif cmd == b"G91":
+            abs_xy = False
+        elif cmd == b"M82":
+            abs_e = True
+        elif cmd == b"M83":
+            abs_e = False
+        elif cmd == b"G92":
+            for w in words[1:]:
+                if w[:1] == b"E":
+                    with contextlib.suppress(ValueError):
+                        e = float(w[1:] or 0)
+        elif cmd in (b"G0", b"G1", b"G2", b"G3"):
+            v: dict[bytes, float] = {}
+            for w in words[1:]:
+                try:  # noqa: SIM105 — hot loop; suppress() costs a context per word
+                    v[w[:1]] = float(w[1:])
+                except ValueError:
+                    pass
+            nx = (v[b"X"] if abs_xy else x + v[b"X"]) if b"X" in v else x
+            ny = (v[b"Y"] if abs_xy else y + v[b"Y"]) if b"Y" in v else y
+            de = 0.0
+            if b"E" in v:
+                de = v[b"E"] - e if abs_e else v[b"E"]
+                e = v[b"E"] if abs_e else e + v[b"E"]
+            if current is not None and de > 0 and (nx, ny) != (x, y):
+                pts = _arc(x, y, nx, ny, v, cmd == b"G2") if cmd in (b"G2", b"G3") else [
+                    (x, y), (nx, ny)
+                ]
+                for (ax, ay), (bx, by) in zip(pts, pts[1:], strict=False):
+                    current.add((*px(ax, ay), *px(bx, by), line_px))
+            x, y = nx, ny
+    if not segments:
+        return None
+    pick = np.zeros((height, width), dtype=np.uint32)
+    for object_id, segs in segments.items():
+        mask = Image.new("L", (width, height), 0)
+        draw = ImageDraw.Draw(mask)
+        for c0, r0, c1, r1, w in segs:
+            draw.line((c0, r0, c1, r1), fill=255, width=w)
+            if w > 2:   # round the joints so corners are not notched
+                rr = w / 2
+                draw.ellipse((c1 - rr, r1 - rr, c1 + rr, r1 + rr), fill=255)
+        filled = _fill_holes(np.asarray(mask) > 0)
+        pick[filled & (pick == 0)] = object_id
+    return pick
+
+
+def _arc(
+    x: float, y: float, nx: float, ny: float, v: dict[bytes, float], clockwise: bool
+) -> list[tuple[float, float]]:
+    """A G2/G3 arc (I/J centre offsets) as short chords."""
+    cx, cy = x + v.get(b"I", 0.0), y + v.get(b"J", 0.0)
+    r = math.hypot(x - cx, y - cy)
+    a0, a1 = math.atan2(y - cy, x - cx), math.atan2(ny - cy, nx - cx)
+    sweep = a1 - a0
+    if clockwise and sweep >= 0:
+        sweep -= 2 * math.pi
+    elif not clockwise and sweep <= 0:
+        sweep += 2 * math.pi
+    n = max(2, math.ceil(abs(sweep) * r / _ARC_STEP_MM))
+    return [(cx + r * math.cos(a0 + sweep * i / n), cy + r * math.sin(a0 + sweep * i / n))
+            for i in range(n + 1)]
+
+
+def _fill_holes(mask: np.ndarray) -> np.ndarray:
+    """``mask`` plus every background region it encloses (not reaching its box edge)."""
+    rows, cols = np.flatnonzero(mask.any(1)), np.flatnonzero(mask.any(0))
+    if not rows.size:
+        return mask
+    r0, r1, c0, c1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+    box = np.pad(mask[r0:r1, c0:c1], 1)
+    open_ = ~box
+    reach = np.zeros_like(box)
+    reach[0, :] = reach[-1, :] = reach[:, 0] = reach[:, -1] = True
+    reach &= open_
+    while True:
+        grown = reach.copy()
+        grown[1:] |= reach[:-1]
+        grown[:-1] |= reach[1:]
+        grown[:, 1:] |= reach[:, :-1]
+        grown[:, :-1] |= reach[:, 1:]
+        grown &= open_
+        if np.array_equal(grown, reach):
+            break
+        reach = grown
+    out = mask.copy()
+    out[r0:r1, c0:c1] |= ~reach[1:-1, 1:-1]
+    return out
 
 
 def decode_pick(png: bytes, ids: frozenset[int]) -> np.ndarray | None:

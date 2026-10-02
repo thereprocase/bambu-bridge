@@ -20,6 +20,8 @@ export interface SkipObjectsInfo {
   job: string | null;
   plate: number;
   label_object_enabled: boolean;
+  /** "pick" = Orca's pick image; "gcode" = printed footprint (CLI slices). */
+  map_source: "pick" | "gcode" | null;
   max_objects: number;
   objects: { id: number; name: string; skipped: boolean }[];
   map: SkipMap | null;
