@@ -395,7 +395,7 @@ export default function StatusScreen() {
             }
           />
           {/* Skip objects — Orca's part-skip button: shown when the printer
-              reports support (fun bit 49), usable while RUNNING or PAUSE,
+              reports support (job.part_skip_supported), usable while RUNNING or PAUSE,
               labelled with the count the printer has skipped. */}
           {snapJob?.part_skip_supported === true && (
             <Button

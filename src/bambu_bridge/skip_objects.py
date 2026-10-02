@@ -82,8 +82,8 @@ def plate_index(raw: dict[str, Any]) -> int:
     """The printing plate: ``plate_idx`` when reported, else ``gcode_file``.
 
     MachineObject::parse_json reads ``plate_idx`` (number or numeric string);
-    for a local task it takes N from ``.../plate_N.gcode``. PartSkipDialog
-    falls back to plate 1.
+    for a local task it takes N from ``.../plate_N.gcode``. Anything else
+    (e.g. a ``job.gcode.3mf`` name) leaves PartSkipDialog on plate 1.
     """
     value = raw.get("plate_idx")
     try:
@@ -92,7 +92,7 @@ def plate_index(raw: dict[str, Any]) -> int:
         index = 0
     if index > 0:
         return index
-    match = re.search(r"_(\d+)\.[^._/]*$", str(raw.get("gcode_file") or ""))
+    match = re.search(r"plate_(\d+)\.gcode$", str(raw.get("gcode_file") or ""))
     return int(match.group(1)) if match and int(match.group(1)) > 0 else 1
 
 
@@ -105,13 +105,21 @@ def skipped_ids(raw: dict[str, Any]) -> list[int]:
 
 
 def part_skip_supported(raw: dict[str, Any]) -> bool:
-    """``fun`` bit 49, the flag Orca shows its Skip button for.
+    """Whether the printer can skip objects.
 
-    ``fun`` is a hex string (MachineObject::get_flag_bits). A printer that
-    does not report it gets no Skip button in Orca (is_support_partskip stays
-    false).
+    With ``fun`` (a hex string), bit 49 decides, as Orca's
+    is_support_partskip (MachineObject::get_flag_bits(fun, 49)).
+
+    Deliberate deviation: Orca reads ``fun`` only in
+    MachineObject::parse_new_info, which returns early unless the report
+    carries cfg/fun/aux/stat (check_enable_np). A printer on the legacy push
+    format, like the P1S, never sends ``fun``, so Orca would never offer the
+    button. For such a printer the ``s_obj`` list it reports (the skipped
+    objects parse_json reads) is taken as the support signal.
     """
     fun = raw.get("fun")
+    if fun is None:
+        return isinstance(raw.get("s_obj"), list)
     if not isinstance(fun, str) or not fun:
         return False
     try:
@@ -125,7 +133,8 @@ def unavailable_reason(raw: dict[str, Any]) -> str | None:
     if not part_skip_supported(raw):
         return "The printer does not report support for skipping objects"
     # enable_partskip_button: never for a system print or calibration
-    # (print_type "system"; is_in_calibration: auto_cali_for_user gcode).
+    # (push_status "print_type" == "system", parse_json; is_in_calibration:
+    # an auto_cali_for_user gcode_file).
     calibrating = "auto_cali_for_user" in str(raw.get("gcode_file") or "")
     if raw.get("print_type") == "system" or calibrating:
         return "Calibration prints cannot skip objects"

@@ -208,6 +208,9 @@ def test_render_uses_orca_canvas_colours():
         ({"gcode_file": "Metadata/plate_12.gcode"}, 12),
         ({"plate_idx": True}, 1),
         ({"plate_idx": "x", "gcode_file": "job.gcode.3mf"}, 1),
+        # Live P1S: no plate_idx, gcode_file is the project name.
+        ({"gcode_file": "TW09-PF06-tweezer-v9-plus-latch-tune-PETG-z01.gcode.3mf"}, 1),
+        ({"gcode_file": "part_3.gcode.3mf"}, 1),
         ({}, 1),
     ],
 )
@@ -222,18 +225,22 @@ def test_skipped_ids_reads_s_obj():
 
 
 @pytest.mark.parametrize(
-    "fun,supported",
+    "raw,supported",
     [
-        (format(1 << 49, "X"), True),
-        (format((1 << 49) | (1 << 31) | 0xFF, "x"), True),
-        (format((1 << 50) | (1 << 48), "X"), False),
-        ("", False),
-        (None, False),
-        ("not-hex", False),
+        ({"fun": format(1 << 49, "X")}, True),
+        ({"fun": format((1 << 49) | (1 << 31) | 0xFF, "x"), "s_obj": []}, True),
+        # fun present: bit 49 is authoritative, even with s_obj reported.
+        ({"fun": format((1 << 50) | (1 << 48), "X"), "s_obj": []}, False),
+        ({"fun": "", "s_obj": []}, False),
+        ({"fun": "not-hex"}, False),
+        # Legacy push format (P1S): no fun; an s_obj list is the signal.
+        ({"s_obj": []}, True),
+        ({"s_obj": [63]}, True),
+        ({"s_obj": None}, False),
+        ({}, False),
     ],
 )
-def test_part_skip_support_is_fun_bit_49(fun, supported):
-    raw = {} if fun is None else {"fun": fun}
+def test_part_skip_support(raw, supported):
     assert skip.part_skip_supported(raw) is supported
 
 
@@ -248,6 +255,9 @@ FUN = format(1 << 49, "X")
         ({"fun": FUN, "gcode_state": "PREPARE"}, "Printer state: PREPARE"),
         ({"fun": FUN, "gcode_state": "FINISH"}, "Printer state: FINISH"),
         ({"gcode_state": "RUNNING"}, "The printer does not report support for skipping objects"),
+        ({"s_obj": [], "gcode_state": "RUNNING"}, None),
+        ({"s_obj": [], "gcode_state": "RUNNING", "print_type": "system"},
+         "Calibration prints cannot skip objects"),
         ({"fun": FUN, "gcode_state": "RUNNING", "print_type": "system"},
          "Calibration prints cannot skip objects"),
         ({"fun": FUN, "gcode_state": "RUNNING", "gcode_file": "/usr/auto_cali_for_user.gcode"},

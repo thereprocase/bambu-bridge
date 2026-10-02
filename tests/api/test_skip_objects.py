@@ -123,6 +123,18 @@ def test_skip_publishes_orcas_exact_command(rig):
     assert sent["print"]["obj_list"] == [85, 63]
 
 
+def test_legacy_report_without_fun_skips_when_s_obj_is_reported(rig):
+    # The live P1S sends no fun; it does send s_obj.
+    rig.raw.pop("fun")
+    rig.raw["s_obj"] = []
+    rig.raw["gcode_file"] = "TW09-PF06-tweezer-v9-plus-latch-tune-PETG-z01.gcode.3mf"
+    assert rig.client.get("/printers/p/skip_objects").json()["available"] is True
+    assert _post(rig, [63]).status_code == 200
+    rig.raw.pop("s_obj")
+    assert _post(rig, [74]).status_code == 409
+    rig.service.send_raw.assert_awaited_once()
+
+
 def test_paused_print_may_skip(rig):
     rig.raw["gcode_state"] = "PAUSE"
     assert _post(rig, [63]).status_code == 200

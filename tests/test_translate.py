@@ -700,3 +700,6 @@ def test_job_carries_printer_skipped_objects_and_part_skip_support() -> None:
     assert job["part_skip_supported"] is True
     job = translate_snapshot({"gcode_state": "RUNNING"}, _ctx())["job"]
     assert job["skipped_objects"] == [] and job["part_skip_supported"] is False
+    # Legacy push format (P1S): no fun, but an s_obj list.
+    job = translate_snapshot({"gcode_state": "RUNNING", "s_obj": []}, _ctx())["job"]
+    assert job["part_skip_supported"] is True

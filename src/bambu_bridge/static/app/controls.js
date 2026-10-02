@@ -288,7 +288,7 @@ function printPanel(ctx) {
   });
 
   // Orca's part-skip button: shown when the printer reports support (fun
-  // bit 49), usable while RUNNING or PAUSE, labelled with the skipped count.
+  // bit 49, or an s_obj list on a printer that sends no fun), usable while RUNNING or PAUSE, labelled with the skipped count.
   const skipBtn = el('button', {
     class: 'btn', onClick: () => skipObjects.open(ctx.app, ctx.pid),
   });
