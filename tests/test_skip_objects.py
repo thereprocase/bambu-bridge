@@ -202,23 +202,44 @@ def test_render_uses_orca_canvas_colours():
 # --------------------------------------------------------------------------- #
 
 
+LIVE = "TW09-PF06-tweezer-v9-plus-latch-tune-PETG-z01.gcode.3mf"
+
+
 @pytest.mark.parametrize(
-    "raw,plate",
+    "raw,plates,plate",
     [
-        ({"plate_idx": 3}, 3),
-        ({"plate_idx": "2"}, 2),
-        ({"plate_idx": 0, "gcode_file": "/data/Metadata/plate_4.gcode"}, 4),
-        ({"gcode_file": "Metadata/plate_12.gcode"}, 12),
-        ({"plate_idx": True}, 1),
-        ({"plate_idx": "x", "gcode_file": "job.gcode.3mf"}, 1),
-        # Live P1S: no plate_idx, gcode_file is the project name.
-        ({"gcode_file": "TW09-PF06-tweezer-v9-plus-latch-tune-PETG-z01.gcode.3mf"}, 1),
-        ({"gcode_file": "part_3.gcode.3mf"}, 1),
-        ({}, 1),
+        ({"plate_idx": 3}, [1, 2, 3], 3),
+        ({"plate_idx": "2"}, [1, 2], 2),
+        ({"plate_idx": 0, "gcode_file": "/data/Metadata/plate_4.gcode"}, [4], 4),
+        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2], 2),
+        # Live P1S: no plate_idx, gcode_file is the project name, one plate.
+        ({"gcode_file": LIVE}, [1], 1),
+        ({"gcode_file": "part_3.gcode.3mf"}, [1], 1),
+        # A single-plate export of plate 3 keeps Orca's plate_3 naming.
+        ({"gcode_file": "job.gcode.3mf"}, [3], 3),
+        # Several plates and nothing names one: refuse, never assume plate 1.
+        ({"gcode_file": "job.gcode.3mf"}, [1, 2], None),
+        ({"plate_idx": True, "gcode_file": "job.gcode.3mf"}, [1, 2], None),
+        # A named plate the archive does not hold is the wrong file.
+        ({"plate_idx": 4}, [1, 2], None),
+        ({}, [], None),
+        # param counts only when its echo's url names this archive.
+        ({"param": "Metadata/plate_2.gcode", "url": "ftp://job.gcode.3mf",
+          "gcode_file": "job.gcode.3mf"}, [1, 2], 2),
+        ({"param": "Metadata/plate_2.gcode", "url": "ftp://other.gcode.3mf",
+          "gcode_file": "job.gcode.3mf"}, [1, 2], None),
+        ({"param": "Metadata/plate_2.gcode", "gcode_file": "job.gcode.3mf"}, [1, 2], None),
     ],
 )
-def test_plate_index(raw, plate):
-    assert skip.plate_index(raw) == plate
+def test_resolve_plate(raw, plates, plate):
+    assert skip.resolve_plate(raw, plates, "job.gcode.3mf") == plate
+
+
+def test_archive_plates():
+    assert skip.archive_plates(_fixture("multi3.gcode.3mf")) == [1]
+    assert skip.archive_plates(_fixture("gui_pick1.3mf")) == []
+    with pytest.raises(ValueError):
+        skip.archive_plates(b"not a zip")
 
 
 def test_skipped_ids_reads_s_obj():
@@ -265,6 +286,12 @@ FUN = format(1 << 49, "X")
          "Calibration prints cannot skip objects"),
         ({"fun": FUN, "gcode_state": "RUNNING", "gcode_file": "/usr/auto_cali_for_user.gcode"},
          "Calibration prints cannot skip objects"),
+        # CalibUtils::get_calib_mode_by_name spellings, "retration" included.
+        ({"fun": FUN, "gcode_state": "RUNNING", "subtask_name": "flow_rate_coarse_calib_mode"},
+         "Calibration prints cannot skip objects"),
+        ({"fun": FUN, "gcode_state": "RUNNING", "subtask_name": "retration_tower_calib_mode"},
+         "Calibration prints cannot skip objects"),
+        ({"fun": FUN, "gcode_state": "RUNNING", "subtask_name": "pa_line_calib_mode_v2"}, None),
     ],
 )
 def test_unavailable_reason(raw, reason):
@@ -277,6 +304,7 @@ def _job(n: int = 3, labelled: bool = True) -> skip.SkipJob:
 
 def test_job_reasons():
     assert skip.job_reason(_job()) is None
+    assert skip.job_reason(skip.SkipJob(0, False, ())) == skip.UNKNOWN_PLATE
     assert skip.job_reason(_job(labelled=False)) == "The current print job cannot be skipped"
     assert skip.job_reason(_job(64)) is None
     assert skip.job_reason(_job(65)) == "Over 64 objects in single plate"
@@ -418,6 +446,42 @@ def test_footprint_segments_arcs():
 def test_footprint_without_labels_is_none():
     assert _footprint("M83\nG1 X1 Y1 E1\n") is None
     assert _footprint("; start printing object, unique label id: 8\nM83\nG1 X5 Y5 E1\n") is None
+
+
+RING_THEN_PART = (
+    "M83\n; LINE_WIDTH: 1\n"
+    "; start printing object, unique label id: 1\n"
+    "G1 X10 Y10\nG1 X50 Y10 E1\nG1 X50 Y50 E1\nG1 X10 Y50 E1\nG1 X10 Y10 E1\n"
+    "; stop printing object, unique label id: 1\n"
+)
+PART = (
+    "; start printing object, unique label id: 2\n"
+    "G1 X25 Y25\nG1 X35 Y25 E1\nG1 X35 Y35 E1\nG1 X25 Y35 E1\nG1 X25 Y25 E1\n"
+    "G1 X25 Y30 E1\nG1 X35 Y30 E1\n"
+    "; stop printing object, unique label id: 2\n"
+)
+
+
+@pytest.mark.parametrize("order", ["ring first", "part first"])
+def test_part_inside_a_ring_keeps_its_pixels(order):
+    # Review #3/#5/#11: the ring's hole fill must not swallow the part.
+    head = "M83\n; LINE_WIDTH: 1\n"
+    ring = RING_THEN_PART.removeprefix(head)
+    gcode = head + (ring + PART if order == "ring first" else PART + ring)
+    pick = skip.gcode_footprint(
+        io.BytesIO(gcode.encode()), frozenset({1, 2}), (0.0, 0.0, 60.0, 60.0)
+    )
+    rows = skip.run_rows(pick)
+    # A tap at the part's centre (30, 30 mm) hits the part, as clients read the rows.
+    row, x, hit = rows[60], 0, 0
+    for i in range(0, len(row), 2):
+        x += row[i + 1]
+        if x > 60:
+            hit = row[i]
+            break
+    assert hit == 2
+    assert (pick == 2).sum() >= 20 * 20               # the 10 mm part, interior included
+    assert pick[30 * 2 - 30, 30 * 2 - 30] == 1           # (15, 45) mm: the ring's filled opening
 
 
 def test_bed_comes_from_printable_area():

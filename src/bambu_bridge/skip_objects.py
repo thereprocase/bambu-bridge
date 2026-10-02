@@ -83,22 +83,50 @@ class SkipJob:
         return frozenset(o.id for o in self.objects)
 
 
-def plate_index(raw: dict[str, Any]) -> int:
-    """The printing plate: ``plate_idx`` when reported, else ``gcode_file``.
+_PLATE_MEMBER = re.compile(r"(?:^|/)plate_(\d+)\.gcode$")
 
-    MachineObject::parse_json reads ``plate_idx`` (number or numeric string);
-    for a local task it takes N from ``.../plate_N.gcode``. Anything else
-    (e.g. a ``job.gcode.3mf`` name) leaves PartSkipDialog on plate 1.
+
+def archive_plates(data: bytes) -> list[int]:
+    """The N of every ``Metadata/plate_N.gcode`` in a project archive."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = zf.namelist()
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ValueError(f"project archive unreadable: {exc}") from exc
+    found = (re.fullmatch(r"Metadata/plate_(\d+)\.gcode", n) for n in names)
+    return sorted(int(m.group(1)) for m in found if m and int(m.group(1)) > 0)
+
+
+def resolve_plate(raw: dict[str, Any], plates: list[int], archive: str) -> int | None:
+    """The plate this archive is printing, or None when nothing says.
+
+    In order: ``plate_idx`` (MachineObject::parse_json); a ``plate_N.gcode``
+    in ``param`` or ``gcode_file`` (MachineObject's local-task parse, and
+    preview_source.selected_plate); else the archive's only plate. ``param``
+    is deep-merged from the last command echo, so it counts only when that
+    echo's ``url`` names this archive. PartSkipDialog falls back to plate 1;
+    with several plates that would show and skip another plate's objects,
+    so several plates and no name is None.
     """
     value = raw.get("plate_idx")
     try:
         index = int(value) if isinstance(value, int | str) and not isinstance(value, bool) else 0
     except (TypeError, ValueError):
         index = 0
-    if index > 0:
-        return index
-    match = re.search(r"plate_(\d+)\.gcode$", str(raw.get("gcode_file") or ""))
-    return int(match.group(1)) if match and int(match.group(1)) > 0 else 1
+    named = index if index > 0 else None
+    if named is None and archive and _basename(raw.get("url")) == archive:
+        match = _PLATE_MEMBER.search(str(raw.get("param") or ""))
+        named = int(match.group(1)) if match else None
+    if named is None:
+        match = _PLATE_MEMBER.search(str(raw.get("gcode_file") or ""))
+        named = int(match.group(1)) if match else None
+    if named is not None:
+        return named if named in plates else None
+    return plates[0] if len(plates) == 1 else None
+
+
+def _basename(value: Any) -> str:
+    return str(value or "").rsplit("/", 1)[-1]
 
 
 def skipped_ids(raw: dict[str, Any]) -> list[int]:
@@ -133,14 +161,28 @@ def part_skip_supported(raw: dict[str, Any]) -> bool:
         return False
 
 
+# CalibUtils::get_calib_mode_by_name: the subtask names of Orca's calibration
+# prints ("retration" is Orca's spelling).
+CALIB_MODE_NAMES = frozenset({
+    "pa_line_calib_mode", "pa_pattern_calib_mode", "auto_pa_line_calib_mode",
+    "flow_rate_coarse_calib_mode", "flow_rate_fine_calib_mode", "temp_tower_calib_mode",
+    "vol_speed_tower_calib_mode", "vfa_tower_calib_mode", "retration_tower_calib_mode",
+    "input_shaping_freq_calib_mode", "input_shaping_damp_calib_mode", "cornering_calib_mode",
+})
+
+
 def unavailable_reason(raw: dict[str, Any]) -> str | None:
     """Printer-side reasons Orca would not offer skipping, else None."""
     if not part_skip_supported(raw):
         return "The printer does not report support for skipping objects"
-    # enable_partskip_button: never for a system print or calibration
-    # (push_status "print_type" == "system", parse_json; is_in_calibration:
-    # an auto_cali_for_user gcode_file).
-    calibrating = "auto_cali_for_user" in str(raw.get("gcode_file") or "")
+    # PrintingTaskPanel::enable_partskip_button refuses print_type "system"
+    # (push_status, parse_json) and a subtask_name that
+    # CalibUtils::get_calib_mode_by_name knows; StatusPanel hides the button
+    # while is_in_calibration (an auto_cali_for_user gcode_file).
+    calibrating = (
+        raw.get("subtask_name") in CALIB_MODE_NAMES
+        or "auto_cali_for_user" in str(raw.get("gcode_file") or "")
+    )
     if raw.get("print_type") == "system" or calibrating:
         return "Calibration prints cannot skip objects"
     state = raw.get("gcode_state")
@@ -328,7 +370,11 @@ def gcode_footprint(
             x, y = nx, ny
     if not segments:
         return None
+    # Printed pixels first, for every object; then hole fills, smallest
+    # first, only where still empty: a part inside another's opening keeps
+    # its own pixels and its own interior.
     pick = np.zeros((height, width), dtype=np.uint32)
+    masks: dict[int, np.ndarray] = {}
     for object_id, segs in segments.items():
         mask = Image.new("L", (width, height), 0)
         draw = ImageDraw.Draw(mask)
@@ -337,8 +383,11 @@ def gcode_footprint(
             if w > 2:   # round the joints so corners are not notched
                 rr = w / 2
                 draw.ellipse((c1 - rr, r1 - rr, c1 + rr, r1 + rr), fill=255)
-        filled = _fill_holes(np.asarray(mask) > 0)
-        pick[filled & (pick == 0)] = object_id
+        masks[object_id] = np.asarray(mask) > 0
+        pick[masks[object_id] & (pick == 0)] = object_id
+    filled = {object_id: _fill_holes(printed) for object_id, printed in masks.items()}
+    for object_id in sorted(filled, key=lambda i: int(filled[i].sum())):
+        pick[filled[object_id] & (pick == 0)] = object_id
     return pick
 
 
@@ -437,8 +486,13 @@ def render_map(pick: np.ndarray, checked: frozenset[int], skipped: frozenset[int
     return buf.getvalue()
 
 
+UNKNOWN_PLATE = "The printer does not say which plate of this file is printing"
+
+
 def job_reason(job: SkipJob) -> str | None:
     """PartSkipDialog::UpdateApplyButtonStatus refusals for the whole job."""
+    if job.plate <= 0:
+        return UNKNOWN_PLATE
     if not job.label_object_enabled:
         return "The current print job cannot be skipped"
     if len(job.objects) > MAX_OBJECTS:

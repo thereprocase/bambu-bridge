@@ -416,8 +416,10 @@ class FtpsTransfer:
     # Core listing (returns FileEntry objects with timestamps)
     # ----------------------------------------------------------------- #
 
-    def _list_with_facts(self, base: str) -> list[FileEntry]:
+    def _list_with_facts(self, base: str, strict: bool = False) -> list[FileEntry]:
         """Return file entries with timestamps from the three-tier fallback ladder.
+
+        ``strict`` raises the LIST tier's 550 instead of degrading to empty.
 
         Tier 1 — MLSD: ``modify`` and ``create`` facts (RFC 3659).
         Tier 2 — LIST: Unix-style date field (``modified_at`` only).
@@ -479,6 +481,8 @@ class FtpsTransfer:
                 return entries
 
             except ftplib.error_perm as exc:
+                if strict:
+                    raise
                 # 550 = path not found / no access — degrade to empty.
                 self._log.warning(
                     "ftps.list_empty_on_perm_error",
@@ -490,9 +494,9 @@ class FtpsTransfer:
         finally:
             self._close(ftp)
 
-    def _list(self, base: str) -> list[str]:
+    def _list(self, base: str, strict: bool = False) -> list[str]:
         """Legacy helper — names only, no timestamps.  Delegates to _list_with_facts."""
-        return [e.name for e in self._list_with_facts(base)]
+        return [e.name for e in self._list_with_facts(base, strict)]
 
     def _delete(self, remote_path: str) -> None:
         ftp = self._connect()
@@ -566,10 +570,12 @@ class FtpsTransfer:
         self._log.info("ftps.downloaded", path=remote_path, size=len(data))
         return data
 
-    async def list_dir(self, remote_dir: str = UPLOAD_DIR_PERSISTENT) -> list[str]:
-        """List filenames under ``/<remote_dir>/``."""
+    async def list_dir(
+        self, remote_dir: str = UPLOAD_DIR_PERSISTENT, *, strict: bool = False
+    ) -> list[str]:
+        """List filenames under ``/<remote_dir>/``; ``strict`` raises a 550."""
         base = str(PurePosixPath("/") / remote_dir)
-        names = await asyncio.to_thread(self._list, base)
+        names = await asyncio.to_thread(self._list, base, strict)
         return [PurePosixPath(n).name for n in names]
 
     async def list_dir_with_timestamps(

@@ -27,6 +27,7 @@ includes the file size so a re-sliced file with the same name is never stale.
 from __future__ import annotations
 
 import asyncio
+import ftplib
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -67,6 +68,7 @@ class VizFillError(Exception):
       - ``"not_found"``  → 404
       - ``"download"``   → 502
       - ``"parse"``      → 422
+      - ``"ambiguous"``  → 409 (Skip Objects' strict lookup only)
 
     This exception is deliberately thin: no FastAPI imports, no Request
     objects.  The HTTP layer (api/viz.py) owns the mapping.
@@ -154,6 +156,39 @@ async def find_3mf(ftps: FtpsTransfer, job_name: str) -> tuple[str, str] | None:
             if fname in listing:
                 return remote_dir, fname
     return None
+
+
+async def locate_exact(
+    ftps: FtpsTransfer, names: list[str], cache_only: bool = False
+) -> tuple[str, str]:
+    """Find the first of ``names`` on printer storage, refusing to guess.
+
+    Unlike :func:`find_3mf` (the viewer's forgiving lookup), a failed root
+    LIST raises ``VizFillError("download")`` instead of reading as empty, so
+    a same-named file in /cache cannot stand in for the running one; a
+    missing /cache directory (550) counts as empty. A name found in both
+    directories is ``VizFillError("ambiguous")`` unless ``cache_only``.
+    """
+    directories = (UPLOAD_DIR_CACHE,) if cache_only else (UPLOAD_DIR_PERSISTENT, UPLOAD_DIR_CACHE)
+    listings: dict[str, list[str]] = {}
+    for remote_dir in directories:
+        try:
+            listings[remote_dir] = await ftps.list_dir(remote_dir, strict=True)
+        except ftplib.error_perm as exc:
+            if remote_dir != UPLOAD_DIR_CACHE:
+                raise VizFillError("download", f"FTPS list failed: {exc}") from exc
+            listings[remote_dir] = []
+        except Exception as exc:  # noqa: BLE001 — any transfer failure refuses
+            raise VizFillError("download", f"FTPS list failed: {exc}") from exc
+    for name in names:
+        found = [d for d in directories if name in listings[d]]
+        if len(found) > 1:
+            raise VizFillError(
+                "ambiguous", f"{name} is in both the root and /cache; which one is printing?"
+            )
+        if found:
+            return found[0], name
+    raise VizFillError("not_found", "Print source unavailable on printer storage")
 
 
 # ------------------------------------------------------------------ #
