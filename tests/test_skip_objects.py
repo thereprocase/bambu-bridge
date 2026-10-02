@@ -206,37 +206,32 @@ LIVE = "TW09-PF06-tweezer-v9-plus-latch-tune-PETG-z01.gcode.3mf"
 
 
 @pytest.mark.parametrize(
-    "raw,plates,recorded,plate",
+    "raw,plates,plate",
     [
-        ({"plate_idx": 3}, [1, 2, 3], None, 3),
-        ({"plate_idx": "2"}, [1, 2], None, 2),
-        ({"plate_idx": 0, "gcode_file": "/data/Metadata/plate_4.gcode"}, [4], None, 4),
-        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2], None, 2),
+        ({"plate_idx": 3}, [1, 2, 3], 3),
+        ({"plate_idx": "2"}, [1, 2], 2),
+        ({"plate_idx": 0, "gcode_file": "/data/Metadata/plate_4.gcode"}, [4], 4),
+        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2], 2),
         # Live P1S: no plate_idx, gcode_file is the project name, one plate.
-        ({"gcode_file": LIVE}, [1], None, 1),
-        ({"gcode_file": "part_3.gcode.3mf"}, [1], None, 1),
+        ({"gcode_file": LIVE}, [1], 1),
+        ({"gcode_file": "part_3.gcode.3mf"}, [1], 1),
         # A single-plate export of plate 3 keeps Orca's plate_3 naming.
-        ({"gcode_file": "job.gcode.3mf"}, [3], None, 3),
-        # The plate the bridge started this run with.
-        ({"gcode_file": "job.gcode.3mf"}, [1, 2, 3], 2, 2),
-        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2, 3], 2, 2),
+        ({"gcode_file": "job.gcode.3mf"}, [3], 3),
         # Several plates and nothing names one: refuse, never assume plate 1.
-        ({"gcode_file": "job.gcode.3mf"}, [1, 2], None, None),
-        ({"plate_idx": True, "gcode_file": "job.gcode.3mf"}, [1, 2], None, None),
-        # Named sources that disagree refuse (#11): the live report vs another.
-        ({"gcode_file": "Metadata/plate_3.gcode"}, [1, 2, 3], 2, None),
-        ({"plate_idx": 1, "gcode_file": "Metadata/plate_3.gcode"}, [1, 2, 3], None, None),
-        ({"plate_idx": 1}, [1, 2, 3], 2, None),
+        ({"gcode_file": "job.gcode.3mf"}, [1, 2], None),
+        ({"plate_idx": True, "gcode_file": "job.gcode.3mf"}, [1, 2], None),
+        # The two named sources must agree.
+        ({"plate_idx": 1, "gcode_file": "Metadata/plate_3.gcode"}, [1, 2, 3], None),
         # A named plate the archive does not hold is the wrong file.
-        ({"plate_idx": 4}, [1, 2], None, None),
-        ({}, [], None, None),
-        # The deep-merged param is never read (#10, #12).
+        ({"plate_idx": 4}, [1, 2], None),
+        ({}, [], None),
+        # The deep-merged param is never read.
         ({"param": "Metadata/plate_2.gcode", "url": "ftp://job.gcode.3mf",
-          "gcode_file": "job.gcode.3mf"}, [1, 2], None, None),
+          "gcode_file": "job.gcode.3mf"}, [1, 2], None),
     ],
 )
-def test_resolve_plate(raw, plates, recorded, plate):
-    assert skip.resolve_plate(raw, plates, recorded) == plate
+def test_resolve_plate(raw, plates, plate):
+    assert skip.resolve_plate(raw, plates) == plate
 
 
 def test_plate_gcode_layer_count_must_be_the_running_prints():
@@ -254,53 +249,32 @@ def test_plate_gcode_layer_count_must_be_the_running_prints():
 # --------------------------------------------------------------------------- #
 
 
-def _start(plate="Metadata/plate_2.gcode", url="file:///sdcard/multi.gcode.3mf", subtask="multi"):
-    return {"print": {"command": "project_file", "param": plate, "url": url,
-                      "subtask_name": subtask, "sequence_id": "1"}}
-
-
-def test_run_log_binds_the_start_to_the_run_that_follows():
+def test_run_log_counts_sent_skips_until_echoed_expired_or_next_run():
     log = skip.RunLog()
-    log.sent(_start(), now=0)
-    log.started("multi", "T1", now=60)
-    assert log.plate("multi", "multi.gcode.3mf", "T1") == 2
-    assert log.plate("multi", "multi.gcode.3mf", "T2") is None     # another run
-    assert log.plate("multi", "other.gcode.3mf", "T1") is None     # another file
-    assert log.plate("other", "multi.gcode.3mf", "T1") is None
-    assert log.plate("multi", "multi.gcode.3mf", None) is None
-    # Pause/resume/speed echoes are not starts: nothing changes.
-    log.sent({"print": {"command": "pause", "param": ""}}, now=70)
-    log.sent({"print": {"command": "print_speed", "param": "2"}}, now=71)
-    assert log.plate("multi", "multi.gcode.3mf", "T1") == 2
-    # The start is used once: a later run (a screen reprint) has no plate.
-    log.ended()
-    log.started("multi", "T2", now=500)
-    assert log.plate("multi", "multi.gcode.3mf", "T2") is None
-
-
-def test_run_log_ignores_a_start_that_is_not_this_run():
-    log = skip.RunLog()
-    log.sent(_start(subtask="other"), now=0)
-    log.started("multi", "T1", now=60)
-    assert log.plate("multi", "multi.gcode.3mf", "T1") is None
-    log.sent(_start(), now=0)
-    log.started("multi", "T2", now=skip.START_WINDOW_S + 1)       # never ran in time
-    assert log.plate("multi", "multi.gcode.3mf", "T2") is None
-
-
-def test_run_log_counts_sent_skips_until_echoed_expired_or_run_ends():
-    log = skip.RunLog()
-    log.started("multi", "T1", now=0)
     log.sent({"print": {"command": "skip_objects", "obj_list": [63, True, "x", 74]}}, now=10)
+    log.sent({"print": {"command": "project_file", "param": "Metadata/plate_2.gcode"}}, now=10)
     assert log.pending([], now=11) == {63, 74}
     assert log.pending([63], now=12) == {74}                       # echoed
     assert log.pending([], now=10 + skip.PENDING_S + 1) == set()   # expired
     log.sent({"print": {"command": "skip_objects", "obj_list": [85]}}, now=50)
-    log.ended()
+    before = log.run_id
+    log.new_run()
+    assert log.run_id == before + 1
     assert log.pending([], now=51) == set()
-    log.sent({"print": {"command": "skip_objects", "obj_list": [85]}}, now=60)
-    log.started("multi", "T2", now=61)
-    assert log.pending([], now=62) == set()
+
+
+def test_run_log_pins_the_first_file_of_a_run():
+    log = skip.RunLog()
+    assert log.pin("/multi.gcode.3mf", "a" * 64)
+    assert log.pin("/multi.gcode.3mf", "a" * 64)
+    assert not log.pin("/multi.gcode.3mf", "b" * 64)               # other bytes
+    assert not log.pin("/cache/multi.gcode.3mf", "a" * 64)         # another file
+    log.new_run()
+    assert log.pin("/multi.gcode.3mf", "b" * 64)
+
+
+def test_run_ids_do_not_repeat_across_restarts():
+    assert skip.RunLog().run_id > 1_700_000_000_000                # a millisecond epoch
 
 
 def test_archive_plates():
@@ -580,14 +554,44 @@ def test_body_of_a_multi_body_object_inside_a_ring_keeps_its_bore(order):
     assert pick[(100 - 45) * 2, 45 * 2] == 85            # between frame and washer
 
 
-def test_components_split_4_connected_regions():
+def test_label_splits_4_connected_regions():
     mask = np.zeros((5, 6), dtype=bool)
     mask[0, 0:2] = mask[1, 1] = True          # one region
     mask[2, 2] = True                          # diagonal only: a second region
     mask[4, 0:6] = True                        # a third
-    parts = skip._components(mask)
-    assert sorted(int(p.sum()) for p in parts) == [1, 3, 6]
-    assert (np.sum(parts, axis=0) == mask).all()          # disjoint and complete
+    mask[3, 4] = True                          # joins the third from above
+    labels, count = skip._label(mask)
+    assert count == 3 and labels.dtype == np.int32
+    assert ((labels > 0) == mask).all()
+    assert sorted(np.bincount(labels.ravel())[1:].tolist()) == [1, 3, 7]
+    # U shapes join through their base, whichever run ends first.
+    u = np.zeros((3, 7), dtype=bool)
+    u[0, 0] = u[0, 6] = u[1, 0] = u[1, 6] = True
+    u[2, :] = True
+    assert skip._label(u)[1] == 1
+
+
+def test_a_perforated_part_costs_one_label_image():
+    # Review round 3 #16: a sieve with ~2,000 openings, one object.
+    import time
+    import tracemalloc
+
+    lines = ["M83", "; LINE_WIDTH: 1", "; start printing object, unique label id: 7"]
+    for i in range(46):                       # 46 lines each way: 45 x 45 = 2,025 openings
+        v = 10 + i * 2.2
+        lines += [f"G1 X10 Y{v:.1f}", f"G1 X110 Y{v:.1f} E1"]
+        lines += [f"G1 X{v:.1f} Y10", f"G1 X{v:.1f} Y110 E1"]
+    lines += ["G1 X10 Y110", "G1 X110 Y110 E1", "G1 X110 Y10", "G1 X110 Y110 E1"]
+    gcode = ("\n".join(lines) + "\n").encode()
+    tracemalloc.start()
+    started = time.perf_counter()
+    pick = skip.gcode_footprint(io.BytesIO(gcode), frozenset({7}), (0.0, 0.0, 128.0, 128.0))
+    elapsed = time.perf_counter() - started
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert skip._label(pick == 0)[1] == 1     # every opening filled: only the outside is left
+    assert peak < 32 * 2**20, f"{peak / 2**20:.0f} MiB"
+    assert elapsed < 10, f"{elapsed:.1f} s"
 
 
 def test_bed_comes_from_printable_area():

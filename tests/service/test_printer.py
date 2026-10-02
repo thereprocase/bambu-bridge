@@ -403,40 +403,44 @@ async def test_empty_idle_report_emits_interruption_after_reconnect_and_split_id
         assert ev.data["reason"] == "printer_job_lost"
 
 
-async def test_run_log_follows_what_the_bridge_sent_and_the_run_edges():
-    """Skip Objects' RunLog: starts and skips published through send_raw, bound
-    to the fresh RUNNING edge and dropped when the run ends."""
+async def test_run_log_changes_run_on_every_edge_and_reconnect():
+    """Skip Objects' RunLog: skips published through send_raw are pending for
+    the run; run_id moves on each run edge and on a reconnect, where the
+    bridge cannot know whether a run ended during the gap."""
     from unittest.mock import AsyncMock
 
     from bambu_bridge.protocol.models import ReportMessage
 
     service = _service(8883)
     service._mqtt.publish = AsyncMock()  # type: ignore[method-assign]
+    service._tofu_compare = AsyncMock()  # type: ignore[method-assign]  # no TLS probe
 
     async def report(fields):
         await service._handle_report(ReportMessage.model_validate({"print": fields}))
 
-    await report({"gcode_state": "FINISH", "subtask_name": "old", "gcode_file": "old.gcode.3mf"})
-    await service.send_raw({"print": {
-        "command": "project_file", "param": "Metadata/plate_2.gcode",
-        "url": "file:///sdcard/multi.gcode.3mf", "subtask_name": "multi", "sequence_id": "1",
-    }})
-    await report({"gcode_state": "PREPARE", "subtask_name": "multi",
-                  "gcode_file": "multi.gcode.3mf"})
+    def run_id():
+        return service.snapshot()["job"]["run_id"]
+
+    await report({"gcode_state": "FINISH", "subtask_name": "a", "gcode_file": "a.gcode.3mf"})
+    first = run_id()
+    await report({"gcode_state": "PREPARE"})
     await report({"gcode_state": "RUNNING"})
-    started_at = service.snapshot()["job"]["started_at"]
-    assert started_at
-    assert service.run_log.plate("multi", "multi.gcode.3mf", started_at) == 2
+    started = run_id()
+    assert started != first
 
     await service.send_raw(
         {"print": {"command": "skip_objects", "obj_list": [63], "sequence_id": "2"}}
     )
     assert service.run_log.pending([]) == {63}
     await report({"gcode_state": "PAUSE"})
-    await report({"gcode_state": "RUNNING"})          # a resume is not a new run
-    assert service.run_log.plate("multi", "multi.gcode.3mf", started_at) == 2
-    assert service.run_log.pending([]) == {63}
+    await report({"gcode_state": "RUNNING"})          # a resume is the same run
+    assert run_id() == started and service.run_log.pending([]) == {63}
+
+    await service._handle_connected()                 # the link came back
+    assert run_id() != started and service.run_log.pending([]) == set()
+    reconnected = run_id()
+    await report({"gcode_state": "RUNNING"})          # RUNNING -> RUNNING: no edge
+    assert run_id() == reconnected
 
     await report({"gcode_state": "FINISH"})
-    assert service.run_log.pending([]) == set()
-    assert service.run_log.plate("multi", "multi.gcode.3mf", started_at) is None
+    assert run_id() != reconnected

@@ -3,8 +3,8 @@
 * ``GET  /printers/{id}/skip_objects`` — the running plate's objects (id,
   name, skipped), the map as run-length rows for hit-testing a tap, whether
   a skip would be accepted now (``available`` + ``reason``), and the job
-  identity the sheet was built from (``job``, ``gcode_file``, ``plate``,
-  ``digest``). The map is Orca's pick image, or for a slice without one (the
+  identity the sheet was built from (``job``, ``gcode_file``, ``run_id``,
+  ``plate``, ``digest``). The map is Orca's pick image, or for a slice without one (the
   CLI renders none) the objects' printed footprint from the plate G-code
   (``map_source``).
 * ``GET  /printers/{id}/skip_objects/map.png?checked=1,2&digest=…`` — the
@@ -54,6 +54,7 @@ from bambu_bridge.service.viz_cache import VizFillError, locate_exact
 router = APIRouter(prefix="/printers", tags=["control"])
 
 CHANGED = "The print changed; reopen Skip Objects"
+REPLACED = "The file on the printer changed during this print"
 _UNRESOLVED = "The bridge cannot tell which file is printing"
 
 
@@ -63,14 +64,13 @@ class Loaded:
 
     job_name: str | None
     gcode_file: str | None
-    started_at: str | None
-    archive: str
+    run_id: int | None
     plates: tuple[int, ...]
     digest: str
     job: skip.SkipJob
 
     def identity(self) -> tuple[Any, ...]:
-        return self.job_name, self.gcode_file, self.started_at, self.job.plate, self.digest
+        return self.job_name, self.gcode_file, self.run_id, self.job.plate, self.digest
 
 
 @dataclass
@@ -91,10 +91,10 @@ def _raw(service: Any) -> dict[str, Any]:
     return service.snapshot().get("_raw") or {}
 
 
-def _started_at(service: Any) -> str | None:
-    """The run token: job.started_at, stamped on every fresh RUNNING edge."""
-    value = (service.snapshot().get("job") or {}).get("started_at")
-    return value if isinstance(value, str) else None
+def _run_id(service: Any) -> int | None:
+    """The run token (RunLog.run_id): every run edge and reconnect changes it."""
+    run_log = getattr(service, "run_log", None)
+    return run_log.run_id if run_log else None
 
 
 def _skipped(service: Any, raw: dict[str, Any]) -> set[int]:
@@ -108,11 +108,13 @@ ROOT, CACHE = UPLOAD_DIR_PERSISTENT, UPLOAD_DIR_CACHE
 
 
 def _where(path: str) -> tuple[str, tuple[str, ...]] | None:
-    """A reported file path as (name, directories to search); None = unreadable.
+    """A file path or url, taken literally, as (name, directories); None = refused.
 
-    ``/``, ``/sdcard`` and ``file:///sdcard`` or ``ftp://`` forms are the
-    root; a ``cache`` folder is /cache; any other folder is refused. Only a
-    bare name may be in either.
+    ``/``, ``/sdcard``, ``file:///sdcard`` and ``ftp://`` forms are the root;
+    a ``cache`` folder is /cache; any other folder is refused. Only a bare
+    name may be in either. Nothing is URL-decoded: slicedoc.sd_url writes
+    names verbatim ('#', '?' and '%20' included) and the printer reports them
+    that way.
     """
     bare = re.sub(r"^(?:file|ftps?)://", "", path)
     parts = [p for p in bare.split("/") if p]
@@ -127,33 +129,44 @@ def _where(path: str) -> tuple[str, tuple[str, ...]] | None:
     return parts[-1], (ROOT,) if rooted else (ROOT, CACHE)
 
 
+def _start_where(row: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None:
+    """Where an open inbox start put its file: the bridge's own name for a
+    native upload, else the start command's url (or gcode_file param) verbatim."""
+    if row.get("kind", "upload") == "upload":
+        return _where(str(row["remote"]))
+    try:
+        command = json.loads(row["command"] or "{}").get("print", {})
+    except ValueError:
+        return None
+    value = command.get("param") if command.get("command") == "gcode_file" else command.get("url")
+    return _where(value) if isinstance(value, str) else None
+
+
 def _target(raw: dict[str, Any], starts: list[dict[str, Any]]) -> tuple[list[str], tuple[str, ...]]:
     """The exact names and directories to look for the running archive in.
 
-    An open native-inbox start for this subtask names its file exactly;
-    otherwise preview_source.source_name gives the reported gcode_file when
-    it names an archive, else the subtask, tried as ``{subtask}.gcode.3mf``
-    and ``{subtask}.3mf`` (both looked for; two hits refuse).
+    preview_source.source_name gives the reported gcode_file when it names an
+    archive, and that decides: its folder is where to look, and a folder
+    Skip Objects cannot read is refused. When the printer reports only the
+    inner plate member, an open native-inbox start of this subtask names the
+    file; failing that, the subtask, as ``{subtask}.gcode.3mf`` and
+    ``{subtask}.3mf`` (both looked for; two hits refuse).
     """
     name = source_name(raw)
-    gcode_file = str(raw.get("gcode_file") or "")
+    if name and name == str(raw.get("gcode_file") or ""):
+        where = _where(name)
+        if where is None:
+            raise HTTPException(409, f"{name} is in a folder Skip Objects does not read")
+        return [where[0]], where[1]
     if starts:
-        if len(starts) > 1:
-            raise HTTPException(409, _UNRESOLVED)
-        where = _where(starts[0]["remote"])
-        reported = _where(gcode_file) if name == gcode_file else None
-        if where is None or (reported and reported[0] != where[0]):
+        where = _start_where(starts[0]) if len(starts) == 1 else None
+        if where is None:
             raise HTTPException(409, _UNRESOLVED)
         return [where[0]], where[1]
     if not name:
         raise HTTPException(404, "No current job on this printer.")
-    if name != gcode_file:
-        names = [name] if name.endswith(".3mf") else [f"{name}.gcode.3mf", f"{name}.3mf"]
-        return names, (ROOT, CACHE)
-    where = _where(name)
-    if where is None:
-        raise HTTPException(409, f"{name} is in a folder Skip Objects does not read")
-    return [where[0]], where[1]
+    names = [name] if name.endswith(".3mf") else [f"{name}.gcode.3mf", f"{name}.3mf"]
+    return names, (ROOT, CACHE)
 
 
 def _open_starts(gateway: Any, printer_id: str, raw: dict[str, Any]) -> list[dict[str, Any]]:
@@ -173,19 +186,15 @@ def _open_starts(gateway: Any, printer_id: str, raw: dict[str, Any]) -> list[dic
 
 
 async def _source(request: Request, printer_id: str, service: Any) -> tuple[str, bytes]:
-    """(archive name, bytes) of the running print, or an HTTP refusal."""
+    """(where the bytes came from, bytes) of the running print, or an HTTP refusal."""
     snapshot = service.snapshot()
     raw = snapshot.get("_raw") or {}
     gateway = getattr(request.app.state, "native_gateway", None)
-    starts = await asyncio.to_thread(_open_starts, gateway, printer_id, raw) if gateway else []
     if gateway is not None:
         local = await asyncio.to_thread(gateway.local_camera_source, snapshot)
         if local is not None:
-            archive = str(raw.get("gcode_file") or "").rsplit("/", 1)[-1]
-            if not archive.endswith(".3mf"):
-                remote = starts[0]["remote"] if len(starts) == 1 else ""
-                archive = remote.rsplit("/", 1)[-1] or f"{raw.get('subtask_name') or ''}.gcode.3mf"
-            return archive, local
+            return "inbox:" + source_name(raw), local
+    starts = await asyncio.to_thread(_open_starts, gateway, printer_id, raw) if gateway else []
     names, directories = _target(raw, starts)
     from bambu_bridge.api.viz import _get_viz_cache
 
@@ -200,30 +209,27 @@ async def _source(request: Request, printer_id: str, service: Any) -> tuple[str,
         raise HTTPException(status, exc.detail) from exc
     except Exception as exc:  # noqa: BLE001 — FTPS failure
         raise HTTPException(502, f"Could not read the print file: {exc}") from exc
-    return filename, data
-
-
-def _plate(service: Any, raw: dict[str, Any], plates: tuple[int, ...], archive: str) -> int:
-    run_log = getattr(service, "run_log", None)
-    recorded = (
-        run_log.plate(raw.get("subtask_name"), archive, _started_at(service)) if run_log else None
-    )
-    return skip.resolve_plate(raw, list(plates), recorded) or 0
+    return f"/{remote_dir}/{filename}", data
 
 
 async def _load(request: Request, printer_id: str, service: Any) -> Loaded:
-    """The running job, re-read from storage; parsed once per file and plate."""
+    """The running job, re-read from storage; parsed once per file and plate.
+
+    The first file read in a run is pinned (RunLog.pin): a later read in the
+    same run that finds another file or other bytes is refused.
+    """
     raw = _raw(service)
-    job_name, gcode_file, started_at = (
-        raw.get("subtask_name"), raw.get("gcode_file"), _started_at(service)
-    )
-    archive, data = await _source(request, printer_id, service)
+    job_name, gcode_file, run_id = raw.get("subtask_name"), raw.get("gcode_file"), _run_id(service)
+    source, data = await _source(request, printer_id, service)
     digest = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
+    run_log = getattr(service, "run_log", None)
+    if run_log and _run_id(service) == run_id and not run_log.pin(source, digest):
+        raise HTTPException(409, REPLACED)
     try:
         plates = tuple(await asyncio.to_thread(skip.archive_plates, data))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    plate = _plate(service, raw, plates, archive)
+    plate = skip.resolve_plate(raw, list(plates)) or 0
     state = _states(request)[printer_id]
     hit = state.loaded
     if hit and (hit.digest, hit.job.plate) == (digest, plate):
@@ -235,7 +241,7 @@ async def _load(request: Request, printer_id: str, service: Any) -> Loaded:
             raise HTTPException(422, str(exc)) from exc
     else:
         job = skip.SkipJob(0, False, ())
-    state.loaded = Loaded(job_name, gcode_file, started_at, archive, plates, digest, job)
+    state.loaded = Loaded(job_name, gcode_file, run_id, plates, digest, job)
     return state.loaded
 
 
@@ -273,7 +279,7 @@ async def get_skip_objects(
     return {
         "job": loaded.job_name,
         "gcode_file": loaded.gcode_file,
-        "started_at": loaded.started_at,
+        "run_id": loaded.run_id,
         "plate": job.plate,
         "digest": loaded.digest,
         "label_object_enabled": job.label_object_enabled,
@@ -317,8 +323,8 @@ async def get_skip_map(
     hit = _states(request)[printer_id].loaded
     if not (
         hit
-        and (hit.job_name, hit.gcode_file, hit.started_at)
-        == (raw.get("subtask_name"), raw.get("gcode_file"), _started_at(service))
+        and (hit.job_name, hit.gcode_file, hit.run_id)
+        == (raw.get("subtask_name"), raw.get("gcode_file"), _run_id(service))
         and (not digest or hit.digest == digest)
     ):
         hit = await _load(request, printer_id, service)
@@ -343,7 +349,7 @@ class SkipObjectsBody(BaseModel):
     obj_list: list[int] = Field(min_length=1, max_length=skip.MAX_OBJECTS)
     job: str | None
     gcode_file: str | None
-    started_at: str | None
+    run_id: int | None
     plate: int
     digest: str = Field(min_length=1)
     action: Literal["skip", "stop"]
@@ -385,10 +391,10 @@ async def post_skip_objects(
         reason = skip.unavailable_reason(raw)
         if reason:
             unavailable(reason)
-        now_plate = _plate(service, raw, loaded.plates, loaded.archive)
-        seen = (body.job, body.gcode_file, body.started_at, body.plate, body.digest)
+        now_plate = skip.resolve_plate(raw, list(loaded.plates)) or 0
+        seen = (body.job, body.gcode_file, body.run_id, body.plate, body.digest)
         current = (
-            raw.get("subtask_name"), raw.get("gcode_file"), _started_at(service), now_plate,
+            raw.get("subtask_name"), raw.get("gcode_file"), _run_id(service), now_plate,
             loaded.digest,
         )
         if seen != loaded.identity() or current != loaded.identity():

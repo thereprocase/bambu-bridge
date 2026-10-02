@@ -79,6 +79,9 @@ class SnapshotContext:
     # it); an empty dict means memory is wired but no labels are stored.
     # `_ams_block` merges this into each slot's dict as "memory": {...}|null.
     filament_memory: dict[int, Any] | None = field(default=None)
+    # Skip Objects' run token (RunLog.run_id): changes on every run edge and
+    # MQTT reconnect, so a sheet built for one run is refused in another.
+    run_id: int | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +423,7 @@ def _job_block(raw: dict[str, Any], phase: Phase, ctx: SnapshotContext) -> dict[
         # Orca's part skip: the printer's s_obj list and whether it supports it.
         "skipped_objects": skipped_ids(raw),
         "part_skip_supported": part_skip_supported(raw),
+        "run_id": ctx.run_id,
     }
 
 

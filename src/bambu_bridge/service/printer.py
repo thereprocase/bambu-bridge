@@ -239,7 +239,7 @@ class PrinterService:
         # snapshot ctx passes None → slot["memory"] is null for every slot).
         self._filament_memory: dict[int, FilamentMemory] | None = None
         self._load_filament_memory = load_filament_memory
-        # The plate this run was started with and the skips sent during it.
+        # Skip Objects' run boundary, the skips sent this run and its file.
         self.run_log = RunLog()
         self._invalidate_filament_memory = invalidate_filament_memory
 
@@ -379,6 +379,7 @@ class PrinterService:
             expected_fingerprint=self.expected_fingerprint,
             print_started_at=_dt_iso(self._print_started_at),
             filament_memory=self._filament_memory,
+            run_id=self.run_log.run_id,
         )
         return translate_snapshot(self._state, ctx)
 
@@ -458,7 +459,7 @@ class PrinterService:
                 await self._mqtt.publish(envelope)
         else:
             await self._mqtt.publish(envelope)
-        # Every start and skip the bridge publishes, whoever asked for it.
+        # Every skip the bridge publishes, whoever asked for it.
         self.run_log.sent(envelope)
 
     # ----------------------------------------------------------------- #
@@ -520,6 +521,8 @@ class PrinterService:
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
+        # A run may have ended and another begun while the link was down.
+        self.run_log.new_run()
         # Keep the pre-disconnect state: the next report is classified against
         # it, so a print that ended during the drop still ends (Orca keeps its
         # attributes until a report carries a new value).
@@ -839,10 +842,7 @@ class PrinterService:
                 # if a future firmware ever supplies one. The event payload
                 # carries the same synthesized value the snapshot will expose.
                 self._print_started_at = datetime.now(UTC)
-                self.run_log.started(
-                    self._state.get("subtask_name"),
-                    _started_at_iso(self._state) or _dt_iso(self._print_started_at),
-                )
+                self.run_log.new_run()
                 self.bus.publish(
                     Event(
                         "event",
@@ -855,14 +855,14 @@ class PrinterService:
                     )
                 )
             elif cur is GcodeState.IDLE:
-                self.run_log.ended()
+                self.run_log.new_run()
             elif cur is GcodeState.FINISH:
                 self._print_started_at = None
-                self.run_log.ended()
+                self.run_log.new_run()
                 self.bus.publish(Event("event", self._completion_data(), name="print_completed"))
             elif cur is GcodeState.FAILED:
                 self._print_started_at = None
-                self.run_log.ended()
+                self.run_log.new_run()
                 self.bus.publish(
                     Event(
                         "event",
