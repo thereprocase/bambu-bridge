@@ -83,7 +83,10 @@ function openSheet() {
   return sheet;
 }
 
-const IDENTITY = { job: 'multi3', gcode_file: 'multi3.gcode.3mf', plate: 1, digest: 'd'.repeat(64) };
+const RUN_A = '2026-10-01T20:00:00Z';
+const IDENTITY = {
+  job: 'multi3', gcode_file: 'multi3.gcode.3mf', started_at: RUN_A, plate: 1, digest: 'd'.repeat(64),
+};
 
 const img = () => find(document.body, (n) => n.tagName === 'IMG')[0];
 const box = (label) => find(document.body, (n) => n.tagName === 'INPUT' && n.attrs['aria-label'] === label)[0];
@@ -238,4 +241,73 @@ test('jobChanged ignores a snapshot without job fields', () => {
   assert.equal(skip.jobChanged(IDENTITY, { _raw: {} }), false);
   assert.equal(skip.jobChanged(IDENTITY, { _raw: { subtask_name: 'multi3', gcode_file: 'multi3.gcode.3mf' } }), false);
   assert.equal(skip.jobChanged(IDENTITY, { _raw: { gcode_file: 'Metadata/plate_1.gcode' } }), true);
+});
+
+
+// ── lifecycle (review round 2, #13 #14) and runs (#6) ───────────────────────
+function deferredApp() {
+  const calls = { gets: 0, pending: [] };
+  const app = {
+    store,
+    api: {
+      api: () => {
+        calls.gets += 1;
+        return new Promise((resolve) => calls.pending.push(resolve));
+      },
+      tokenUrl: (path, params) => `${path}?${new URLSearchParams(params)}`,
+      postJson: async () => ({ ok: true, status: 200, data: { action: 'skip' } }),
+    },
+  };
+  return { app, calls };
+}
+
+const LIVE_A = { printer_id: PID, job: { skipped_objects: [], started_at: RUN_A },
+  _raw: { subtask_name: 'multi3', gcode_file: 'multi3.gcode.3mf' } };
+
+test('a sheet closed while loading never builds or fetches again', async () => {
+  store.applySnapshot(PID, LIVE_A);
+  const { app, calls } = deferredApp();
+  const handle = skip.open(app, PID);
+  handle.close();
+  calls.pending[0]({ ok: true, status: 200, data });
+  await tick();
+  assert.equal(find(document.body, (n) => n.tagName === 'IMG').length, 0);
+  store.applyDelta(PID, { _raw: { subtask_name: 'jobB', gcode_file: 'jobB.gcode.3mf' } });
+  store.applyDelta(PID, { _raw: { subtask_name: 'jobC', gcode_file: 'jobC.gcode.3mf' } });
+  await tick();
+  assert.equal(calls.gets, 1);
+});
+
+test('a load superseded by a job change leaves no subscription behind', async () => {
+  store.applySnapshot(PID, LIVE_A);
+  const { app, calls } = deferredApp();
+  const handle = skip.open(app, PID);
+  // A ends and B starts while the bridge still reads A's file.
+  store.applyDelta(PID, { _raw: { subtask_name: 'jobB', gcode_file: 'jobB.gcode.3mf' } });
+  calls.pending[0]({ ok: true, status: 200, data });       // A's answer: superseded
+  await tick();
+  assert.equal(calls.gets, 2);
+  calls.pending[1]({ ok: true, status: 200, data: { ...data, job: 'jobB', gcode_file: 'jobB.gcode.3mf' } });
+  await tick();
+  handle.close();
+  store.applyDelta(PID, { _raw: { subtask_name: 'jobC', gcode_file: 'jobC.gcode.3mf' } });
+  store.applyDelta(PID, { job: { skipped_objects: [63] } });
+  await tick();
+  assert.equal(calls.gets, 2, 'nothing reloads after close');
+});
+
+test('a reprint of the same file is another run: the sheet reloads', async () => {
+  store.applySnapshot(PID, LIVE_A);
+  openSheet();
+  await tick();
+  assert.equal(gets, 1);
+  // A ends; the queue starts the same file as B: new started_at.
+  store.applyDelta(PID, { job: { started_at: null } });
+  await tick();
+  assert.equal(gets, 2);
+  store.applyDelta(PID, { job: { started_at: '2026-10-01T23:00:00Z', skipped_objects: [] } });
+  await tick();
+  assert.equal(gets, 3);
+  assert.equal(skip.jobChanged(IDENTITY, { job: { started_at: RUN_A }, _raw: {} }), false);
+  assert.equal(skip.jobChanged(IDENTITY, { job: { started_at: null }, _raw: {} }), true);
 });

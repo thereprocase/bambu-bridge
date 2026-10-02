@@ -20,6 +20,8 @@ export interface SkipObjectsInfo {
   /** The job identity the sheet is built from; the POST must echo it. */
   job: string | null;
   gcode_file: string | null;
+  /** The run token: job.started_at, stamped on every fresh start. */
+  started_at: string | null;
   plate: number;
   digest: string;
   label_object_enabled: boolean;
@@ -87,12 +89,16 @@ export function followPrinter(states: Map<number, PartState>, reported: number[]
   return next;
 }
 
-/** True when the printer now reports a different job than the screen shows. */
-export function jobChanged(info: SkipObjectsInfo, raw: Record<string, unknown> | undefined): boolean {
+/** True when the printer now reports another job, or another run of it
+ * (`started_at`, `undefined` when the snapshot does not carry it). */
+export function jobChanged(
+  info: SkipObjectsInfo, raw: Record<string, unknown> | undefined, startedAt?: unknown,
+): boolean {
   const subtask = raw?.subtask_name;
   const file = raw?.gcode_file;
   return (typeof subtask === "string" && subtask !== info.job)
-    || (typeof file === "string" && file !== info.gcode_file);
+    || (typeof file === "string" && file !== info.gcode_file)
+    || (startedAt !== undefined && (startedAt ?? null) !== (info.started_at ?? null));
 }
 
 /** The POST body: the selection, the confirmed action and the job identity. */
@@ -102,6 +108,7 @@ export function skipRequest(info: SkipObjectsInfo, states: Map<number, PartState
     action: confirmText(states).all ? "stop" as const : "skip" as const,
     job: info.job,
     gcode_file: info.gcode_file,
+    started_at: info.started_at,
     plate: info.plate,
     digest: info.digest,
   };

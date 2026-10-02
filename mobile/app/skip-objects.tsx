@@ -13,7 +13,7 @@
  *
  * The POST echoes the job identity the screen was built from and the action
  * the user confirmed; the bridge refuses (409) when either no longer holds.
- * The screen reloads when the printer reports another job.
+ * The screen reloads when the printer reports another job or another run.
  */
 
 import { Ionicons } from "@expo/vector-icons";
@@ -64,6 +64,9 @@ export default function SkipObjectsScreen() {
   const liveFile: unknown = useLiveStore(
     (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?._raw?.gcode_file,
   );
+  const liveStarted: unknown = useLiveStore(
+    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?.job?.started_at,
+  );
   const sending = useRef(false);
   const reloadedFor = useRef<string | null>(null);
 
@@ -93,12 +96,14 @@ export default function SkipObjectsScreen() {
   // Another job on the printer: reload, once per job it reports, so a bridge
   // answer that still disagrees with the live snapshot cannot loop.
   useEffect(() => {
-    if (!info || !jobChanged(info, { subtask_name: liveSubtask, gcode_file: liveFile })) return;
-    const key = `${String(liveSubtask)}|${String(liveFile)}`;
+    if (!info || !jobChanged(info, { subtask_name: liveSubtask, gcode_file: liveFile }, liveStarted)) {
+      return;
+    }
+    const key = `${String(liveSubtask)}|${String(liveFile)}|${String(liveStarted)}`;
     if (reloadedFor.current === key) return;
     reloadedFor.current = key;
     load();
-  }, [info, liveSubtask, liveFile, load]);
+  }, [info, liveSubtask, liveFile, liveStarted, load]);
 
   // PartSkipDialog::UpdatePartsStateFromPrinter.
   useEffect(() => {

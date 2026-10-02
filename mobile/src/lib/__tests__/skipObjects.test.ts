@@ -12,7 +12,8 @@ const MAP: SkipMap = {
 const IDS = new Set([63, 74]);
 
 const INFO: SkipObjectsInfo = {
-  job: "multi3", gcode_file: "multi3.gcode.3mf", plate: 1, digest: "d".repeat(64),
+  job: "multi3", gcode_file: "multi3.gcode.3mf", started_at: "2026-10-01T20:00:00Z", plate: 1,
+  digest: "d".repeat(64),
   label_object_enabled: true, map_source: "gcode", max_objects: 64, available: true, reason: null,
   map: MAP,
   objects: [
@@ -71,7 +72,8 @@ test("the request echoes the job identity and the confirmed action", () => {
   const states = initialStates(INFO);
   states.set(63, "checked");
   expect(skipRequest(INFO, states)).toEqual({
-    obj_list: [63], action: "skip", job: "multi3", gcode_file: "multi3.gcode.3mf", plate: 1, digest: "d".repeat(64),
+    obj_list: [63], action: "skip", job: "multi3", gcode_file: "multi3.gcode.3mf",
+    started_at: "2026-10-01T20:00:00Z", plate: 1, digest: "d".repeat(64),
   });
   states.set(74, "checked");
   expect(skipRequest(INFO, states).action).toBe("stop");
@@ -83,4 +85,8 @@ test("jobChanged compares the live report with the screen's job", () => {
   expect(jobChanged(INFO, { subtask_name: "multi3", gcode_file: "multi3.gcode.3mf" })).toBe(false);
   expect(jobChanged(INFO, { subtask_name: "next" })).toBe(true);
   expect(jobChanged(INFO, { gcode_file: "Metadata/plate_1.gcode" })).toBe(true);
+  // A reprint of the same file is another run (review round 2, #6).
+  expect(jobChanged(INFO, {}, "2026-10-01T20:00:00Z")).toBe(false);
+  expect(jobChanged(INFO, {}, "2026-10-01T23:00:00Z")).toBe(true);
+  expect(jobChanged(INFO, {}, null)).toBe(true);
 });

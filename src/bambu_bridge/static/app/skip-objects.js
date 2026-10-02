@@ -20,9 +20,9 @@
 //     the print, as Orca does).
 //
 // The POST carries the job identity this sheet was built from (job,
-// gcode_file, plate, digest) and the action the user confirmed; the bridge
-// refuses with 409 if either no longer holds. The sheet reloads when the
-// printer reports another job.
+// gcode_file, started_at, plate, digest) and the action the user confirmed;
+// the bridge refuses with 409 if either no longer holds. The sheet reloads
+// when the printer reports another job or another run of the same one.
 
 import { el, clear, mountSheet, confirmSheet, toast, errorCard } from './ui.js';
 
@@ -65,16 +65,23 @@ export function applyRefusal(data, states) {
   return data.available ? '' : (data.reason || 'Skipping objects is unavailable');
 }
 
-/** True when the printer now reports a different job than the sheet shows. */
+/**
+ * True when the printer now reports a different job than the sheet shows:
+ * another file or subtask, or another run (job.started_at, stamped on every
+ * fresh start, so a reprint of the same file counts).
+ */
 export function jobChanged(data, snap) {
   const raw = (snap && snap._raw) || {};
+  const job = (snap && snap.job) || {};
   return (typeof raw.subtask_name === 'string' && raw.subtask_name !== data.job)
-    || (typeof raw.gcode_file === 'string' && raw.gcode_file !== data.gcode_file);
+    || (typeof raw.gcode_file === 'string' && raw.gcode_file !== data.gcode_file)
+    || ('started_at' in job && (job.started_at ?? null) !== (data.started_at ?? null));
 }
 
 function reportedJob(snap) {
   const raw = (snap && snap._raw) || {};
-  return `${raw.subtask_name}|${raw.gcode_file}`;
+  const job = (snap && snap.job) || {};
+  return `${raw.subtask_name}|${raw.gcode_file}|${job.started_at}`;
 }
 
 /**
@@ -85,7 +92,12 @@ function reportedJob(snap) {
 export function open(app, pid) {
   const body = el('div');
   const errSlot = el('div', { class: 'controls-err' });
+  // One live load at a time: a superseded or closed load never builds, and no
+  // store subscription outlives the sheet.
   let unsub = null;
+  let gen = 0;
+  let closed = false;
+  const drop = () => { if (unsub) { unsub(); unsub = null; } };
   const handle = mountSheet(el('div', {}, [
     el('div', { class: 'row row--between mb-4' }, [
       el('div', { class: 'sheet__title', style: { margin: '0' }, text: 'Skip Objects' }),
@@ -97,14 +109,16 @@ export function open(app, pid) {
     ]),
     errSlot,
     body,
-  ]), { drawer: true, onClose: () => { if (unsub) unsub(); unsub = null; } });
+  ]), { drawer: true, onClose: () => { closed = true; gen += 1; drop(); } });
 
   async function load() {
-    if (unsub) { unsub(); unsub = null; }
+    const mine = ++gen;
+    drop();
     clear(errSlot);
     clear(body);
     body.appendChild(el('div', { class: 'field__hint', text: 'Loading…' }));
     const r = await app.api.api(`/printers/${encodeURIComponent(pid)}/skip_objects`);
+    if (mine !== gen || closed) return;
     clear(body);
     if (!r.ok) {
       // PartSkipDialog's retry page.
@@ -114,13 +128,16 @@ export function open(app, pid) {
       body.appendChild(el('button', { class: 'btn btn--primary mt-3', text: 'Retry', onClick: load }));
       return;
     }
-    unsub = build(app, pid, r.data, body, errSlot, handle, reloadFor);
+    const sub = build(app, pid, r.data, body, errSlot, handle, reloadFor);
+    // build()'s first follow() may already have started a newer load.
+    if (mine !== gen || closed) { sub(); return; }
+    unsub = sub;
   }
   // Reload once per job the printer reports, so a bridge answer that still
   // disagrees with the live snapshot cannot loop.
   let reloadedFor = null;
   function reloadFor(key) {
-    if (key === reloadedFor) return false;
+    if (closed || key === reloadedFor) return false;
     reloadedFor = key;
     load();
     return true;
@@ -217,6 +234,7 @@ function build(app, pid, data, host, errSlot, handle, reload) {
         action: all ? 'stop' : 'skip',
         job: data.job,
         gcode_file: data.gcode_file,
+        started_at: data.started_at,
         plate: data.plate,
         digest: data.digest,
       });
