@@ -292,8 +292,8 @@ for control calls.
 
 ```json
 {
-  "printer_id": "01P00A3C...643",
-  "serial": "01P00A3C...643",
+  "printer_id": "01P00A000000000",
+  "serial": "01P00A000000000",
   "model": "P1S",
   "friendly_name": "P1S",
   "connected": true,

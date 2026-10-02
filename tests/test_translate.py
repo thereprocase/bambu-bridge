@@ -26,8 +26,8 @@ _RUNOUT_ENTRY = {
 
 def _ctx(**overrides: Any) -> SnapshotContext:
     defaults: dict[str, Any] = {
-        "printer_id": "01P00A3C00000001",
-        "serial": "01P00A3C00000001",
+        "printer_id": "01P00A000000001",
+        "serial": "01P00A000000001",
         "friendly_name": "Workshop P1S",
         "model": "P1S",
         "connected": True,

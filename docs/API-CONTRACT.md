@@ -88,7 +88,7 @@ Every 4xx/5xx response on every endpoint MUST use this shape:
   "likely_cause": "<optional enum>",
   "remediation_hint": "<optional human sentence with literal menu paths>",
   "context": {
-    "printer_id": "01P00A3C…643",
+    "printer_id": "01P00A000000000",
     "job_id": "...",
     "transport_phase": "tls_handshake | mqtt_connack | mqtt_no_telemetry | ftps_login | ...",
     "last_attempt_at": "2026-05-20T03:14:15.926Z",
@@ -159,8 +159,8 @@ Content-Type: application/json
 
 ```json
 {
-  "printer_id": "01P00A3C…643",
-  "serial": "01P00A3C…643",
+  "printer_id": "01P00A000000000",
+  "serial": "01P00A000000000",
   "model": "P1S",
   "friendly_name": "Living-room P1S",
   "connected": true,
@@ -195,13 +195,13 @@ The bridge's TLS handshake succeeded, so the **cert CN is already known**. Retur
   "remediation_hint": "Two things to check, in this order:\n(1) On the printer, Settings ▸ Network ▸ LAN-Only Mode must be ON.\n(2) Settings ▸ WLAN ▸ Access Code — case-sensitive, regenerable.",
   "context": { "transport_phase": "mqtt_connack" },
   "_raw": { "connack_code": 5 },
-  "discovered": { "serial": "01P00A3C…643", "model": null }
+  "discovered": { "serial": "01P00A000000000", "model": null }
 }
 ```
 
 **Note three design review-driven changes vs prior contract draft:**
 - HTTP status is **403** (not 401) — avoids collision with bearer-auth 401.
-- Serial is **NOT in `message`** — demoted to `discovered`. APK can still render "We reached your P1S 01P00A3C…643" by composing `message` + `discovered.serial` itself if it wants.
+- Serial is **NOT in `message`** — demoted to `discovered`. APK can still render "We reached your P1S 01P00A000000000" by composing `message` + `discovered.serial` itself if it wants.
 - `remediation_hint` lists **LAN-Only Mode first** — more common first-time cause than wrong access code.
 - `model` is **nullable in v0** — bridge derives model from `info.module[]` after first telemetry, which hasn't arrived yet during E2. APK falls back to "P1S" assumption or "printer" generic.
 
@@ -215,7 +215,7 @@ The bridge's TLS handshake succeeded, so the **cert CN is already known**. Retur
   "likely_cause": "developer_mode_off_or_lan_drop",
   "remediation_hint": "On the printer, enable Settings ▸ Network ▸ LAN-Only Mode. Then try again.",
   "context": { "transport_phase": "mqtt_no_telemetry", "telemetry_wait_ms": 5000 },
-  "discovered": { "serial": "01P00A3C…643", "model": null }
+  "discovered": { "serial": "01P00A000000000", "model": null }
 }
 ```
 
@@ -240,7 +240,7 @@ The printer's leaf cert regenerates on every firmware update. The bridge MUST:
 {
   "error": "printer_cert_changed",
   "message": "Your P1S's security key changed. This is normal right after a firmware update.",
-  "remediation_hint": "If you just updated firmware on 01P00A3C…643, tap Trust.",
+  "remediation_hint": "If you just updated firmware on 01P00A000000000, tap Trust.",
   "context": { "previous_fingerprint": "...", "current_fingerprint": "..." },
   "actions": [
     { "id": "trust", "label": "Trust this printer", "method": "POST", "path": "/api/v1/printers/{id}/trust" },
@@ -262,8 +262,8 @@ Never the words "certificate," "MITM," "fingerprint" in `message`. Hex in `conte
 ```json
 [
   {
-    "printer_id": "01P00A3C…643",
-    "serial": "01P00A3C…643",
+    "printer_id": "01P00A000000000",
+    "serial": "01P00A000000000",
     "friendly_name": "Living-room P1S",
     "model": "P1S",
     "connected": true,
@@ -345,8 +345,8 @@ This is the shape inside `GET /printers/{id}` response.data and `{type:snapshot,
 
 ```json
 {
-  "printer_id": "01P00A3C…643",
-  "serial": "01P00A3C…643",
+  "printer_id": "01P00A000000000",
+  "serial": "01P00A000000000",
   "friendly_name": "Living-room P1S",
   "model": "P1S",
 
@@ -549,7 +549,7 @@ Other 422 reasons:
 ```json
 {
   "job_id": "abcdef123...",
-  "printer_id": "01P00A3C…643",
+  "printer_id": "01P00A000000000",
   "state": "queued",
   "file_name": "Benchy_PETG.gcode.3mf",
   "queued_at": "2026-05-20T03:13:55.000Z",
