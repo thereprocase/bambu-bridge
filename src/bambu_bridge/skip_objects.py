@@ -239,47 +239,66 @@ def read_job(data: bytes, plate: int) -> SkipJob:
 
     The map is Orca's pick image when the project has one; otherwise (CLI
     slices, which render no thumbnails) the objects' printed footprint from
-    the plate's G-code. Raises ValueError when the archive is unreadable.
+    the plate's G-code. A CLI slice can label its objects (label_object_enabled)
+    yet list none in slice_info or model_settings; its objects are then the
+    G-code's own labels, which are the identify_ids skip_objects takes.
+    Raises ValueError when the archive is unreadable.
     """
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             slice_info = _xml(zf, "Metadata/slice_info.config")
             model_settings = _xml(zf, "Metadata/model_settings.config")
-            objects = _objects(slice_info, model_settings, plate)
-            ids = frozenset(o.id for o in objects[1])
+            label_enabled, objects = _objects(slice_info, model_settings, plate)
+            member = f"Metadata/plate_{plate}.gcode"
+            try:
+                with zf.open(member) as gcode:
+                    layers, labels = _header(gcode)
+            except KeyError:
+                member, layers, labels = "", None, ()
+            from_labels = not objects and label_enabled
+            ids = frozenset(o.id for o in objects) or frozenset(labels)
             try:
                 pick = decode_pick(zf.read(f"Metadata/pick_{plate}.png"), ids)
                 source = "pick" if pick is not None else None
             except KeyError:
                 pick, source = None, None
-            try:
-                with zf.open(f"Metadata/plate_{plate}.gcode") as gcode:
-                    layers = _total_layers(gcode)
-                if pick is None and ids:
-                    with zf.open(f"Metadata/plate_{plate}.gcode") as gcode:
-                        pick = gcode_footprint(gcode, ids, _bed(zf))
-                    source = "gcode" if pick is not None else None
-            except KeyError:
-                layers = None
+            names: dict[int, str] = {}
+            if pick is None and member and (ids or from_labels):
+                with zf.open(member) as gcode:
+                    pick = gcode_footprint(gcode, ids or None, _bed(zf), names)
+                source = "gcode" if pick is not None else None
+            if from_labels:
+                order = sorted(ids or names)
+                objects = tuple(
+                    PartObject(i, names.get(i) or f"Object {n}") for n, i in enumerate(order, 1)
+                )
     except (zipfile.BadZipFile, OSError, EOFError) as exc:
         raise ValueError(f"project archive unreadable: {exc}") from exc
-    return SkipJob(plate, objects[0], objects[1], pick, source, layers)
+    return SkipJob(plate, label_enabled, objects, pick, source, layers)
 
 
 _LAYERS = b"; total layer number:"
+_LABELS = b"; model label id:"
 
 
-def _total_layers(lines: Any) -> int | None:
-    """``; total layer number: N`` from the G-code header block."""
+def _header(lines: Any) -> tuple[int | None, tuple[int, ...]]:
+    """``; total layer number: N`` and ``; model label id: a,b,c`` from the
+    G-code header block. The label ids are the slice's identify_ids: Orca
+    writes slice_info's identify_id as each object's "unique label id" (the
+    fixtures' slice_info and model_settings ids equal their G-code labels),
+    and PartSkipDialog sends identify_ids in skip_objects."""
+    layers: int | None = None
+    labels: tuple[int, ...] = ()
     for n, raw in enumerate(lines):
         if raw.startswith(_LAYERS):
-            try:
-                return int(raw[len(_LAYERS):])
-            except ValueError:
-                return None
+            with contextlib.suppress(ValueError):
+                layers = int(raw[len(_LAYERS):])
+        elif raw.startswith(_LABELS):
+            with contextlib.suppress(ValueError):
+                labels = tuple(int(v) for v in raw[len(_LABELS):].split(b",") if v.strip())
         if n > 200 or raw.startswith(b"; HEADER_BLOCK_END"):
-            return None
-    return None
+            break
+    return layers, labels
 
 
 def _objects(
@@ -308,6 +327,7 @@ _DEFAULT_WIDTH_MM = 0.45
 _BED_MM = (0.0, 0.0, 256.0, 256.0)   # P1S printable_area
 _START = b"; start printing object, unique label id:"
 _STOP = b"; stop printing object"
+_NAME = b"; printing object "
 _WIDTH = b"; LINE_WIDTH:"
 _ARC_STEP_MM = 1.0
 
@@ -326,7 +346,10 @@ def _bed(zf: zipfile.ZipFile) -> tuple[float, float, float, float]:
 
 
 def gcode_footprint(
-    lines: Any, ids: frozenset[int], bed: tuple[float, float, float, float] = _BED_MM
+    lines: Any,
+    ids: frozenset[int] | None,
+    bed: tuple[float, float, float, float] = _BED_MM,
+    names: dict[int, str] | None = None,
 ) -> np.ndarray | None:
     """identify_id per pixel of the bed from the objects' extrusions, or None.
 
@@ -335,6 +358,8 @@ def gcode_footprint(
     the union over all layers, with holes inside each object filled. Pixels
     are PX_PER_MM, X to the right and Y up, as Orca's top-down pick image
     shows the plate. ``lines`` yields bytes lines (a streamed member).
+    ``ids`` None takes every labelled object; ``names`` collects each id's
+    name from the "; printing object NAME id:..." line before its label.
     """
     segments: dict[int, set[tuple[int, int, int, int, int]]] = {}
     x0, y0, x1, y1 = bed
@@ -347,6 +372,7 @@ def gcode_footprint(
     x = y = e = 0.0
     abs_xy, abs_e = True, False
     current: set[tuple[int, int, int, int, int]] | None = None
+    last_name = ""
     line_px = max(1, round(_DEFAULT_WIDTH_MM * PX_PER_MM))
     for raw in lines:
         head = raw[:1]
@@ -356,7 +382,12 @@ def gcode_footprint(
                     object_id = int(raw[len(_START):])
                 except ValueError:
                     object_id = 0
-                current = segments.setdefault(object_id, set()) if object_id in ids else None
+                wanted = object_id > 0 and (ids is None or object_id in ids)
+                current = segments.setdefault(object_id, set()) if wanted else None
+                if names is not None and wanted:
+                    names.setdefault(object_id, last_name)
+            elif raw.startswith(_NAME):
+                last_name = raw[len(_NAME):].rsplit(b" id:", 1)[0].decode(errors="replace").strip()
             elif raw.startswith(_STOP):
                 current = None
             elif raw.startswith(_WIDTH):
@@ -420,9 +451,10 @@ def gcode_footprint(
         masks[object_id] = np.asarray(mask) > 0
         pick[masks[object_id] & (pick == 0)] = object_id
     # Then the enclosed holes. The unprinted bed is labelled once; a region
-    # that does not reach the edge is a hole, and goes to the smallest single
-    # printed body (one connected part of an object, holes filled) that
-    # encloses it, so a body inside another's opening keeps its own bore.
+    # that does not reach the edge is a hole, and goes to the object whose
+    # enclosure around it is smallest: the connected part of that object's
+    # filled-minus-printed area holding it. So a body inside another's
+    # opening keeps its own bore, even when the outer ring is the same object.
     labels, count = _label(pick == 0)
     edge = np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))
     hole = np.ones(count + 1, dtype=bool)
@@ -435,10 +467,10 @@ def gcode_footprint(
         best = np.full(holes.size, np.inf)
         owner = np.zeros(count + 1, dtype=np.uint32)
         for object_id, printed in masks.items():
-            bodies, _ = _label(_fill_holes(printed))
-            area = np.bincount(bodies.ravel()).astype(float)
-            body = bodies[rows, cols]
-            size = np.where(body > 0, area[body], np.inf)
+            enclosed, _ = _label(_fill_holes(printed) & ~printed)
+            area = np.bincount(enclosed.ravel()).astype(float)
+            part = enclosed[rows, cols]
+            size = np.where(part > 0, area[part], np.inf)
             better = size < best
             best[better] = size[better]
             owner[holes[better]] = object_id
@@ -583,6 +615,7 @@ def render_map(pick: np.ndarray, checked: frozenset[int], skipped: frozenset[int
 
 
 UNKNOWN_PLATE = "The printer does not say which plate of this file is printing"
+NO_OBJECTS = "This print lists no objects to skip"
 
 
 PENDING_S = 30.0
@@ -600,18 +633,27 @@ class RunLog:
       app, Orca's relayed skips), which count as skipped until the printer
       echoes them in s_obj or PENDING_S passes, like Orca's
       set_part_skipped_dirty filter after an apply;
-    * the first file read for the run (where, and its digest), so a file
-      replaced on the printer mid-print is refused.
+    * the printing file, as first read while the print is RUNNING or PAUSE:
+      the reported job (subtask_name, gcode_file), the file's revision
+      (SIZE/MDTM) and its digest. A later read for the same reported job
+      that finds another revision or other bytes is refused.
+
+    A reconnect moves run_id but keeps both when PrinterService sees the
+    same print continue (``new_run(keep=True)``, then ``forget()`` if not).
     """
 
     def __init__(self) -> None:
         # A millisecond base keeps ids from repeating across bridge restarts.
         self.run_id = time.time_ns() // 1_000_000
         self.skips: dict[int, float] = {}
-        self.pinned: tuple[str, str] | None = None
+        self.pinned: tuple[Any, Any, Any, str] | None = None
 
-    def new_run(self) -> None:
+    def new_run(self, keep: bool = False) -> None:
         self.run_id += 1
+        if not keep:
+            self.forget()
+
+    def forget(self) -> None:
         self.skips = {}
         self.pinned = None
 
@@ -629,11 +671,18 @@ class RunLog:
         self.skips = {i: t for i, t in self.skips.items() if t > now and i not in reported}
         return set(self.skips)
 
-    def pin(self, source: str, digest: str) -> bool:
-        """False when this run already read a different file or other bytes."""
-        if self.pinned is None:
-            self.pinned = (source, digest)
-        return self.pinned == (source, digest)
+    def pin(self, subtask: Any, gcode_file: Any, revision: Any, digest: str) -> bool:
+        """False when the reported job's file changed (revision or bytes).
+
+        Another reported job re-pins; how the bytes arrived (inbox copy or
+        FTPS) does not matter, and an unknown revision is not compared.
+        """
+        pinned = self.pinned
+        if pinned and pinned[:2] == (subtask, gcode_file):
+            same_revision = None in (pinned[2], revision) or pinned[2] == revision
+            return same_revision and pinned[3] == digest
+        self.pinned = (subtask, gcode_file, revision, digest)
+        return True
 
 
 def job_reason(job: SkipJob) -> str | None:
@@ -642,6 +691,8 @@ def job_reason(job: SkipJob) -> str | None:
         return UNKNOWN_PLATE
     if not job.label_object_enabled:
         return "The current print job cannot be skipped"
+    if not job.objects:
+        return NO_OBJECTS
     if len(job.objects) > MAX_OBJECTS:
         return f"Over {MAX_OBJECTS} objects in single plate"
     return None

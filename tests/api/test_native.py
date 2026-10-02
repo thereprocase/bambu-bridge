@@ -367,6 +367,32 @@ async def test_native_ftps_roundtrip_reaches_printer_before_success(gateway, ftp
     await asyncio.to_thread(exchange)
 
 
+async def test_native_passthrough_never_overwrites_the_printing_file(gateway, ftps_server):
+    # Skip review round 4: a STOR over the running file (case-insensitive, as
+    # the card is FAT/exFAT) is refused before any byte reaches the printer.
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    service = gateway.service()
+    service.snapshot = lambda: {"_raw": {
+        "gcode_state": "RUNNING", "subtask_name": "box", "gcode_file": "box.gcode.3mf",
+    }}
+    (storage / "box.gcode.3mf").write_bytes(b"running")
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        ftp.connect("127.0.0.1", port(gateway, 1))
+        ftp.login("bblp", gateway.test_code)
+        ftp.prot_p()
+        with pytest.raises(ftplib.error_perm, match="553 BBFTP_FILE_PRINTING"):
+            ftp.storbinary("STOR /BOX.gcode.3mf", io.BytesIO(b"re-slice"))
+        assert ftp.storbinary("STOR /other.gcode.3mf", io.BytesIO(b"x")).startswith("226")
+        ftp.quit()
+
+    await asyncio.to_thread(exchange)
+    assert (storage / "box.gcode.3mf").read_bytes() == b"running"
+    assert (storage / "other.gcode.3mf").read_bytes() == b"x"
+
+
 async def test_native_upload_failure_is_sanitized_and_fresh_session_can_retry(
     gateway,
     ftps_server,

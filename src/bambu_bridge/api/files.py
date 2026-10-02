@@ -25,7 +25,7 @@ from fastapi.responses import Response
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.api.uploads import read_upload
-from bambu_bridge.preview_source import source_name
+from bambu_bridge.preview_source import printing_names
 from bambu_bridge.protocol.ftps import (
     UPLOAD_DIR_CACHE,
     UPLOAD_DIR_PERSISTENT,
@@ -70,15 +70,6 @@ def _ftps_for(request: Request, registry: Registry, printer_id: str) -> FtpsTran
     )
 
 
-def _printing_names(service: Any) -> set[str]:
-    """File names the printer's current print may be using (empty when idle)."""
-    raw = service.snapshot().get("_raw") or {}
-    if raw.get("gcode_state") not in {"PREPARE", "RUNNING", "PAUSE"}:
-        return set()
-    active = source_name(raw).rsplit("/", 1)[-1]
-    return {active, f"{active}.gcode.3mf", f"{active}.3mf"} if active else set()
-
-
 @router.post("/{printer_id}/files", status_code=status.HTTP_201_CREATED)
 async def upload_file(
     printer_id: str,
@@ -93,7 +84,7 @@ async def upload_file(
     """
     ftps = _ftps_for(request, registry, printer_id)
     name = PurePosixPath(file.filename or "upload.3mf").name
-    if name in _printing_names(registry.get(printer_id)):
+    if name.casefold() in printing_names(registry.get(printer_id).snapshot().get("_raw") or {}):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"{name} is printing now; uploading it would overwrite the printing file",

@@ -122,3 +122,16 @@ def source_name(raw: dict[str, Any]) -> str:
     if not name or re.search(r"(?:^|/)Metadata/plate_\d+\.gcode$", name):
         return str(raw.get("subtask_name") or raw.get("task_name") or name)
     return name
+
+
+def printing_names(raw: dict[str, Any]) -> set[str]:
+    """Casefolded file names the current print may be reading (empty when idle).
+
+    The printer's SD card is FAT/exFAT, case-insensitive: a write to any of
+    these names would overwrite the printing file.
+    """
+    if raw.get("gcode_state") not in {"PREPARE", "RUNNING", "PAUSE"}:
+        return set()
+    active = source_name(raw).rsplit("/", 1)[-1]
+    names = {active, f"{active}.gcode.3mf", f"{active}.3mf"} if active else set()
+    return {n.casefold() for n in names}

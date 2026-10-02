@@ -97,6 +97,12 @@ def _run_id(service: Any) -> int | None:
     return run_log.run_id if run_log else None
 
 
+def _fresh_state(service: Any) -> Any:
+    """gcode_state, or None until a report since the last (re)connect carried it."""
+    view = getattr(service, "print_view", None)
+    return view()["gcode_state"] if view else _raw(service).get("gcode_state")
+
+
 def _skipped(service: Any, raw: dict[str, Any]) -> set[int]:
     """s_obj plus the skips the bridge sent this run that are not echoed yet."""
     reported = skip.skipped_ids(raw)
@@ -146,8 +152,9 @@ def _target(raw: dict[str, Any], starts: list[dict[str, Any]]) -> tuple[list[str
     """The exact names and directories to look for the running archive in.
 
     preview_source.source_name gives the reported gcode_file when it names an
-    archive, and that decides: its folder is where to look, and a folder
-    Skip Objects cannot read is refused. When the printer reports only the
+    archive, and that decides: its folder is where to look (an open start of
+    the same name may only narrow a bare name), and a folder Skip Objects
+    cannot read is refused. When the printer reports only the
     inner plate member, an open native-inbox start of this subtask names the
     file; failing that, the subtask, as ``{subtask}.gcode.3mf`` and
     ``{subtask}.3mf`` (both looked for; two hits refuse).
@@ -157,7 +164,13 @@ def _target(raw: dict[str, Any], starts: list[dict[str, Any]]) -> tuple[list[str
         where = _where(name)
         if where is None:
             raise HTTPException(409, f"{name} is in a folder Skip Objects does not read")
-        return [where[0]], where[1]
+        directories = where[1]
+        # A bare name may be in either folder; one open start of that very
+        # name narrows it to the start's folder. It never widens a search.
+        started = [_start_where(row) for row in starts]
+        if len(started) == 1 and started[0] and started[0][0] == where[0]:
+            directories = tuple(d for d in directories if d in started[0][1]) or directories
+        return [where[0]], directories
     if starts:
         where = _start_where(starts[0]) if len(starts) == 1 else None
         if where is None:
@@ -185,15 +198,15 @@ def _open_starts(gateway: Any, printer_id: str, raw: dict[str, Any]) -> list[dic
     return found
 
 
-async def _source(request: Request, printer_id: str, service: Any) -> tuple[str, bytes]:
-    """(where the bytes came from, bytes) of the running print, or an HTTP refusal."""
+async def _source(request: Request, printer_id: str, service: Any) -> tuple[Any, bytes]:
+    """(the file's revision or None, bytes) of the running print, or an HTTP refusal."""
     snapshot = service.snapshot()
     raw = snapshot.get("_raw") or {}
     gateway = getattr(request.app.state, "native_gateway", None)
     if gateway is not None:
         local = await asyncio.to_thread(gateway.local_camera_source, snapshot)
         if local is not None:
-            return "inbox:" + source_name(raw), local
+            return None, local
     starts = await asyncio.to_thread(_open_starts, gateway, printer_id, raw) if gateway else []
     names, directories = _target(raw, starts)
     from bambu_bridge.api.viz import _get_viz_cache
@@ -202,28 +215,34 @@ async def _source(request: Request, printer_id: str, service: Any) -> tuple[str,
     ftps = FtpsTransfer(service.ip, service.access_code, port=request.app.state.ftps_port)
     try:
         remote_dir, filename = await locate_exact(ftps, names, directories)
-        await viz.validate_revision(printer_id, ftps, remote_dir, filename)
+        revision = await viz.validate_revision(printer_id, ftps, remote_dir, filename)
         data = await viz.source_bytes(printer_id, ftps, remote_dir, filename)
     except VizFillError as exc:
         status = {"not_found": 404, "ambiguous": 409}.get(exc.kind, 502)
         raise HTTPException(status, exc.detail) from exc
     except Exception as exc:  # noqa: BLE001 — FTPS failure
         raise HTTPException(502, f"Could not read the print file: {exc}") from exc
-    return f"/{remote_dir}/{filename}", data
+    return revision, data
 
 
 async def _load(request: Request, printer_id: str, service: Any) -> Loaded:
     """The running job, re-read from storage; parsed once per file and plate.
 
-    The first file read in a run is pinned (RunLog.pin): a later read in the
-    same run that finds another file or other bytes is refused.
+    The printing file is pinned (RunLog.pin) on its first read while the
+    print is RUNNING or PAUSE: a later read for the same reported job that
+    finds another revision or other bytes is refused.
     """
     raw = _raw(service)
     job_name, gcode_file, run_id = raw.get("subtask_name"), raw.get("gcode_file"), _run_id(service)
-    source, data = await _source(request, printer_id, service)
+    revision, data = await _source(request, printer_id, service)
     digest = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
     run_log = getattr(service, "run_log", None)
-    if run_log and _run_id(service) == run_id and not run_log.pin(source, digest):
+    if (
+        run_log
+        and _run_id(service) == run_id
+        and _fresh_state(service) in skip.SKIP_STATES
+        and not run_log.pin(job_name, gcode_file, revision, digest)
+    ):
         raise HTTPException(409, REPLACED)
     try:
         plates = tuple(await asyncio.to_thread(skip.archive_plates, data))

@@ -93,6 +93,17 @@ _INACTIVE_STATES = {
 }
 
 
+def _print_mark(state: dict[str, Any]) -> tuple[Any, ...]:
+    """(subtask_name, gcode_file, total_layer_num, layer_num) of a print."""
+    try:
+        layer = int(state.get("layer_num") or 0)
+    except (TypeError, ValueError):
+        layer = 0
+    return (
+        state.get("subtask_name"), state.get("gcode_file"), state.get("total_layer_num"), layer,
+    )
+
+
 def _iso(ts: float | None) -> str | None:
     """`time.time()` epoch float → ISO 8601 UTC string, or None pass-through."""
     if ts is None:
@@ -241,6 +252,7 @@ class PrinterService:
         self._load_filament_memory = load_filament_memory
         # Skip Objects' run boundary, the skips sent this run and its file.
         self.run_log = RunLog()
+        self._gap: tuple[Any, ...] | None = None
         self._invalidate_filament_memory = invalidate_filament_memory
 
         # TOFU cert state (PR A.2; contract §4.5). `expected_fingerprint` is
@@ -521,8 +533,11 @@ class PrinterService:
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
-        # A run may have ended and another begun while the link was down.
-        self.run_log.new_run()
+        # A run may have ended and another begun while the link was down: open
+        # Skip sheets must reload. Its pin and pending skips stay only if the
+        # first report shows the same print going on (_check_gap).
+        self.run_log.new_run(keep=True)
+        self._gap = _print_mark(self._state)
         # Keep the pre-disconnect state: the next report is classified against
         # it, so a print that ended during the drop still ends (Orca keeps its
         # attributes until a report carries a new value).
@@ -694,6 +709,7 @@ class PrinterService:
         self._refresh_gcode_state()
         if not self._gcode_fresh and "gcode_state" in incoming:
             self._gcode_fresh = True
+            self._check_gap()
             await self._maybe_recover_started_at()
             await self._maybe_load_filament_memory()
         if self._need_seed or (report.print is not None and report.print.msg == 0):
@@ -724,6 +740,21 @@ class PrinterService:
     # ----------------------------------------------------------------- #
     # Event classification
     # ----------------------------------------------------------------- #
+
+    def _check_gap(self) -> None:
+        """First report after a reconnect: the same print going on keeps the
+        RunLog's pin and pending skips; anything else forgets them."""
+        before, self._gap = self._gap, None
+        if before is None:
+            return
+        now = _print_mark(self._state)
+        same = (
+            self._state.get("gcode_state") in ("RUNNING", "PAUSE")
+            and before[:3] == now[:3]
+            and now[3] >= before[3]
+        )
+        if not same:
+            self.run_log.forget()
 
     def _refresh_gcode_state(self) -> None:
         raw = self._state.get("gcode_state")

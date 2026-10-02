@@ -124,6 +124,55 @@ def test_cli_slice_without_objects_falls_back_to_model_settings():
     assert job.label_object_enabled is True
 
 
+def _cli_without_object_lists(header: bool = True) -> bytes:
+    """multi3 shaped like the owner's Orca 2.4.2 CLI slices (Masonry-Keys-*,
+    FanCrate-*): label_object_enabled, labelled G-code, but no <object> in
+    slice_info and no model_instance identify_ids in model_settings."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(FIXTURES / "multi3.gcode.3mf") as src, zipfile.ZipFile(buf, "w") as dst:
+        for name in src.namelist():
+            body = src.read(name)
+            if name == "Metadata/slice_info.config":
+                body = re.sub(rb"\s*<object [^>]*/>", b"", body)
+            elif name == "Metadata/model_settings.config":
+                body = re.sub(rb"\s*<model_instance>.*?</model_instance>", b"", body, flags=re.S)
+            elif name == "Metadata/plate_1.gcode" and not header:
+                body = body.replace(b"; model label id: 63,74,85\n", b"")
+            dst.writestr(name, body)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("header", [True, False])
+def test_cli_slice_without_object_lists_uses_the_gcode_labels(header):
+    # Review round 4 #6: 45 of the owner's 58 archives look like this.
+    job = skip.read_job(_cli_without_object_lists(header), 1)
+    assert job.label_object_enabled is True
+    assert [(o.id, o.name) for o in job.objects] == [
+        (63, "cube.stl"), (74, "bar.stl"), (85, "frame.stl"),
+    ]
+    assert job.map_source == "gcode"
+    assert set(np.unique(job.pick).tolist()) == {0, 63, 74, 85}
+    assert job.total_layers == 20
+    assert skip.job_reason(job) is None
+    # The same map as the listed objects give.
+    assert np.array_equal(job.pick, skip.read_job(_fixture("multi3.gcode.3mf"), 1).pick)
+
+
+def test_a_plate_with_no_objects_at_all_is_refused():
+    data = _cli_without_object_lists()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(buf, "w") as dst:
+        for name in src.namelist():
+            body = src.read(name)
+            if name == "Metadata/plate_1.gcode":
+                labels = rb"; (model label id|start printing object, unique label id): [\d,]+\n"
+                body = re.sub(labels, b"", body)
+            dst.writestr(name, body)
+    job = skip.read_job(buf.getvalue(), 1)
+    assert job.objects == ()
+    assert skip.job_reason(job) == skip.NO_OBJECTS
+
+
 def test_model_settings_fallback_agrees_with_slice_info():
     data = _fixture("multi3.gcode.3mf")
     buf = io.BytesIO()
@@ -263,14 +312,21 @@ def test_run_log_counts_sent_skips_until_echoed_expired_or_next_run():
     assert log.pending([], now=51) == set()
 
 
-def test_run_log_pins_the_first_file_of_a_run():
+def test_run_log_pins_the_reported_jobs_file():
     log = skip.RunLog()
-    assert log.pin("/multi.gcode.3mf", "a" * 64)
-    assert log.pin("/multi.gcode.3mf", "a" * 64)
-    assert not log.pin("/multi.gcode.3mf", "b" * 64)               # other bytes
-    assert not log.pin("/cache/multi.gcode.3mf", "a" * 64)         # another file
+    rev = ("", (100, "20261002120000"))
+    assert log.pin("multi", "multi.gcode.3mf", rev, "a" * 64)
+    assert log.pin("multi", "multi.gcode.3mf", rev, "a" * 64)
+    assert log.pin("multi", "multi.gcode.3mf", None, "a" * 64)      # inbox copy: same bytes
+    assert not log.pin("multi", "multi.gcode.3mf", rev, "b" * 64)   # other bytes
+    assert not log.pin("multi", "multi.gcode.3mf", ("", (100, "20261002130000")), "a" * 64)
+    # Another reported job inside the same run_id re-pins (round 4 #2, #12).
+    assert log.pin("next", "next.gcode.3mf", None, "c" * 64)
+    assert not log.pin("next", "next.gcode.3mf", None, "d" * 64)
+    log.new_run(keep=True)                                         # a reconnect
+    assert not log.pin("next", "next.gcode.3mf", None, "d" * 64)
     log.new_run()
-    assert log.pin("/multi.gcode.3mf", "b" * 64)
+    assert log.pin("next", "next.gcode.3mf", None, "d" * 64)
 
 
 def test_run_ids_do_not_repeat_across_restarts():
@@ -552,6 +608,30 @@ def test_body_of_a_multi_body_object_inside_a_ring_keeps_its_bore(order):
     assert centre == 74, "the nested washer's bore belongs to the washer"
     assert pick[(100 - 20) * 2, 20 * 2] == 74            # the outer washer's bore
     assert pick[(100 - 45) * 2, 45 * 2] == 85            # between frame and washer
+
+
+def test_an_object_inside_another_inside_itself_keeps_its_bore():
+    # Review round 4 #7 (fuzz seed 11, trial 82): object 3 rings object 2,
+    # which rings another body of object 3 with its own bore. Filling object 3
+    # as a whole made object 2's enclosure the smaller and took that bore.
+    def ring(x0, x1):
+        return _square(x0, x0, x1, x1) + _square(x0 + 1, x0 + 1, x1 - 1, x1 - 1)
+
+    gcode = ("M83\n; LINE_WIDTH: 1\n"
+             "; start printing object, unique label id: 3\n" + ring(10, 90) + ring(40, 60)
+             + "; stop printing object, unique label id: 3\n"
+             "; start printing object, unique label id: 2\n" + ring(25, 75)
+             + "; stop printing object, unique label id: 2\n")
+    pick = skip.gcode_footprint(
+        io.BytesIO(gcode.encode()), frozenset({2, 3}), (0.0, 0.0, 100.0, 100.0)
+    )
+
+    def at(x, y):
+        return int(pick[round((100 - y) * 2), round(x * 2)])
+
+    assert at(50, 50) == 3      # object 3's inner bore
+    assert at(32, 50) == 2      # between object 2's ring and object 3's inner ring
+    assert at(18, 50) == 3      # between object 3's outer ring and object 2
 
 
 def test_label_splits_4_connected_regions():

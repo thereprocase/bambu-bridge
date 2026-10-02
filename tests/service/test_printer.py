@@ -421,7 +421,8 @@ async def test_run_log_changes_run_on_every_edge_and_reconnect():
     def run_id():
         return service.snapshot()["job"]["run_id"]
 
-    await report({"gcode_state": "FINISH", "subtask_name": "a", "gcode_file": "a.gcode.3mf"})
+    await report({"gcode_state": "FINISH", "subtask_name": "a", "gcode_file": "a.gcode.3mf",
+                  "total_layer_num": 20, "layer_num": 0})
     first = run_id()
     await report({"gcode_state": "PREPARE"})
     await report({"gcode_state": "RUNNING"})
@@ -437,10 +438,15 @@ async def test_run_log_changes_run_on_every_edge_and_reconnect():
     assert run_id() == started and service.run_log.pending([]) == {63}
 
     await service._handle_connected()                 # the link came back
-    assert run_id() != started and service.run_log.pending([]) == set()
+    assert run_id() != started, "open sheets must reload after a gap"
     reconnected = run_id()
-    await report({"gcode_state": "RUNNING"})          # RUNNING -> RUNNING: no edge
-    assert run_id() == reconnected
+    await report({"gcode_state": "RUNNING", "layer_num": 9})   # the same print goes on
+    assert run_id() == reconnected                    # RUNNING -> RUNNING: no edge
+    assert service.run_log.pending([]) == {63}        # kept across the gap (round 4 #8)
+
+    await service._handle_connected()
+    await report({"gcode_state": "RUNNING", "subtask_name": "b", "gcode_file": "b.gcode.3mf"})
+    assert service.run_log.pending([]) == set()       # not provably the same print
 
     await report({"gcode_state": "FINISH"})
     assert run_id() != reconnected

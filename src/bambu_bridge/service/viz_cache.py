@@ -244,8 +244,11 @@ class VizCache:
 
     async def validate_revision(
         self, printer_id: str, ftps: FtpsTransfer, remote_dir: str, filename: str
-    ) -> None:
-        """Revalidate before both API conditional responses and pre-warm reuse."""
+    ) -> tuple[str, tuple[int, str]] | None:
+        """Revalidate before both API conditional responses and pre-warm reuse.
+
+        Returns (directory, (SIZE, MDTM)), or None when the firmware has neither.
+        """
         key = (printer_id, filename)
         try:
             revision = await ftps.file_revision(filename, remote_dir=remote_dir)
@@ -257,6 +260,7 @@ class VizCache:
             self.invalidate(printer_id, filename)
         if current is not None:
             self._revisions[key] = current
+        return current
 
     def content_id(self, printer_id: str, filename: str) -> str:
         return self._digests.get((printer_id, filename), "")
