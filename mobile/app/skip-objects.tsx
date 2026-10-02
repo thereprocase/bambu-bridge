@@ -216,7 +216,7 @@ export default function SkipObjectsScreen() {
           }}
           style={{ width: "100%", aspectRatio: info.map.width / info.map.height }}
         >
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: c.surface2 }]} />
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: "#E6E6E6" }]} />  {/* the map's own plate colour */}
           {/* Keyed by sequence: the loaded layer keeps its element when it becomes the shown map. */}
           {[shownMap, nextMap].filter((m): m is MapLayer => !!m && m.digest === info.digest).map((m) => (
             <Image
