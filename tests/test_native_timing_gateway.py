@@ -14,7 +14,7 @@ async def test_unchanged_reports_do_not_reload_receipt_history():
     gateway = SimpleNamespace(
         inbox=inbox,
         config={"printer_id": "fixture"},
-        service=lambda: SimpleNamespace(native_snapshot=lambda: {}),
+        inbox_service=SimpleNamespace(native_snapshot=lambda: {}),
         inbox_status=[{"id": "old"}],
     )
     await NativeGateway.observe_inbox(gateway, {"print": {"gcode_state": "RUNNING"}})

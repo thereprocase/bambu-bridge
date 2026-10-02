@@ -10,7 +10,6 @@ Routers are thin; all domain state hangs off ``app.state``.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +32,7 @@ from bambu_bridge.api import (
     pairing,
     printers,
     queue,
+    skip_objects,
     spools,
     status,
     viz,
@@ -136,6 +136,7 @@ def create_app(
         # get the external-print watcher attached on startup (same as
         # EventPersister and NotificationService).
         registry.add_listener(job_manager.attach)
+        await job_manager.recover()  # rows a previous process left mid-upload
         await registry.load()
 
         # Startup backfill: if any printer has a live job (submitted/preparing/
@@ -175,7 +176,6 @@ def create_app(
             if settings.bridge_library_dir
             else None
         )
-        app.state.orca_submit_lock = asyncio.Lock()
         app.state.db = db
         app.state.registry = registry
         app.state.jobs = job_manager
@@ -255,6 +255,7 @@ def create_app(
     v1.include_router(status.router)
     v1.include_router(control.router)
     v1.include_router(advanced.router)
+    v1.include_router(skip_objects.router)
     v1.include_router(files.router)
     v1.include_router(jobs.router)
     v1.include_router(camera.router)

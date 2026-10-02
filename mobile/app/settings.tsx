@@ -237,7 +237,7 @@ export default function SettingsScreen() {
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
     >
       {baseUrl && bearer && <>
-        <Link href="/(tabs)/status" replace asChild><Button label="Open dashboard" onPress={() => {}} fullWidth /></Link>
+        <Link href="/(tabs)/status" dismissTo asChild><Button label="Open dashboard" onPress={() => {}} fullWidth /></Link>
         <Link href="/native-recovery" asChild><Button label="Bridge queue and recovery" variant="secondary" onPress={() => {}} fullWidth /></Link>
         <ViewingSettings />
       </>}
@@ -433,7 +433,7 @@ export default function SettingsScreen() {
           <Button label="Add a printer" onPress={() => {}} fullWidth />
         </Link>
         {baseUrl && bearer && (
-          <Link href="/(tabs)/status" asChild>
+          <Link href="/(tabs)/status" dismissTo asChild>
             <Button label="Open dashboard" variant="secondary" onPress={() => {}} fullWidth />
           </Link>
         )}

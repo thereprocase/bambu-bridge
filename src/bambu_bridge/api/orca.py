@@ -17,14 +17,17 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from bambu_bridge import __version__
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_owner
+from bambu_bridge.api.capabilities import reported_nozzle, require_start
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.orca import OrcaStore
+from bambu_bridge.protocol.commands import AmsMapping
 from bambu_bridge.protocol.ftps import FtpsTransfer
+from bambu_bridge.service.jobs import PrinterBusyError
 from bambu_bridge.service.registry import PrinterNotFoundError
 from bambu_bridge.slicedoc import validate
 
@@ -56,15 +59,9 @@ def printer_for(request: Request, printer_id: str) -> Any:
 class ClientRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64, pattern=r"^[^\x00-\x1f\x7f]+$")
     printer_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    # null = upload only; [] = external spool; [0..15] = physical AMS slots.
-    ams_mapping: list[int] | None = Field(default=None, max_length=16)
-
-    @field_validator("ams_mapping")
-    @classmethod
-    def mapping_valid(cls, value: list[int] | None) -> list[int] | None:
-        if value is not None and any(not 0 <= n <= 15 for n in value):
-            raise ValueError("AMS slots must be numbered 0 to 15")
-        return value
+    # null = upload only; [] = external spool; else Orca's ams_mapping: one
+    # tray (0 = slot 1) or -1 (unused) per project filament.
+    ams_mapping: AmsMapping | None = None
 
 
 @management.get("", dependencies=[Depends(secure_owner)])
@@ -117,19 +114,14 @@ def dashboard() -> RedirectResponse:
 def validate_plate(data: bytes, plateindex: int) -> None:
     """Reject unsupported selections instead of silently starting plate 1.
 
-    Bound decompression before the existing validator's testzip/read calls.
-    Files are kept byte-for-byte; no tool changes or plate renumbering occur.
+    Archive bounds are validate()'s G1. Files are kept byte-for-byte; no tool
+    changes or plate renumbering occur.
     """
     if plateindex != 1:
         raise HTTPException(422, "This preview sends plate 1 only. Move the plate to position 1.")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            members = archive.infolist()
-            names = [m.filename for m in members]
-            if len(members) > 4096 or sum(m.file_size for m in members) > 512 * 1024 * 1024:
-                raise HTTPException(413, "Expanded 3MF exceeds the 512 MiB / 4096 member limit")
-            if len(names) != len(set(names)) or any(m.flag_bits & 1 for m in members):
-                raise HTTPException(422, "Duplicate or encrypted 3MF members are unsupported")
+            names = archive.namelist()
             plates = [n for n in names if re.fullmatch(r"Metadata/plate_\d+\.gcode", n)]
             if plates != ["Metadata/plate_1.gcode"]:
                 raise HTTPException(422, "Export one sliced plate at position 1 for this preview")
@@ -166,12 +158,15 @@ async def upload(
         )
     data = await read_upload(file)
     await asyncio.to_thread(validate_plate, data, plateindex)
-    try:
-        report = await asyncio.to_thread(
-            validate, data, expected_ams_mapping=mapping if mapping else None
-        )
-    except (ValueError, OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
-        raise HTTPException(422, "The sliced 3MF could not be validated") from exc
+    # Orca checks the sliced nozzle against the printer before it starts a job.
+    nozzle = reported_nozzle(printer_for(request, printer_id)) if print_now else None
+    # mapping: None = upload only (no start); [] = external spool, single filament.
+    report = await asyncio.to_thread(
+        validate,
+        data,
+        expected_ams_mapping=mapping if print_now else None,
+        expected_nozzle=nozzle,
+    )
     if not report.ok:
         raise HTTPException(422, "3MF validation failed: " + "; ".join(report.issues))
     if store_for(request).authenticate(request.headers.get("x-api-key"), printer_id) is None:
@@ -188,26 +183,19 @@ async def upload(
         "done": True,
     }
     if print_now:
-        # External-spool keys must never launch a multi-filament slice.
-        if mapping == []:
-            from xml.etree import ElementTree
-
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                xml = ElementTree.fromstring(archive.read("Metadata/slice_info.config"))
-            if len(list(xml.iter("filament"))) != 1:
-                raise HTTPException(422, "External-spool printing requires a single filament")
         jobs = request.app.state.jobs
-        if service.summary().get("gcode_state") not in ("IDLE", "FINISH", "FAILED"):
-            raise HTTPException(409, "Printer is busy or its idle state is not yet known")
+        try:
+            # Same printer checks as every other start; returns the reported nozzle.
+            require_start(service, "a print")
+        except HTTPException as exc:  # Orca shows the reason as plain text
+            detail: Any = exc.detail
+            raise HTTPException(exc.status_code, detail["message"]) from None
         if any(not j.state.terminal for j in await jobs.history(printer_id=printer_id, limit=200)):
             raise HTTPException(409, "A bridge job is already active for this printer")
-        # Serialize concurrent Orca submissions across the queued-row DB write.
-        async with request.app.state.orca_submit_lock:
-            if any(
-                not j.state.terminal for j in await jobs.history(printer_id=printer_id, limit=200)
-            ):
-                raise HTTPException(409, "A bridge job is already active for this printer")
+        try:  # submit() claims the printer, so concurrent starts get 409 here
             job = await jobs.submit(printer_id, data, stored_name, ams_mapping=mapping or None)
+        except PrinterBusyError:
+            raise HTTPException(409, "A bridge job is already active for this printer") from None
         result.update(job_id=job.id, bridge_state="queued")
     else:
         try:

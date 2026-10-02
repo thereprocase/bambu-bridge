@@ -30,8 +30,8 @@ export function mountOrca(parent, app) {
     el('label', { class: 'field__label', for: id, text: label }), input,
   ]);
   card.append(field('Printer', 'orca-printer', printers), field('Connection name', 'orca-name', name),
-    field('Permission', 'orca-mode', mode), field('AMS slots in slicer filament order', 'orca-mapping', mapping));
-  card.appendChild(el('p', { class: 'field__hint', text: 'AMS slots are zero based: 0 is slot 1, 1 is slot 2. For one slicer filament using physical slot 2, enter 1. The mapping is fixed for this key; create a new key when it changes.' }));
+    field('Permission', 'orca-mode', mode), field('AMS tray per project filament', 'orca-mapping', mapping));
+  card.appendChild(el('p', { class: 'field__hint', text: 'Orca’s AMS mapping: one entry per filament in the project, in project order. Trays are zero based (0 is slot 1, 1 is slot 2); enter -1 for a filament the plate does not use. For a one-filament project on physical slot 2, enter 1. The mapping is fixed for this key; create a new key when it changes.' }));
   const modeHint = el('p', { class: 'field__hint', text: 'Upload only saves the file to the SD card. Start it later at the printer.' });
   mode.after(modeHint);
   mode.addEventListener('change', () => {
@@ -88,8 +88,8 @@ export function mountOrca(parent, app) {
   create.addEventListener('click', async () => {
     let ams = null;
     if (mode.value === 'ams') {
-      if (!/^\d+(\s*,\s*\d+)*$/.test(mapping.value.trim())) {
-        message('Enter AMS slot numbers separated by commas.', true); return;
+      if (!/^-?\d+(\s*,\s*-?\d+)*$/.test(mapping.value.trim())) {
+        message('Enter AMS trays (or -1) separated by commas.', true); return;
       }
       ams = mapping.value.split(',').map(Number);
     } else if (mode.value === 'external') ams = [];

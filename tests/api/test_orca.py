@@ -6,6 +6,7 @@ import asyncio
 import io
 import zipfile
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,7 +20,7 @@ from bambu_bridge.main import create_app
 from bambu_bridge.protocol.ftps import FtpsTransfer
 from bambu_bridge.service.registry import PrinterNotFoundError
 from tests.conftest import ACCESS_CODE
-from tests.slicedoc.test_validate_source_agnostic import _SINGLE_PETG, _container
+from tests.slicedoc.test_validate_source_agnostic import _SINGLE_PETG, _container, _info
 
 OWNER = {"Authorization": "Bearer orca-fixture-owner"}
 SERIAL = "ORCA_TEST_PRINTER"
@@ -40,11 +41,19 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         )
     )
     with TestClient(app, base_url="https://bridge.invalid") as c:
+        status = {"model": "P1S", "_raw": {"gcode_state": "IDLE", "nozzle_diameter": "0.4"}}
         service = SimpleNamespace(
             connected=True,
             ip="127.0.0.1",
             access_code="mock-only",
-            summary=lambda: {"gcode_state": "IDLE"},
+            status=status,
+            snapshot=lambda: {
+                **status,
+                "session": {
+                    "connected": True,
+                    "last_telemetry_at": datetime.now(UTC).isoformat(),
+                },
+            },
         )
 
         def get(printer_id: str) -> SimpleNamespace:
@@ -183,8 +192,9 @@ def test_bad_uploads_never_touch_printer(client, fields, data, name, status):
 
 
 def test_multiple_plates_and_wrong_mapping_rejected(client: TestClient) -> None:
-    _, auth = key(client, [0, 1])
-    assert send(client, auth, fields={"print": "true"}).status_code == 422
+    _, auth = key(client, [0])  # project filament 2 has no tray
+    two = _container(_info(1, 2), b"M620 S0A\nT0\nM621 S0A\nM620 S1A\nT1\nM621 S1A\n")
+    assert send(client, auth, data=two, fields={"print": "true"}).status_code == 422
     buf = io.BytesIO(SLICE)
     with zipfile.ZipFile(buf, "a") as archive:
         archive.writestr("Metadata/plate_2.gcode", "M104 S220\n")
@@ -198,9 +208,11 @@ def test_busy_offline_and_transfer_failure(client: TestClient) -> None:
     service.connected = False
     assert send(client, auth).status_code == 409
     service.connected = True
-    service.summary = lambda: {"gcode_state": "RUNNING"}
-    assert send(client, auth, fields={"print": "true"}).status_code == 409
-    service.summary = lambda: {"gcode_state": "IDLE"}
+    service.status["_raw"]["gcode_state"] = "RUNNING"
+    busy = send(client, auth, fields={"print": "true"})
+    assert busy.status_code == 409
+    assert busy.json()["message"] == "Printer must be idle before starting a print"
+    service.status["_raw"]["gcode_state"] = "IDLE"
     client.app.state.jobs.history.return_value = [
         SimpleNamespace(state=SimpleNamespace(terminal=False))
     ]
@@ -215,7 +227,10 @@ def test_external_spool_and_invalid_client_config(client: TestClient) -> None:
     _, auth = key(client, [])
     assert send(client, auth, fields={"print": "true"}).status_code == 201
     assert client.app.state.jobs.submit.call_args.kwargs["ams_mapping"] is None
-    for mapping in [[-1], [16], list(range(17))]:
+    two = _container(_info(1, 2), b"M620 S0A\nT0\nM621 S0A\nM620 S1A\nT1\nM621 S1A\n")
+    response = send(client, auth, data=two, fields={"print": "true"})
+    assert response.status_code == 422 and "external spool feeds one" in response.text
+    for mapping in [[-2], [16], [0] * 65]:  # -1 (unused filament) is valid Orca
         assert (
             client.post(
                 MANAGE,
@@ -224,6 +239,16 @@ def test_external_spool_and_invalid_client_config(client: TestClient) -> None:
             ).status_code
             == 422
         )
+
+
+def test_print_checks_the_reported_nozzle_like_orca(client: TestClient) -> None:
+    _, auth = key(client, [0])
+    service = client.app.state.registry.get(SERIAL)
+    service.snapshot = lambda: {"_raw": {"nozzle_diameter": "0.6"}}
+    response = send(client, auth, fields={"print": "true"})
+    assert response.status_code == 422 and "differs from the printer's 0.6" in response.text
+    client.app.state.jobs.submit.assert_not_awaited()
+    assert send(client, auth).status_code == 201  # upload only: no start, no nozzle gate
 
 
 async def test_actual_ftps_upload_without_print(client, ftps_server, monkeypatch) -> None:

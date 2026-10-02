@@ -150,6 +150,18 @@ it.each([1008, 4000])("stops retrying after policy/protocol close %i", async (co
   expect(JSON.stringify(onStatus.mock.calls)).not.toContain("private");
 });
 
+it("retries a paired transport failure (native error + 1006) on another URL", async () => {
+  // SecureBridgeModule reports TLS resets and pin failures as error + 1006;
+  // only a real credential close from the bridge arrives as 1008.
+  const { onStatus } = connection(); await flush();
+  MockSocket.instances[0].onerror?.({ message: "PAIR_IDENTITY" });
+  MockSocket.instances[0].onclose?.({ code: 1006, reason: "" });
+  expect(notifyRequestFailed).toHaveBeenCalledTimes(1);
+  expect(onStatus).not.toHaveBeenCalledWith("error", "Check your API key and selected printer in Settings.");
+  await jest.advanceTimersByTimeAsync(1000);
+  expect(MockSocket.instances).toHaveLength(2);
+});
+
 it("rejects a protocol mismatch and never opens a duplicate on start", async () => {
   const { conn, onStatus } = connection(); conn.start(); await flush();
   expect(MockSocket.instances).toHaveLength(1);

@@ -43,7 +43,7 @@ class HlsCamera(
     @Volatile private var lastFrame = SystemClock.elapsedRealtime()
     private var windowAt = lastFrame
     private var frames = 0
-    private var first = true
+    @Volatile private var first = true
     private var liveRecoveries = 0
     private val watchdog = object : Runnable {
         override fun run() {
@@ -107,6 +107,10 @@ class HlsCamera(
         val h = (videoHeight * factor).toInt()
         texture.layout((width - w) / 2, (height - h) / 2, (width + w) / 2, (height + h) / 2)
     }
+    /** The last decoded frame, or null before the first one: a closing view hands it
+     *  to the host so the camera box keeps a picture instead of going dark. */
+    fun heldFrame(): android.graphics.Bitmap? = if (first) null else texture.bitmap
+
     fun close() {
         if (closed.getAndSet(true)) return
         removeCallbacks(watchdog); player.release(); transport.close()

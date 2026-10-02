@@ -9,7 +9,8 @@
  */
 
 import { qaLog } from "../lib/qalog";
-import { request } from "./client";
+import type { SkipObjectsInfo, skipRequest } from "../lib/skipObjects";
+import { request, type RawResponse } from "./client";
 import { BridgeError } from "./errors";
 
 export type PrintAction = "pause" | "resume" | "stop";
@@ -83,17 +84,21 @@ export function home(id: string) {
   );
 }
 
+/** OrcaSlicer's jog feed rates: XY at 3000 mm/min, Z at 900 mm/min. */
+export const JOG_FEED_MM_MIN = { X: 3000, Y: 3000, Z: 900 } as const;
+
 export function move(
   id: string,
   body: { axis: "X" | "Y" | "Z"; distance_mm: number; feed_mm_min?: number },
 ) {
+  const withFeed = { feed_mm_min: JOG_FEED_MM_MIN[body.axis], ...body };
   return tracked(
     `move_${body.axis.toLowerCase()}`,
-    request<{ sent: unknown }>(`/printers/${id}/move`, { method: "POST", body }),
+    request<{ sent: unknown }>(`/printers/${id}/move`, { method: "POST", body: withFeed }),
   );
 }
 
-export function amsControl(id: string, action: "pause" | "resume" | "reset") {
+export function amsControl(id: string, action: "resume") {
   return tracked(
     `ams_${action}`,
     request<{ sent: unknown }>(`/printers/${id}/ams/control`, { method: "POST", body: { action } }),
@@ -185,13 +190,28 @@ export function setPrintOption(id: string, flags: Record<string, boolean>) {
   );
 }
 
-/** Skip specific objects (cancel-object) mid-print. */
-export function skipObjects(id: string, obj_list: number[]) {
+/** The running plate's objects and pick map (OrcaSlicer's PartSkipDialog data). */
+export function getSkipObjects(id: string) {
+  return request<SkipObjectsInfo>(`/printers/${id}/skip_objects`, { timeoutMs: 30_000 });
+}
+
+/** The plate drawn in Orca's skip-canvas colours with `checked` selected (PNG bytes). */
+export async function getSkipMap(id: string, checked: number[], skipped: number[], digest: string) {
+  const raw = await request<RawResponse>(`/printers/${id}/skip_objects/map.png`, {
+    rawBytes: true,
+    query: { checked: checked.join(","), v: skipped.join(","), digest },
+  });
+  return raw.bytes;
+}
+
+/** Skip objects mid-print. The body echoes the job identity from the GET and
+ * the confirmed action; the bridge answers 409 when either no longer holds. */
+export function skipObjects(id: string, body: ReturnType<typeof skipRequest>) {
   return tracked(
     "skip_objects",
-    request<{ sent: unknown }>(`/printers/${id}/skip_objects`, {
+    request<{ sent: unknown; action: "skip" | "stop" }>(`/printers/${id}/skip_objects`, {
       method: "POST",
-      body: { obj_list },
+      body,
     }),
   );
 }

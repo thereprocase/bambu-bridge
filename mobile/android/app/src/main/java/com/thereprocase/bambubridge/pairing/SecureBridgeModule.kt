@@ -212,7 +212,11 @@ class SecureBridgeModule(private val context: ReactApplicationContext) : ReactCo
                 override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                     sockets.remove(id)
                     emit(id, "error", if (securityFailure(t)) "PAIR_IDENTITY" else "PAIR_NETWORK")
-                    emit(id, "close", code = if (securityFailure(t)) 1008 else 1006)
+                    // 1006, never 1008: a TLS reset or pin failure is a transport
+                    // failure. The JS side treats 1008 as a terminal credential
+                    // close (only the bridge's own close frame, via onClosed, may
+                    // send it) and retries 1006 on the other URL with backoff.
+                    emit(id, "close", code = 1006)
                 }
             })
             sockets[id] = socket

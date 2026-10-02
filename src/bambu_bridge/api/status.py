@@ -7,6 +7,15 @@ Wire sequence per connection:
 3. ``{"type": "delta", ...}`` / ``{"type": "event", ...}`` as they occur
 4. ``{"type": "ping"}`` every 30 s; client echoes a pong (any frame)
 
+Clock exchange (optional, NTP on-wire, RFC 5905 section 8): a client frame
+``{"type": "clock", "t0": <client epoch ms>}`` is answered with
+``{"type": "clock", "t0": <echo>, "t1": <bridge receive ms>, "t2": <bridge send ms>}``.
+t2 is stamped inside the send lock, so time spent queued behind a status frame
+drops out. With its receive time t3 the client computes
+offset = ((t1 - t0) + (t2 - t3)) / 2 and delay = (t3 - t0) - (t2 - t1), keeps
+the lowest-delay recent sample (NTP clock filter), and judges telemetry age in
+the bridge's time base. Clients that never ask never see the frame.
+
 Subscription is taken *before* the snapshot is read, so a change landing in
 the gap is delivered as a follow-up delta rather than lost.
 
@@ -19,6 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import math
+import time
 from typing import Any
 
 import structlog
@@ -73,8 +85,9 @@ async def printer_status(websocket: WebSocket, printer_id: str) -> None:
         initial = service.snapshot()
         await websocket.send_json({"type": "snapshot", "data": initial})
 
-        sender = asyncio.create_task(_pump(websocket, sub, service, initial))
-        receiver = asyncio.create_task(_drain_client(websocket))
+        locked = _LockedSocket(websocket)
+        sender = asyncio.create_task(_pump(locked, sub, service, initial))
+        receiver = asyncio.create_task(_drain_client(locked))
         guard = asyncio.create_task(_watch_auth(websocket, token, settings, pairing, secure))
         try:
             done, pending = await asyncio.wait(
@@ -143,8 +156,45 @@ async def _pump(
                 last_translated = current
 
 
-async def _drain_client(websocket: WebSocket) -> None:
-    """Consume client frames (pong/keepalive); return on disconnect."""
+class _LockedSocket:
+    """Serialize sends: the status pump and clock replies share one socket."""
+
+    def __init__(self, websocket: Any) -> None:
+        self._ws = websocket
+        self._lock = asyncio.Lock()
+
+    async def send_json(self, data: dict[str, Any]) -> None:
+        async with self._lock:
+            if data.get("type") == "clock":
+                data = {**data, "t2": time.time() * 1000}   # transmit stamp, after any queueing
+            await self._ws.send_json(data)
+
+    async def receive_text(self) -> str:
+        return await self._ws.receive_text()
+
+
+def clock_reply(text: str, now_ms: float | None = None) -> dict[str, Any] | None:
+    """Answer a client ``clock`` probe with its receive stamp t1; ``None`` otherwise.
+
+    The transmit stamp t2 is added by :class:`_LockedSocket` at send time.
+    """
+    try:
+        frame = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(frame, dict) or frame.get("type") != "clock":
+        return None
+    t0 = frame.get("t0")
+    if isinstance(t0, bool) or not isinstance(t0, int | float) or not math.isfinite(t0):
+        return None
+    return {"type": "clock", "t0": t0, "t1": time.time() * 1000 if now_ms is None else now_ms}
+
+
+async def _drain_client(websocket: Any) -> None:
+    """Consume client frames (pong/keepalive, clock probes); return on disconnect."""
     with contextlib.suppress(WebSocketDisconnect):
         while True:
-            await websocket.receive_text()
+            text = await websocket.receive_text()
+            reply = clock_reply(text)       # t1 = receive time, before any send wait
+            if reply is not None:
+                await websocket.send_json(reply)

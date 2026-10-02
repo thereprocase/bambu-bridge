@@ -45,10 +45,12 @@ actual proxy; see [local pairing](LOCAL-PAIRING.md).
 ## Upload and print
 
 Create a connection with **fixed AMS mapping** or **single external spool**
-permission to use Orca's **Upload and print** action. Mapping entries are
-zero-based physical slots in slicer filament order: `1` maps a one-filament
-slice to physical slot 2; `0,2` maps its two filaments to physical slots 1
-and 3. It is not automatic AMS discovery. Check the loaded materials before
+permission to use Orca's **Upload and print** action. The mapping is Orca's
+own `ams_mapping`: one entry per project filament, each the zero-based AMS
+tray or `-1` for a filament the plate does not use. `1` maps a one-filament
+project to physical slot 2; `0,2` maps a two-filament project to physical
+slots 1 and 3; `-1,1` prints only the second filament, from slot 2. It is
+not automatic AMS discovery. Check the loaded materials before
 printing and create a new connection when the mapping changes.
 
 Upload-only keys return an explicit error for a print request. A successful
@@ -90,7 +92,8 @@ Host URL: `https://bridge.example/orca/PRINTER_ID` (no `/api/v1` suffix).
 | `DELETE /api/v1/orca/clients/{id}` | Revoke key; owner over HTTPS |
 
 For creation, `ams_mapping: null` means upload only, `[]` means one external
-spool, and a nonempty array means fixed AMS slots. Tokens in URL query
+spool, and a nonempty array is a fixed Orca `ams_mapping` (trays `0`-`15`,
+`-1` for unused). Tokens in URL query
 parameters, owner keys and phone tokens are not accepted by the adapter.
 
 Protocol reference: [Orca 2.4.2 OctoPrint upload client](https://github.com/OrcaSlicer/OrcaSlicer/blob/v2.4.2/src/slic3r/Utils/OctoPrint.cpp).

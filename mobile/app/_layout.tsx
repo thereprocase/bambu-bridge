@@ -90,6 +90,7 @@ function Bootstrap() {
             Title/header colors are overridden in-screen for the dark canvas. */}
         <Stack.Screen name="viewer" options={{ title: "3D · Live" }} />
         <Stack.Screen name="camera" options={{ title: "Camera" }} />
+        <Stack.Screen name="skip-objects" options={{ title: "Skip Objects" }} />
         <Stack.Screen name="connection" options={{ title: "Check connection" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       </Stack>

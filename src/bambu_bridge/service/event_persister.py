@@ -40,7 +40,6 @@ _KIND_SEVERITY: dict[str, str] = {
     "print_failed": "error",
     "print_progress": "info",
     "filament_runout": "warn",
-    "feed_warning": "warn",
     "error": "error",
     "connection_lost": "warn",
     "connection_restored": "info",

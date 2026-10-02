@@ -35,6 +35,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -98,12 +99,39 @@ def _make_print_failed_event() -> Event:
     return Event("event", {"print_error": None, "layer_num": 5}, name="print_failed")
 
 
+_LEVEL_AFTER = {
+    "print_started": "RUNNING",
+    "print_completed": "FINISH",
+    "print_failed": "FAILED",
+}
+
+
+class _LevelBus(EventBus):
+    """EventBus that also moves the fake printer's level state, as the real
+    PrinterService does before it publishes the named event."""
+
+    def __init__(self, svc: _FakePrinterService) -> None:
+        super().__init__()
+        self._svc = svc
+
+    def publish(self, event: Event) -> None:
+        if event.name in _LEVEL_AFTER:
+            self._svc.gcode_state = _LEVEL_AFTER[event.name]
+        super().publish(event)
+
+
 class _FakePrinterService:
-    """Minimal stand-in for PrinterService: exposes a live EventBus and serial."""
+    """Minimal stand-in for PrinterService: a live EventBus, serial and print_view."""
 
     def __init__(self, serial: str) -> None:
         self.serial = serial
-        self.bus = EventBus()
+        self.gcode_state: str | None = None
+        self.lost = False
+        self.bus = _LevelBus(self)
+
+    def print_view(self) -> dict[str, Any]:
+        return {"gcode_state": self.gcode_state, "layer_num": 0, "tray_now": None,
+                "lost": self.lost}
 
 
 class _FakeRegistry:
@@ -340,14 +368,10 @@ async def test_external_print_failed_closes_row(database: Database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_completion_does_not_close_bridge_submitted_row(
+async def test_completion_does_not_close_a_row_its_jobrun_owns(
     database: Database,
 ) -> None:
-    """print_completed must NOT close a bridge-submitted (non-external) row.
-
-    Bridge rows carry no metadata_json origin tag; they're managed by JobRun.
-    The watcher must leave them alone.
-    """
+    """A bridge row with a live JobRun is closed by that run, not the watcher."""
     await _seed_printer(database)
     jobs = JobRepo(database)
     manager = JobManager(jobs, EventRepo(database), _FakeRegistry())  # type: ignore[arg-type]
@@ -361,6 +385,7 @@ async def test_completion_does_not_close_bridge_submitted_row(
         started_at=1000,
     )
     await jobs.create(bridge_row)
+    manager._runs["bridge-j3"] = object()  # type: ignore[assignment]
 
     svc = _FakePrinterService(SERIAL)
     await manager.attach(svc)  # type: ignore[arg-type]
@@ -371,9 +396,42 @@ async def test_completion_does_not_close_bridge_submitted_row(
 
     row = await jobs.get("bridge-j3")
     assert row is not None
-    # JobRun would normally close it; here we verify the watcher left it alone.
     assert row.state is JobState.PRINTING
 
+    manager._runs.clear()
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bridge_row_left_by_a_restart_closes_on_finish(database: Database) -> None:
+    """Audit 2026-10-01 #5: after a restart no JobRun owns the row; the
+    printer's FINISH closes it and the next screen print gets its own row."""
+    await _seed_printer(database)
+    jobs = JobRepo(database)
+    manager = JobManager(jobs, EventRepo(database), _FakeRegistry())  # type: ignore[arg-type]
+    await jobs.create(
+        Job(id="orphan", printer_id=SERIAL, file_name="x", state=JobState.PRINTING,
+            queued_at=1000, started_at=1000)
+    )
+    svc = _FakePrinterService(SERIAL)
+    svc.gcode_state = "RUNNING"
+    await manager.attach(svc)  # type: ignore[arg-type]
+    await asyncio.sleep(0)
+    svc.bus.publish(Event("snapshot", {}))
+    await asyncio.sleep(0.1)
+    assert (await jobs.get("orphan")).state is JobState.PRINTING  # type: ignore[union-attr]
+
+    svc.gcode_state = "FINISH"  # finished while the bridge was down: no named event
+    svc.bus.publish(Event("snapshot", {}))
+    await asyncio.sleep(0.1)
+    row = await jobs.get("orphan")
+    assert row is not None and row.state is JobState.COMPLETED
+    assert await jobs.latest_active_started_at(SERIAL) is None
+
+    svc.bus.publish(_make_print_started_event("next", "2026-06-11T11:00:00Z"))
+    await asyncio.sleep(0.1)
+    rows = await jobs.list(printer_id=SERIAL)
+    assert [r.file_name for r in rows if r.state is JobState.PRINTING] == ["next"]
     await manager.shutdown()
 
 
@@ -685,7 +743,7 @@ async def test_restart_recovery_works_for_external_row(
     )
     await jobs.create(external_row)
 
-    async def _recover() -> datetime | None:
+    async def _recover(_subtask: str | None = None) -> datetime | None:
         epoch = await jobs.latest_active_started_at(SERIAL)
         if epoch is None:
             return None
@@ -753,7 +811,7 @@ async def test_restart_recovery_works_when_paused_at_seed(
     )
     await jobs.create(external_row)
 
-    async def _recover() -> datetime | None:
+    async def _recover(_subtask: str | None = None) -> datetime | None:
         epoch = await jobs.latest_active_started_at(SERIAL)
         if epoch is None:
             return None
@@ -853,33 +911,97 @@ async def test_live_external_print_creates_row_via_mqtt(
         await registry.shutdown()
 
 
+def _view(gcode_state: str, *, lost: bool = False, subtask: str | None = None) -> dict[str, Any]:
+    return {
+        "gcode_state": gcode_state,
+        "layer_num": 0,
+        "tray_now": None,
+        "lost": lost,
+        "subtask_name": subtask,
+    }
+
+
 async def test_interrupted_external_history_is_terminal_and_does_not_complete(database):
     import structlog
 
     await _seed_printer(database)
     jobs, events = JobRepo(database), EventRepo(database)
     manager = JobManager(jobs, events, _FakeRegistry())
-    await manager._maybe_create_external_job(
-        SERIAL, _make_print_started_event(), structlog.get_logger()
-    )
-    await manager._maybe_close_external_job(SERIAL, "print_interrupted", structlog.get_logger())
+    log_ = structlog.get_logger()
+    await manager._maybe_create_external_job(SERIAL, _make_print_started_event(), log_)
+    await manager._close_orphans(SERIAL, _view("IDLE", lost=True), log_)
     row = (await jobs.list(printer_id=SERIAL))[0]
     assert row.state is JobState.INTERRUPTED and row.state.terminal
     assert row.finished_at and row.error_code == "printer_job_lost"
-    await manager._maybe_close_external_job(SERIAL, "print_completed", structlog.get_logger())
+    await manager._close_orphans(SERIAL, _view("FINISH"), log_)
     assert (await jobs.get(row.id)).state is JobState.INTERRUPTED
 
 
-async def test_restarted_api_job_is_interrupted_but_unconfirmed_submission_is_preserved(database):
+async def test_restarted_rows_reconcile_against_the_printer(database):
     import structlog
 
     await _seed_printer(database)
     jobs = JobRepo(database)
     manager = JobManager(jobs, EventRepo(database), _FakeRegistry())
-    for ident, state in [("active", JobState.PREPARING), ("unconfirmed", JobState.SUBMITTED)]:
+    now = int(time.time())
+    for ident, state, started in [
+        ("active", JobState.PREPARING, now - 600),
+        ("fresh", JobState.SUBMITTED, now),          # may still be picked up
+        ("stale", JobState.SUBMITTED, now - 600),    # never acknowledged
+        ("queued", JobState.QUEUED, None),
+        ("uploading", JobState.UPLOADING, None),
+    ]:
         await jobs.create(
-            Job(id=ident, printer_id=SERIAL, file_name="base", state=state, queued_at=1)
+            Job(id=ident, printer_id=SERIAL, file_name="base", state=state, queued_at=1,
+                started_at=started)
         )
-    await manager._maybe_close_external_job(SERIAL, "print_interrupted", structlog.get_logger())
+    await manager.recover()
+    assert (await jobs.get("queued")).error_code == "bridge_restarted"
+    assert (await jobs.get("uploading")).state is JobState.FAILED
+    await manager._close_orphans(SERIAL, _view("IDLE", lost=True), structlog.get_logger())
     assert (await jobs.get("active")).state is JobState.INTERRUPTED
-    assert (await jobs.get("unconfirmed")).state is JobState.SUBMITTED
+    assert (await jobs.get("fresh")).state is JobState.SUBMITTED
+    assert (await jobs.get("stale")).error_code == "no_running_within_60s"
+    await manager._close_orphans(SERIAL, _view("PREPARE"), structlog.get_logger())
+    assert (await jobs.get("fresh")).state is JobState.PREPARING
+
+
+async def test_stale_live_row_is_not_the_printers_current_print(database):
+    """2026-10-01 deploy: a bridge row from 2026-09-27 was still 'printing' while
+    the printer ran another file. Orca names the current job by subtask_name, so
+    the stale row is closed as replaced; it neither lends its start time to the
+    new print nor completes when that print finishes."""
+    import structlog
+
+    from bambu_bridge.service.registry import Registry
+
+    await _seed_printer(database)
+    jobs = JobRepo(database)
+    manager = JobManager(jobs, EventRepo(database), _FakeRegistry())
+    for ident, name, started in [
+        ("stale", "arm_lower_plate_1.gcode.3mf", 1000),
+        ("current", "TW09-tweezer.gcode.3mf", 2000),
+    ]:
+        await jobs.create(
+            Job(id=ident, printer_id=SERIAL, file_name=name, state=JobState.PRINTING,
+                queued_at=started, started_at=started)
+        )
+
+    recover = Registry._build_recover_started_at(  # type: ignore[arg-type]
+        SimpleNamespace(_jobs=jobs), SERIAL
+    )
+    assert recover is not None
+    assert (await recover("TW09-tweezer")).timestamp() == 2000
+    assert (await recover("arm_lower_plate_1")).timestamp() == 1000
+    assert await recover("unknown-file") is None
+
+    log_ = structlog.get_logger()
+    await manager._close_orphans(SERIAL, _view("RUNNING", subtask="TW09-tweezer"), log_)
+    stale = await jobs.get("stale")
+    assert stale is not None and stale.state is JobState.INTERRUPTED
+    assert stale.error_code == "printer_job_replaced"
+    assert (await jobs.get("current")).state is JobState.PRINTING  # type: ignore[union-attr]
+
+    await manager._close_orphans(SERIAL, _view("FINISH", subtask="TW09-tweezer"), log_)
+    assert (await jobs.get("current")).state is JobState.COMPLETED  # type: ignore[union-attr]
+    assert (await jobs.get("stale")).state is JobState.INTERRUPTED  # type: ignore[union-attr]

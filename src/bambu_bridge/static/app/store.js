@@ -40,6 +40,8 @@ const subs = new Set();
  * @param {(state:typeof state)=>void} fn
  * @returns {() => void}
  */
+import { clockFor } from './clock-sync.js';
+
 export function subscribe(fn) {
   subs.add(fn);
   return () => subs.delete(fn);
@@ -249,7 +251,7 @@ export function viewModel(id) {
   let statusTitle, statusSubtitle, indicator;
   if (!connected) {
     statusTitle = 'Reconnecting…';
-    statusSubtitle = lastTelemetryAt ? `Last update ${secsAgo(lastTelemetryAt)}s ago` : 'Reconnecting…';
+    statusSubtitle = lastTelemetryAt ? `Last update ${secsAgo(lastTelemetryAt, id)}s ago` : 'Reconnecting…';
     indicator = 'none';
   } else {
     statusTitle = headline.title || titleForPhase(phase);
@@ -290,10 +292,12 @@ export function viewModel(id) {
 
 // ── small helpers shared by the view model ──────────────────────────────────
 /** @param {string} iso @returns {number} whole seconds since the ISO time */
-export function secsAgo(iso) {
+/** Seconds since a bridge timestamp, corrected by the NTP clock offset when known. */
+export function secsAgo(iso, printerId = null) {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return 0;
-  return Math.max(0, Math.round((Date.now() - t) / 1000));
+  const clock = printerId != null ? clockFor(String(printerId)) : null;
+  return Math.max(0, Math.round((Date.now() + (clock ? clock.offsetMs : 0) - t) / 1000));
 }
 
 function titleForPhase(phase) {

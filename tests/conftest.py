@@ -35,14 +35,6 @@ from fastapi import FastAPI
 from bambu_bridge.config import Settings
 from bambu_bridge.db.jobs import Database, PrinterRepo
 from bambu_bridge.main import create_app
-from bambu_bridge.slicedoc import (
-    AmsFeed,
-    Filament,
-    PlateInfo,
-    StaticMembers,
-    read_member,
-    synthesize,
-)
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -217,6 +209,8 @@ class MockPrinter:
         *,
         simulate_print: bool = False,
         stall: bool = False,
+        prepare_s: float = 0.0,
+        prepare_outcome: str = "RUNNING",
     ) -> None:
         self._host = host
         self._port = port
@@ -228,6 +222,10 @@ class MockPrinter:
         # FED_NO_PROGRESS watchdog has to fire.
         self._simulate = simulate_print
         self._stall = stall
+        # A real P1S reports PREPARE (file read, heat, level) before RUNNING;
+        # prepare_s > 0 reproduces that, ending in RUNNING or FAILED.
+        self._prepare_s = prepare_s
+        self._prepare_outcome = prepare_outcome
         self.report_topic = f"device/{SERIAL}/report"
         self.request_topic = f"device/{SERIAL}/request"
         self.requests: list[dict[str, Any]] = []
@@ -288,7 +286,9 @@ class MockPrinter:
         if not self._simulate:
             return
         cmd = payload.get("print", {}).get("command")
-        if cmd == "project_file":
+        if cmd == "project_file" and self._prepare_s > 0:
+            self._side_tasks.append(asyncio.create_task(self._prepare_then_start()))
+        elif cmd == "project_file":
             await self._emit(
                 {"gcode_state": "RUNNING", "mc_percent": 0, "subtask_name": "job"}
             )
@@ -298,6 +298,17 @@ class MockPrinter:
                 )
         elif cmd == "stop":
             await self._emit({"gcode_state": "IDLE", "mc_percent": 0})
+
+    async def _prepare_then_start(self) -> None:
+        await self._emit(
+            {"gcode_state": "PREPARE", "mc_percent": 0, "subtask_name": "job"}
+        )
+        await asyncio.sleep(self._prepare_s / 2)
+        await self._emit({"gcode_state": "PREPARE", "mc_percent": 0})   # repeated reports
+        await asyncio.sleep(self._prepare_s / 2)
+        await self._emit({"gcode_state": self._prepare_outcome, "mc_percent": 0})
+        if self._prepare_outcome == "RUNNING":
+            await self._finish_soon()
 
     async def _finish_soon(self) -> None:
         await asyncio.sleep(0.3)
@@ -402,6 +413,30 @@ async def printing_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
 
 
 @pytest_asyncio.fixture
+async def slow_prepare_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
+    """PREPARE for longer than the start window, then RUNNING and FINISH."""
+    printer = MockPrinter("127.0.0.1", mqtt_broker, IDLE_PUSH_STATUS,
+                          simulate_print=True, prepare_s=1.2)
+    await printer.start()
+    try:
+        yield printer
+    finally:
+        await printer.stop()
+
+
+@pytest_asyncio.fixture
+async def prepare_fails_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
+    """PREPARE, then the printer itself reports FAILED."""
+    printer = MockPrinter("127.0.0.1", mqtt_broker, IDLE_PUSH_STATUS,
+                          simulate_print=True, prepare_s=1.2, prepare_outcome="FAILED")
+    await printer.start()
+    try:
+        yield printer
+    finally:
+        await printer.stop()
+
+
+@pytest_asyncio.fixture
 async def stalling_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
     """RUNNING but never progresses — exercises the FED_NO_PROGRESS watchdog."""
     printer = MockPrinter(
@@ -418,44 +453,13 @@ async def stalling_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
         await printer.stop()
 
 
+ORCA_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "orca"
+
+
 @pytest.fixture(scope="session")
 def valid_gcode_3mf() -> bytes:
-    """A *consistent* single-tray ``.gcode.3mf`` synthesized from the real
-    probe's static members + gcode (gcode loads AMS tray 1 → bind tray 1).
-
-    This is the antidote to the old "any bytes pass" test: the job-flow tests
-    now upload something `slicedoc.validate` actually accepts.
-    """
-    probe = (
-        Path(__file__).resolve().parents[1]
-        / "probes"
-        / "3DBenchy_PETG_slot2.gcode.3mf"
-    )
-    if not probe.exists():
-        pytest.skip("probe .gcode.3mf fixture not present")
-    raw = probe.read_bytes()
-    feed = AmsFeed.single(
-        Filament("GFG96", "PETG", "#161616", 3.71, 11.33), tray=1
-    )
-    plate = PlateInfo(
-        printer_model_id="C12",
-        total_layers=200,
-        prediction_s=3382,
-        weight_g=11.33,
-        first_layer_time_s=470.344147,
-        object_id=83,
-        object_name="3DBenchy.drc",
-    )
-    # The donor gcode is internally inconsistent (M620 S1A vs M621 S0A) —
-    # normalize_ams rewrites every selector to the bound tray so the
-    # container is genuinely coherent (the 2026-05-19 fix).
-    return synthesize(
-        gcode=read_member(raw, "Metadata/plate_1.gcode"),
-        feed=feed,
-        plate=plate,
-        static=StaticMembers.from_zip(raw),
-        normalize_ams=True,
-    )
+    """A real OrcaSlicer 2.4.2 CLI slice: one cube, project filament 1 (G-code S0A)."""
+    return (ORCA_FIXTURES / "single1.gcode.3mf").read_bytes()
 
 
 class FakeCamera:

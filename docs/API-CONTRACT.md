@@ -88,7 +88,7 @@ Every 4xx/5xx response on every endpoint MUST use this shape:
   "likely_cause": "<optional enum>",
   "remediation_hint": "<optional human sentence with literal menu paths>",
   "context": {
-    "printer_id": "01P00A3C…643",
+    "printer_id": "01P00A000000000",
     "job_id": "...",
     "transport_phase": "tls_handshake | mqtt_connack | mqtt_no_telemetry | ftps_login | ...",
     "last_attempt_at": "2026-05-20T03:14:15.926Z",
@@ -159,8 +159,8 @@ Content-Type: application/json
 
 ```json
 {
-  "printer_id": "01P00A3C…643",
-  "serial": "01P00A3C…643",
+  "printer_id": "01P00A000000000",
+  "serial": "01P00A000000000",
   "model": "P1S",
   "friendly_name": "Living-room P1S",
   "connected": true,
@@ -195,13 +195,13 @@ The bridge's TLS handshake succeeded, so the **cert CN is already known**. Retur
   "remediation_hint": "Two things to check, in this order:\n(1) On the printer, Settings ▸ Network ▸ LAN-Only Mode must be ON.\n(2) Settings ▸ WLAN ▸ Access Code — case-sensitive, regenerable.",
   "context": { "transport_phase": "mqtt_connack" },
   "_raw": { "connack_code": 5 },
-  "discovered": { "serial": "01P00A3C…643", "model": null }
+  "discovered": { "serial": "01P00A000000000", "model": null }
 }
 ```
 
 **Note three design review-driven changes vs prior contract draft:**
 - HTTP status is **403** (not 401) — avoids collision with bearer-auth 401.
-- Serial is **NOT in `message`** — demoted to `discovered`. APK can still render "We reached your P1S 01P00A3C…643" by composing `message` + `discovered.serial` itself if it wants.
+- Serial is **NOT in `message`** — demoted to `discovered`. APK can still render "We reached your P1S 01P00A000000000" by composing `message` + `discovered.serial` itself if it wants.
 - `remediation_hint` lists **LAN-Only Mode first** — more common first-time cause than wrong access code.
 - `model` is **nullable in v0** — bridge derives model from `info.module[]` after first telemetry, which hasn't arrived yet during E2. APK falls back to "P1S" assumption or "printer" generic.
 
@@ -215,7 +215,7 @@ The bridge's TLS handshake succeeded, so the **cert CN is already known**. Retur
   "likely_cause": "developer_mode_off_or_lan_drop",
   "remediation_hint": "On the printer, enable Settings ▸ Network ▸ LAN-Only Mode. Then try again.",
   "context": { "transport_phase": "mqtt_no_telemetry", "telemetry_wait_ms": 5000 },
-  "discovered": { "serial": "01P00A3C…643", "model": null }
+  "discovered": { "serial": "01P00A000000000", "model": null }
 }
 ```
 
@@ -240,7 +240,7 @@ The printer's leaf cert regenerates on every firmware update. The bridge MUST:
 {
   "error": "printer_cert_changed",
   "message": "Your P1S's security key changed. This is normal right after a firmware update.",
-  "remediation_hint": "If you just updated firmware on 01P00A3C…643, tap Trust.",
+  "remediation_hint": "If you just updated firmware on 01P00A000000000, tap Trust.",
   "context": { "previous_fingerprint": "...", "current_fingerprint": "..." },
   "actions": [
     { "id": "trust", "label": "Trust this printer", "method": "POST", "path": "/api/v1/printers/{id}/trust" },
@@ -262,8 +262,8 @@ Never the words "certificate," "MITM," "fingerprint" in `message`. Hex in `conte
 ```json
 [
   {
-    "printer_id": "01P00A3C…643",
-    "serial": "01P00A3C…643",
+    "printer_id": "01P00A000000000",
+    "serial": "01P00A000000000",
     "friendly_name": "Living-room P1S",
     "model": "P1S",
     "connected": true,
@@ -345,8 +345,8 @@ This is the shape inside `GET /printers/{id}` response.data and `{type:snapshot,
 
 ```json
 {
-  "printer_id": "01P00A3C…643",
-  "serial": "01P00A3C…643",
+  "printer_id": "01P00A000000000",
+  "serial": "01P00A000000000",
   "friendly_name": "Living-room P1S",
   "model": "P1S",
 
@@ -452,7 +452,7 @@ If you skip this rule and render `mc_percent` during `preparing`, the APK shows 
 | `ams.slots[].physical_slot` | array index of `ams.tray[]` | **physical_slot = raw_id + 1**. `_raw_id` retains the 0-based. |
 | `ams.engaged_slot` | `ams.tray_now` | `255 → null` (nothing engaged), `254 → "external"`, `0-3 → 1-4` (physical slot). The §6.3 feed-confirmation signal. |
 
-**AMS tray/slot numbering convention (canonical):** Tray/slot indices are **0-based protocol indices end-to-end** on the wire between the bridge and the printer. The `_raw_id` field in `ams.slots[]` carries the 0-based value; `physical_slot` is `_raw_id + 1` for display. The `/ams/change` endpoint takes `target_tray` as a 0-based protocol index (0–3). The APK MUST NOT pass physical slots (1–4) to `/ams/change` without subtracting 1 first. The `/jobs` submission endpoint uses `ams_mapping` in physical-slot space (1–4) because that is what the user selects; the bridge converts internally.
+**AMS tray/slot numbering convention (canonical):** Tray/slot indices are **0-based protocol indices end-to-end** on the wire between the bridge and the printer. The `_raw_id` field in `ams.slots[]` carries the 0-based value; `physical_slot` is `_raw_id + 1` for display. The `/ams/change` endpoint takes `target_tray` as a 0-based protocol index (0–3). The APK MUST NOT pass physical slots (1–4) to `/ams/change` without subtracting 1 first. `ams_mapping` (on `/jobs`, the queue and Orca keys) is likewise **0-based and in Orca's own format** (§7.1); physical slot numbers are display labels only and the bridge never converts them.
 | `print_error` | `print_error` (int) + HMS table | When 0/null: `null`. When non-zero: `{code, hex, text, category, severity, _raw}`. Decode hex from int (`50348044 → 0x0300400C`). Text from HMS lookup (ship a copy of the ha-bambulab `hms_error_text/` table). **The `print_error` channel is SEPARATE from the `hms[]` string array.** |
 | `session.last_telemetry_at` | bridge bookkeeping (touch on every report) | ISO 8601 UTC |
 | `session.last_connect_attempt` | bridge bookkeeping | ISO 8601 UTC |
@@ -509,11 +509,16 @@ Authorization: Bearer <key>
 Content-Type: multipart/form-data
 
 file: <binary .gcode.3mf>
-ams_mapping: "1,3"             // optional; comma-separated PHYSICAL slot numbers (1-4)
-external_spool: "false"        // optional; if "true", use external spool (vt_tray)
+ams_mapping: "-1,1,-1,0"       // optional; Orca's ams_mapping as a comma list
 ```
 
-**`ams_mapping` is in PHYSICAL-SLOT space** (1-4), not the 0-based protocol space. Bridge maps to `0-3` internally. **APK MUST NOT pass 0.** If 0 appears, return 422.
+**`ams_mapping` is Orca's own `project_file` field**, exactly as Orca's Send dialog builds it (`SelectMachineDialog::get_ams_mapping_result`):
+
+- **one entry per project filament**, in project order (the count is the length of the per-filament arrays in `Metadata/project_settings.config`, e.g. `filament_settings_id`), not only the filaments this plate uses;
+- each entry is the **0-based global AMS tray** `ams_id * 4 + slot`: `0` = physical slot 1 … `3` = slot 4 on the first AMS (up to `15`);
+- **`-1`** for a filament the plate does not use or that runs from the external spool.
+
+Example: a 4-filament project whose plate uses filament 2 from physical slot 2 and filament 4 from slot 1 sends `"-1,1,-1,0"`. A one-filament project on physical slot 2 sends `"1"`. The bridge stores and forwards the list **unchanged** (POST /jobs, the queue, Orca print-host keys and native Orca starts alike) and sets `use_ams` as Orca does: true when any entry is a tray, false when all are `-1`. Omitting `ams_mapping` prints from the external spool. Values outside `-1..15` or more than 64 entries are `422 invalid_input`; G5 checks the entries against the slice's filaments.
 
 ### 7.2 Synchronous pre-validation (BEFORE 201)
 
@@ -525,32 +530,30 @@ The bridge MUST run `slicedoc.validate()` synchronously inside `JobManager.submi
   "error": "invalid_3mf",
   "message": "This .gcode.3mf can't be printed safely.",
   "issues": [
-    { "code": "G3", "category": "md5",        "message": "md5 is not UPPERCASE" },
-    { "code": "G5", "category": "ams",        "message": "ams_mapping arity 1 != slice_info <filament> count 2 (§6.3 trap)" },
+    { "code": "G3", "category": "checksum",   "message": "md5 member is not the gcode's UPPERCASE md5 (no newline)" },
+    { "code": "G5", "category": "ams",        "message": "project filament(s) [2] have no AMS tray in ams_mapping [1]" },
     { "code": "G4", "category": "temperature", "message": "nozzle 320 °C > 280 °C" }
   ],
   "context": { "validator_version": "1" }
 }
 ```
 
-Gates G1–G5 from `slicedoc/validate.py`: zip integrity, required members, md5 contract, temperature envelope, AMS consistency. **All five are 422-class — fix the file, don't retry the same file.**
+Gates G1–G6 from `slicedoc/validate.py`: bounded zip integrity, required members, md5 contract, temperature envelope, AMS consistency (in Orca's `ams_mapping` format: index = project filament, value = AMS tray, -1 = unused), printer model and nozzle (as OrcaSlicer checks before sending). **All six are 422-class — fix the file, don't retry the same file.**
 
 Other 422 reasons:
 - `printer_offline` — bridge can't reach printer right now (also a class of "no point uploading")
-- `ams_slot_invalid` — passed `ams_mapping: [0]` or a slot not in 1-4
-- `ams_slot_empty` — passed `ams_mapping: [2]` but slot 2 is empty per current AMS state
-- `ams_material_mismatch` — bridge knows the slice expects PETG and the chosen slot has ASA. **Warning, returnable as `422` only when client passed `confirm_mismatch: false`**; if `confirm_mismatch: true`, accepted
+- `invalid_input` — `ams_mapping` is not a comma list of integers in `-1..15` (at most 64 entries)
 
 ### 7.3 Success response (201)
 
 ```json
 {
   "job_id": "abcdef123...",
-  "printer_id": "01P00A3C…643",
+  "printer_id": "01P00A000000000",
   "state": "queued",
   "file_name": "Benchy_PETG.gcode.3mf",
   "queued_at": "2026-05-20T03:13:55.000Z",
-  "ams_mapping": [2],
+  "ams_mapping": [1],
   "validation": { "ok": true, "gates_passed": ["G1","G2","G3","G4","G5"] }
 }
 ```
@@ -672,9 +675,9 @@ Query: `since=<ISO-8601>`, `until=<ISO-8601>`, `limit=` (default 50, max 200), `
 ]
 ```
 
-`kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `feed_warning`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
+`kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
 
-`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `feed_warning` / `spool_low` / `door`, `error` for `print_failed` / thermal / `error`.
+`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `spool_low` / `door`, `error` for `print_failed` / thermal / `error`.
 
 `title` + `detail` + `context` are pre-formatted (English-first; i18n is v0.1). APK renders verbatim.
 
@@ -698,15 +701,15 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/print/resume` | — | resume paused print | v0 |
 | POST | `/print/stop` | — | stop active print (same body as POST /jobs/{id}/cancel response semantics) | v0 |
 | POST | `/light` | `{"on": bool}` | chamber light on/off | v0 |
-| POST | `/temperature` | `{"nozzle": int?, "bed": int?}` | both optional but one required. Range-validated server-side: nozzle ≤280 °C (stainless nozzle, default) or ≤300 °C when `printers.nozzle_type=hardened_steel`; bed ≤120 °C always. APK fires liberally; bridge 422s out-of-range. | v0 |
+| POST | `/temperature` | `{"nozzle": int?, "bed": int?}` | both optional but one required. Range-validated server-side: nozzle ≤ the printer-reported `nozzle_temp_range[1]`, else ≤300 °C whatever the nozzle type (as OrcaSlicer); bed ≤120 °C always. APK fires liberally; bridge 422s out-of-range. | v0 |
 | POST | `/fan` | `{"part": "part\|aux\|chamber", "percent": 0-100}` | bridge translates to native 0-15 | v0 |
 | POST | `/speed` | `{"level": 1-4}` | 1 silent · 2 standard · 3 sport · 4 ludicrous. **Response echoes labels** so APK doesn't hardcode i18n. | v0 |
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
 | POST | `/home` | — | G28 home all axes | v0.1 |
-| POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog | v0.1 |
-| POST | `/ams/control` | `{"action": "pause\|resume\|reset"}` | AMS state machine control | v0.1 |
-| POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | mid-print filament change. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
-| POST | `/filament/unload` | — | unload current filament | v0.1 |
+| POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog. `distance_mm` ∈ ±{1, 10} (OrcaSlicer's steps; UIs send XY at 3000, Z at 900 mm/min). `409 conflict` while a print runs (allowed when paused), as OrcaSlicer disables motion. | v0.1 |
+| POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
+| POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | filament change. `409 conflict` while a print runs; when paused only the external spool (`254`), as in OrcaSlicer. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
+| POST | `/filament/unload` | — | unload current filament. `409 conflict` while a print runs; when paused only if the external spool is loaded (OrcaSlicer). | v0.1 |
 | POST | `/work_light` | `{"mode": "on\|off\|flashing", "loop_times": int?, "interval_time": int?}` | work/task light; mode `"flashing"` accepts `loop_times` (default 1; 0=forever) and `interval_time` ms (default 500). Not all P1S configs have this node; printer ignores when absent. | v0.1 |
 | POST | `/ipcam/record` | `{"enabled": bool}` | enable/disable print video recording to SD card | v0.1 |
 | POST | `/ipcam/timelapse` | `{"enabled": bool}` | enable/disable timelapse generation to SD card | v0.1 |
@@ -816,13 +819,13 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be connec
 |---|---|---|---|---|
 | POST | `/xcam` | `{module_name, enabled, print_halt?}` | YELLOW | `module_name` whitelist-validated to matrix-confirmed P1S set. `print_halt=true` auto-pauses on detection. |
 | POST | `/print_option` | `{<flag_name>: bool, ...}` | YELLOW | Flags allowlist: `auto_recovery`, `air_print_detect`, `filament_tangle_detect`, `nozzle_blob_detect`, `sound_enable`. Unknown keys → 422. |
-| POST | `/skip_objects` | `{obj_list: [int, ...]}` | YELLOW | Non-empty int list of Bambu object IDs from slice. |
+| POST | `/skip_objects` | `{obj_list, job, gcode_file, run_id, plate, digest, action}` | YELLOW | OrcaSlicer's part skip; the identity comes from `GET /skip_objects`. See §11.4. Withheld (`409 capability_unavailable`, "Control support under review") unless `BRIDGE_ENABLE_SKIP_OBJECTS=1`. |
 | POST | `/ams/filament_setting` | `{ams_id, tray_id, tray_info_idx, tray_color, nozzle_temp_min, nozzle_temp_max, tray_type}` | YELLOW | `tray_color` = 8-char RRGGBBAA hex; `tray_type` from known materials list; `temp_min < temp_max ≤ 300`. |
 | POST | `/ams/rfid` | `{ams_id, slot_id}` | GREEN | Trigger RFID re-read; no physical motion. |
 | POST | `/ams/drying` | `{ams_id, temp, cooling_temp, duration, humidity, mode?, rotate_tray?}` | YELLOW | Starts AMS drying cycle; requires AMS firmware support. |
 | POST | `/ams/user_setting` | `{ams_id, startup_read_option, tray_read_option}` | YELLOW | Configures RFID auto-read behaviour. |
 | POST | `/calibration` | `{option: 1\|2\|4\|7, bed_type?}` | RED | P1S-confirmed bits only (matrix §8). Option 3, 5, 6, 8+ → 422 naming the matrix. |
-| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Updates in-memory temp clamp immediately. |
+| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Tells the printer only; the temperature ceiling does not depend on it. |
 | POST | `/extrude` | `{distance_mm, feedrate?}` | RED | 5-layer guard (see §11.2). |
 | POST | `/steppers/off` | — | RED | Sends M84; resets dead-reckon position to UNKNOWN. |
 | POST | `/gcode/raw` | `{line: str}` | BLACK | Gated by `BRIDGE_ENABLE_RAW_GCODE` env var; disabled by default (403). Every line logged at WARNING. 4 KB cap inherited. |
@@ -850,6 +853,28 @@ produces a typed error envelope (no bare `detail` string).
 **When to use:** firmware debugging, factory resets, one-off calibration sequences not covered by typed endpoints, testing new G-code command behaviour before writing a typed builder.
 
 ---
+
+### 11.4 Skip objects
+
+Mirrors OrcaSlicer 2.4.2's PartSkipDialog, bound to the running print rather than inferred from the merged report.
+
+**The file.** When the reported `gcode_file` names an archive, it decides: `/`, `/sdcard`, `file:///sdcard` and `ftp://` forms are the root, a `cache` folder is `/cache`, any other folder is refused (`409`), and only a bare name may be in either (an open native-inbox start of that same name narrows it to the start's folder; it never widens a search). When the printer reports only the inner `Metadata/plate_N.gcode`, an open native-inbox start for the subtask (dispatching, sent, accepted, running or unknown) names the file, else the subtask as `{subtask}.gcode.3mf` and `{subtask}.3mf`. A native inbox upload's verified local copy is read when there is one. Names are compared verbatim, as `slicedoc.sd_url` writes them (`#`, `?`, `%20` and non-ASCII included). Every candidate is looked for in every allowed directory and more than one hit is `409`. A failed LIST is `502`, except a 550 on `/cache` when the root listing shows no `cache` folder.
+
+**The plate.** `plate_idx`, else a `plate_N.gcode` in `gcode_file`, else the archive's only plate. The two named sources must agree and the plate must be in the archive. A multi-plate archive therefore needs a printer that reports its plate; otherwise there are no objects and every POST is refused. That includes multi-plate archives the bridge itself started (web, queue and app start plate 1, a library replay plate N): on the legacy P1S report they are refused for the whole print. The deep-merged `param` is never read.
+
+**The objects.** slice_info's `<object identify_id name>` for the plate, else model_settings' `model_instance` identify_ids, else, when the plate has `label_object_enabled`, the G-code's own labels (`; model label id:`, or the `unique label id` markers), named from the `; printing object NAME` line before each, else `Object N`. Orca CLI slices commonly list objects nowhere but the G-code. The label id is the identify_id `skip_objects` takes. A plate that lists no objects at all is refused with a reason.
+
+**The proof.** The plate G-code's `; total layer number: N` must equal the printer's `total_layer_num`. While the print is RUNNING or PAUSE, the first read pins the reported job's file: (`subtask_name`, `gcode_file`, the file's SIZE/MDTM, its SHA-256). A later read for the same reported job that finds another revision or other bytes is `409` "The file on the printer changed during this print"; another reported job re-pins, and how the bytes arrived (inbox copy or FTPS) does not matter. A file overwritten before the first read of a run is caught only by the layer count. `POST /files` and the native gateway's passthrough STOR refuse (`409` / `553 BBFTP_FILE_PRINTING`) a name the printer is printing (PREPARE, RUNNING, PAUSE), compared case-insensitively as on the card.
+
+**The run.** `run_id` (also the snapshot's `job.run_id`) changes on every run edge (fresh RUNNING, FINISH, FAILED, IDLE) and on every MQTT (re)connect, where the bridge cannot tell whether a run ended during the gap. A sheet built for one `run_id` is refused in another and reloads. A reconnect keeps the pin and the not-yet-echoed skips when the first report afterwards shows the same print (same `subtask_name`, `gcode_file` and `total_layer_num`, `layer_num` not lower).
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/skip_objects` | `{job, gcode_file, run_id, plate, digest, label_object_enabled, map_source, max_objects, objects: [{id, name, skipped}], map: {width, height, rows} \| null, available, reason}`. `job`/`gcode_file`/`run_id`/`plate`/`digest` (SHA-256 of the archive) identify what the sheet shows. `skipped` counts the printer's `s_obj` and every `skip_objects` the bridge published this run (any client, Orca's relayed ones included) that the printer has not echoed yet, for up to 30 s. `rows[y]` is `[id, count, id, count, …]` of slice identify_ids per map pixel (0 = no object); a tap at image pixel (x, y) hits that id. `map_source` is `"pick"` (Orca's `Metadata/pick_N.png`) or `"gcode"`: for a slice without a pick image (CLI slices), each labelled object's extrusions in `plate_N.gcode` at its line width, the union over layers; then each enclosed unprinted region goes to the smallest printed body that encloses it. 2 px/mm over `printable_area`, X right and Y up like the pick image. `available`/`reason` say whether a POST would be accepted now. |
+| GET | `/skip_objects/map.png?checked=1,2&digest=…` | The plate in Orca's skip-canvas colours with those ids selected; skipped parts as in the GET. Ids outside uint32 are `422`; ids that are not objects are ignored; a `digest` for another file is `409`. Accepts `?token=` like the camera, and is sent `Cache-Control: no-store`. |
+| POST | `/skip_objects` | `{obj_list, job, gcode_file, run_id, plate, digest, action: "skip" \| "stop"}`: 1-64 identify_ids, the identity from the GET and the action the user confirmed. Refused (409, nothing published) unless: opt-in set; trusted P1S; fresh status in `RUNNING` or `PAUSE`; part-skip support (`fun` bit 49; a printer on the legacy push format, which sends no `fun`, qualifies by reporting an `s_obj` list); not a system or calibration print (`print_type` `system`, a CalibUtils calib-mode `subtask_name`, an `auto_cali_for_user` gcode file); a resolved plate sliced with `label_object_enabled`, at most 64 objects, and the proof above. Under a per-printer lock the file is re-read and the printer re-checked afterwards; a different job, file, run, plate or digest than the body is `409` "The print changed; reopen Skip Objects". Ids not on the plate or already skipped (as the GET counts them) are `422`. Publishes `{"print": {"command": "skip_objects", "obj_list": [...], "sequence_id"}}`; when no object would remain it publishes `stop` instead, as Orca does. If that differs from `action`, `409` so the user confirms again. Response adds `action`. |
+
+The status snapshot's `job` block carries `skipped_objects` (the printer's `s_obj`), `part_skip_supported` and `run_id`.
 
 ## 12. Camera
 
@@ -891,7 +916,6 @@ The design's `AlertBanner` has 3 visual kinds (`door`, `runout`, `thermal`) — 
 | WS event | `data` shape | AlertBanner `kind` | severity | title template | detail template | action label |
 |---|---|---|---|---|---|---|
 | `filament_runout` | `{code, slot}` | `runout` | `warn` | `"Filament runout — Slot {slot}"` | `"{material name} ran out at layer {layer}. Swap spool and resume, or reassign."` | `"Swap & resume"` |
-| `feed_warning` | `{since_ms, advice}` | `runout`-styled (or `door` if user prefers a distinct kind) | `warn` | `"Print may not be feeding filament"` | `"The printer is heating and moving, but hasn't started laying plastic for {since_ms/1000}s. Likely a slot/filament mismatch."` | `"View camera"` + `"Stop"` |
 | `error` with `print_error.category="thermal"` | `{print_error: {code, text, category, severity}}` | `thermal` | `critical` | `"Thermal anomaly — {component}"` | `"{print_error.text}"` | `"Acknowledge"` |
 | `error` with `print_error.category="door"` (P1S has door sensor on some configs) | same | `door` | `warn` | `"Chamber door open"` | `"Print paused automatically. Close the door and resume."` | `"Resume"` |
 | `error` with other categories | same | derive from `print_error.category`; fallback `"error"` | `error.severity` (default `warn`) | `print_error.text` | (none — error remains sticky until ack) | `"Acknowledge"` |
@@ -917,7 +941,6 @@ All wrapped in `{type: "event", event: "<name>", data: {...}}`.
 | `filament_runout` | print_error matches runout codes | `{code, slot: physical_slot}` | Offer "swap filament" / "stop" |
 | `connection_lost` | MQTT link dropped | `{at}` | Dim cached state, "Reconnecting · last update Ns ago" |
 | `connection_restored` | MQTT reconnected after a loss | `{at, missed_ms}` | Brighten state; if `missed_ms > 30000`, show toast "Reconnected — state refreshed" |
-| `feed_warning` | RUNNING + temps at target + ams.engaged_slot==null + layer_num unchanged for ≥90s | `{since_ms, advice: "look at the plate"}` | **The headline v0 UX feature.** Non-blocking banner: "Print may not be feeding filament — view camera / stop print / keep waiting." Auto-clears when ANY of: layer_num advances, gcode_state leaves RUNNING, ams.engaged_slot changes off null. (PR B implements.) |
 | `job_state_change` | JobState transitions | `{job_id, from, to, trigger}` | Update job tab |
 
 ---
@@ -1037,7 +1060,7 @@ Minimum settings the APK exposes:
 **PR B — dashboard contract unblocker (~140 LOC):**
 1. In-place translation layer in `service/printer.py:snapshot()` + `summary()` — phase, headline, AMS dual-emission (+ `remaining_g`/`remaining_pct` per slot), fan native→percent, print_error int→HMS lookup, `print_params.{speed_mm_s, flow_pct}`
 2. JobState enum remap: `started`→`submitted`, +new `preparing` state, `printing` gated on `layer_num > 0`. (`canceled` stays — see §7.4 note.)
-3. `feed_warning` named event (90s timer, auto-clears per §13.2)
+3. ~~`feed_warning` named event~~ (retired: air printing is the printer's own `air_print_detect`, as in OrcaSlicer)
 4. `GET /api/v1/printers/{id}/events` flat event feed endpoint + `POST .../dismiss` (per §8.4–8.5)
 5. `api/files.py` + `api/control.py` envelope cleanups (typed-exception text, FTPS auth→401)
 

@@ -112,6 +112,7 @@ export function mount(root, app) {
   // got a snapshot this session.
   let everConnected = false;    // got at least one WS snapshot this mount
   let wsOpen = false;
+  let protocolMismatch = false; // sticky: every render redraws it
 
   function setConn(kind, labelText) {
     connEl.className = 'conn conn--' + kind;
@@ -121,8 +122,13 @@ export function mount(root, app) {
 
   function renderBanner(vm, facts) {
     clear(bannerHost);
+    if (protocolMismatch) {
+      bannerHost.appendChild(banner('This app needs an update to talk to the bridge.', 'red'));
+      return;
+    }
     if (facts.live) return;
-    const ago = vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt) : null;
+    const ago = facts.ageMs != null ? Math.round(facts.ageMs / 1000)
+      : vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt, pid) : null;
     if (!everConnected && !vm.hasData) {
       // never reached: treat as no-bridge until we prove otherwise.
       bannerHost.appendChild(banner("Can't reach the bridge.", 'grey',
@@ -569,32 +575,10 @@ export function mount(root, app) {
   function openWs() {
     conn = ws.connectStatus(pid, {
       onConnState: (open) => { wsOpen = open; if (open) everConnected = true; },
-      onEvent: (name, data) => onWsEvent(name, data),
       onUnauthorized: () => app.requireKeyScreen(),
       onUnknownPrinter: () => app.navigate('#/settings'),
-      onProtocolMismatch: () => {
-        clear(bannerHost);
-        bannerHost.appendChild(banner(
-          'This app needs an update to talk to the bridge.', 'red'));
-      },
+      onProtocolMismatch: () => { protocolMismatch = true; render(); },
     });
-  }
-
-  function onWsEvent(name, data) {
-    // §13 alert derivation is a UI concern; the load-bearing v0 one is the
-    // feed_warning air-print banner. We surface it as a non-blocking banner with
-    // "View camera" + "Stop".
-    if (name === 'feed_warning') {
-      clear(bannerHost);
-      const since = data && data.since_ms ? Math.round(data.since_ms / 1000) : null;
-      const msg = since != null
-        ? `Print may not be feeding filament (${since}s). Check the plate.`
-        : 'Print may not be feeding filament. Check the plate.';
-      const b = banner(msg, 'amber', { label: 'View camera', onClick: () => app.navigate('#/camera') });
-      bannerHost.appendChild(b);
-    }
-    // job_state_change / print_* events flow through the store snapshot/delta
-    // (the headline/phase already reflects them); no extra handling needed here.
   }
 
   // ── boot ─────────────────────────────────────────────────────────────────────

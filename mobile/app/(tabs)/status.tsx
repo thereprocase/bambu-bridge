@@ -76,6 +76,9 @@ export default function StatusScreen() {
   // so all print-control buttons must be disabled (§G2 requirement). This also
   // handles the cold-launch MMKV-cached state where `status` is "connecting".
   const wsConnected = facts.live;
+  const snapJob = (live?.snapshot as any)?.job;
+  const skippedCount: number = snapJob?.skipped_objects?.length ?? 0;
+  const rawState = String((live?.snapshot as any)?._raw?.gcode_state ?? "");
 
   const [issuesExpanded, setIssuesExpanded] = useState(true);
   const [nativeOverview, setNativeOverview] = useState<NativeQueuePage | null>(null);
@@ -391,6 +394,17 @@ export default function StatusScreen() {
               )
             }
           />
+          {/* Skip objects — Orca's part-skip button: shown when the printer
+              reports support (job.part_skip_supported), usable while RUNNING or PAUSE,
+              labelled with the count the printer has skipped. */}
+          {snapJob?.part_skip_supported === true && (
+            <Button
+              label={skippedCount ? `Skip objects (${skippedCount})` : "Skip objects"}
+              variant="secondary"
+              disabled={!wsConnected || !["RUNNING", "PAUSE"].includes(rawState)}
+              onPress={() => router.push({ pathname: "/skip-objects", params: { printer: selected.serial } })}
+            />
+          )}
           <Button
             label={view.lightOn ? "Light off" : "Light on"}
             variant="secondary"
