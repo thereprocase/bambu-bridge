@@ -9,7 +9,7 @@
  */
 
 import { qaLog } from "../lib/qalog";
-import type { SkipObjectsInfo } from "../lib/skipObjects";
+import type { SkipObjectsInfo, skipRequest } from "../lib/skipObjects";
 import { request, type RawResponse } from "./client";
 import { BridgeError } from "./errors";
 
@@ -196,21 +196,22 @@ export function getSkipObjects(id: string) {
 }
 
 /** The plate drawn in Orca's skip-canvas colours with `checked` selected (PNG bytes). */
-export async function getSkipMap(id: string, checked: number[], skipped: number[]) {
+export async function getSkipMap(id: string, checked: number[], skipped: number[], digest: string) {
   const raw = await request<RawResponse>(`/printers/${id}/skip_objects/map.png`, {
     rawBytes: true,
-    query: { checked: checked.join(","), v: skipped.join(",") },
+    query: { checked: checked.join(","), v: skipped.join(","), digest },
   });
   return raw.bytes;
 }
 
-/** Skip objects mid-print; the bridge stops the print when none would remain. */
-export function skipObjects(id: string, obj_list: number[]) {
+/** Skip objects mid-print. The body echoes the job identity from the GET and
+ * the confirmed action; the bridge answers 409 when either no longer holds. */
+export function skipObjects(id: string, body: ReturnType<typeof skipRequest>) {
   return tracked(
     "skip_objects",
     request<{ sent: unknown; action: "skip" | "stop" }>(`/printers/${id}/skip_objects`, {
       method: "POST",
-      body: { obj_list },
+      body,
     }),
   );
 }

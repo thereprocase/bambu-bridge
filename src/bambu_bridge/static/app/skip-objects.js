@@ -18,6 +18,11 @@
 //     Continue?"; when every object would be gone, "Skipping all objects." /
 //     "The printing job will be stopped. Continue?" (the bridge then stops
 //     the print, as Orca does).
+//
+// The POST carries the job identity this sheet was built from (job,
+// gcode_file, plate, digest) and the action the user confirmed; the bridge
+// refuses with 409 if either no longer holds. The sheet reloads when the
+// printer reports another job.
 
 import { el, clear, mountSheet, confirmSheet, toast, errorCard } from './ui.js';
 
@@ -60,6 +65,18 @@ export function applyRefusal(data, states) {
   return data.available ? '' : (data.reason || 'Skipping objects is unavailable');
 }
 
+/** True when the printer now reports a different job than the sheet shows. */
+export function jobChanged(data, snap) {
+  const raw = (snap && snap._raw) || {};
+  return (typeof raw.subtask_name === 'string' && raw.subtask_name !== data.job)
+    || (typeof raw.gcode_file === 'string' && raw.gcode_file !== data.gcode_file);
+}
+
+function reportedJob(snap) {
+  const raw = (snap && snap._raw) || {};
+  return `${raw.subtask_name}|${raw.gcode_file}`;
+}
+
 /**
  * @param {any} app
  * @param {string} pid
@@ -80,9 +97,10 @@ export function open(app, pid) {
     ]),
     errSlot,
     body,
-  ]), { drawer: true, onClose: () => { if (unsub) unsub(); } });
+  ]), { drawer: true, onClose: () => { if (unsub) unsub(); unsub = null; } });
 
   async function load() {
+    if (unsub) { unsub(); unsub = null; }
     clear(errSlot);
     clear(body);
     body.appendChild(el('div', { class: 'field__hint', text: 'Loading…' }));
@@ -96,16 +114,24 @@ export function open(app, pid) {
       body.appendChild(el('button', { class: 'btn btn--primary mt-3', text: 'Retry', onClick: load }));
       return;
     }
-    unsub = build(app, pid, r.data, body, errSlot, handle);
+    unsub = build(app, pid, r.data, body, errSlot, handle, reloadFor);
+  }
+  // Reload once per job the printer reports, so a bridge answer that still
+  // disagrees with the live snapshot cannot loop.
+  let reloadedFor = null;
+  function reloadFor(key) {
+    if (key === reloadedFor) return false;
+    reloadedFor = key;
+    load();
+    return true;
   }
   load();
   return { close: () => handle.close() };
 }
 
-function build(app, pid, data, host, errSlot, handle) {
+function build(app, pid, data, host, errSlot, handle, reload) {
   // part id -> 'unchecked' | 'checked' | 'skipped' (PartState), listed by id.
   const states = new Map(data.objects.map((o) => [o.id, o.skipped ? 'skipped' : 'unchecked']));
-  const names = new Map(data.objects.map((o) => [o.id, o.name]));
   const ids = new Set(states.keys());
   const rows = new Map();
 
@@ -128,6 +154,7 @@ function build(app, pid, data, host, errSlot, handle) {
   const total = el('span', { class: 't-caption' });
   const hint = el('div', { class: 'field__hint' });
   const skipBtn = el('button', { class: 'btn btn--danger', text: 'Skip', onClick: apply });
+  let sending = false;
 
   function toggle(id, on) {
     states.set(id, on ? 'checked' : 'unchecked');
@@ -156,7 +183,7 @@ function build(app, pid, data, host, errSlot, handle) {
     count.textContent = String(checked.length);
     total.textContent = ` /${open} Selected`;
     const refusal = applyRefusal(data, states);
-    skipBtn.disabled = !!refusal;
+    skipBtn.disabled = !!refusal || sending;
     hint.textContent = refusal;
     const key = [...states].map(([id, s]) => `${id}:${s}`).join(',');
     if (data.map && key !== mapKey) {
@@ -165,31 +192,47 @@ function build(app, pid, data, host, errSlot, handle) {
       mapKey = key;
       const skipped = [...states].filter(([, s]) => s === 'skipped').map(([id]) => id);
       img.src = app.api.tokenUrl(`/printers/${encodeURIComponent(pid)}/skip_objects/map.png`,
-        { checked: checked.join(','), v: skipped.join(',') });
+        { checked: checked.join(','), v: skipped.join(','), digest: data.digest });
     }
   }
 
   async function apply() {
     const chosen = [...states].filter(([, s]) => s === 'checked').map(([id]) => id);
-    if (!chosen.length || applyRefusal(data, states)) return;
-    const all = [...states.values()].every((s) => s !== 'unchecked');
-    const ok = await confirmSheet({
-      title: all ? 'Skipping all objects.' : `Skipping ${chosen.length} objects.`,
-      body: all ? 'The printing job will be stopped. Continue?' : 'This action cannot be undone. Continue?',
-      confirmLabel: 'Continue',
-      danger: true,
-    });
-    if (!ok) return;
-    clear(errSlot);
-    const r = await app.api.postJson(`/printers/${encodeURIComponent(pid)}/skip_objects`, { obj_list: chosen });
-    if (!r.ok) { errSlot.appendChild(errorCard(r)); return; }
-    toast(all ? 'Stopping…' : `Skipping ${chosen.length} objects`);
-    handle.close();
+    if (sending || !chosen.length || applyRefusal(data, states)) return;
+    // One confirm and one POST at a time: Skip stays disabled until done.
+    sending = true;
+    render();
+    try {
+      const all = [...states.values()].every((s) => s !== 'unchecked');
+      const ok = await confirmSheet({
+        title: all ? 'Skipping all objects.' : `Skipping ${chosen.length} objects.`,
+        body: all ? 'The printing job will be stopped. Continue?' : 'This action cannot be undone. Continue?',
+        confirmLabel: 'Continue',
+        danger: true,
+      });
+      if (!ok) return;
+      clear(errSlot);
+      const r = await app.api.postJson(`/printers/${encodeURIComponent(pid)}/skip_objects`, {
+        obj_list: chosen,
+        action: all ? 'stop' : 'skip',
+        job: data.job,
+        gcode_file: data.gcode_file,
+        plate: data.plate,
+        digest: data.digest,
+      });
+      if (!r.ok) { errSlot.appendChild(errorCard(r)); return; }
+      toast(r.data && r.data.action === 'stop' ? 'Stopping…' : `Skipping ${chosen.length} objects`);
+      handle.close();
+    } finally {
+      sending = false;
+      render();
+    }
   }
 
   // PartSkipDialog::UpdatePartsStateFromPrinter: follow the printer's s_obj.
   function follow() {
     const snap = app.store.current(pid);
+    if (jobChanged(data, snap) && reload(reportedJob(snap))) return;
     const reported = (snap && snap.job && snap.job.skipped_objects) || [];
     let changed = false;
     for (const id of reported) {

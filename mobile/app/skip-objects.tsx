@@ -10,11 +10,15 @@
  * pixel, as SkipPartCanvas does), the list toggles the same states, objects
  * the printer has skipped are locked, and Skip asks Orca's confirmation.
  * Selecting every remaining object stops the print, as in Orca.
+ *
+ * The POST echoes the job identity the screen was built from and the action
+ * the user confirmed; the bridge refuses (409) when either no longer holds.
+ * The screen reloads when the printer reports another job.
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Image, Pressable, ScrollView, Text, View } from "react-native";
 
 import { getSkipMap, getSkipObjects, skipObjects } from "../src/api/control";
@@ -28,12 +32,17 @@ import {
   followPrinter,
   hitTest,
   initialStates,
+  jobChanged,
+  skipRequest,
   toBase64,
   type PartState,
   type SkipObjectsInfo,
 } from "../src/lib/skipObjects";
 import { useLiveStore } from "../src/store/live";
 import { useTheme } from "../src/theme/ThemeProvider";
+
+// A stable fallback: a fresh [] per selector call makes zustand re-render forever.
+const NO_IDS: number[] = [];
 
 function message(e: unknown): string {
   return e instanceof BridgeError ? e.envelope.message : String(e);
@@ -46,9 +55,17 @@ export default function SkipObjectsScreen() {
   const params = useLocalSearchParams<{ printer?: string }>();
   const printer = Array.isArray(params.printer) ? params.printer[0] : params.printer;
   const reported: number[] = useLiveStore(
-    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?.job?.skipped_objects ?? [],
+    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?.job?.skipped_objects ?? NO_IDS,
   );
   const reportedKey = reported.join(",");
+  const liveSubtask: unknown = useLiveStore(
+    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?._raw?.subtask_name,
+  );
+  const liveFile: unknown = useLiveStore(
+    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?._raw?.gcode_file,
+  );
+  const sending = useRef(false);
+  const reloadedFor = useRef<string | null>(null);
 
   const [info, setInfo] = useState<SkipObjectsInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +90,16 @@ export default function SkipObjectsScreen() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Another job on the printer: reload, once per job it reports, so a bridge
+  // answer that still disagrees with the live snapshot cannot loop.
+  useEffect(() => {
+    if (!info || !jobChanged(info, { subtask_name: liveSubtask, gcode_file: liveFile })) return;
+    const key = `${String(liveSubtask)}|${String(liveFile)}`;
+    if (reloadedFor.current === key) return;
+    reloadedFor.current = key;
+    load();
+  }, [info, liveSubtask, liveFile, load]);
+
   // PartSkipDialog::UpdatePartsStateFromPrinter.
   useEffect(() => {
     setStates((prev) => followPrinter(prev, reportedKey ? reportedKey.split(",").map(Number) : []));
@@ -87,7 +114,7 @@ export default function SkipObjectsScreen() {
     if (!printer || !info?.map) return;
     let live = true;
     getSkipMap(printer, checkedKey ? checkedKey.split(",").map(Number) : [],
-      skippedKey ? skippedKey.split(",").map(Number) : [])
+      skippedKey ? skippedKey.split(",").map(Number) : [], info.digest)
       .then((bytes) => { if (live) setMapUri(`data:image/png;base64,${toBase64(bytes)}`); })
       .catch(() => { /* the list still works without the picture */ });
     return () => { live = false; };
@@ -112,27 +139,32 @@ export default function SkipObjectsScreen() {
   }
 
   function apply() {
-    if (!printer || refusal || !checked.length) return;
+    if (!printer || !info || refusal || !checked.length || sending.current) return;
+    // One confirm and one POST at a time, from the first tap.
+    sending.current = true;
+    setBusy(true);
+    const done = () => { sending.current = false; setBusy(false); };
     const text = confirmText(states);
+    const body = skipRequest(info, states);
     Alert.alert(text.title, text.body, [
-      { text: "Cancel", style: "cancel" },
+      { text: "Cancel", style: "cancel", onPress: done },
       {
         text: "Continue",
         style: "destructive",
         onPress: async () => {
-          setBusy(true);
           try {
-            await skipObjects(printer, checked);
-            showToast(text.all ? "Stopping…" : `Skipping ${checked.length} objects`, { severity: "success" });
+            const result = await skipObjects(printer, body);
+            showToast(result.action === "stop" ? "Stopping…" : `Skipping ${body.obj_list.length} objects`,
+              { severity: "success" });
             router.back();
           } catch (e) {
             showToast(message(e), { severity: "danger" });
           } finally {
-            setBusy(false);
+            done();
           }
         },
       },
-    ]);
+    ], { cancelable: true, onDismiss: done });
   }
 
   if (!printer) {

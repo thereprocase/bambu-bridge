@@ -62,20 +62,28 @@ test('applyRefusal uses Orca tooltips', () => {
 // ── the sheet ────────────────────────────────────────────────────────────────
 const PID = 'P1';
 let posts;
+let gets;
 let data;
+let reply;
+let sheet;
 
 function openSheet() {
   posts = [];
+  gets = 0;
+  reply = async () => ({ ok: true, status: 200, data: { action: 'skip' } });
   const app = {
     store,
     api: {
-      api: async () => ({ ok: true, status: 200, data }),
+      api: async () => { gets += 1; return { ok: true, status: 200, data }; },
       tokenUrl: (path, params) => `${path}?${new URLSearchParams(params)}`,
-      postJson: async (path, body) => { posts.push({ path, body }); return { ok: true, status: 200, data: {} }; },
+      postJson: async (path, body) => { posts.push({ path, body }); return reply(body); },
     },
   };
-  return skip.open(app, PID);
+  sheet = skip.open(app, PID);
+  return sheet;
 }
+
+const IDENTITY = { job: 'multi3', gcode_file: 'multi3.gcode.3mf', plate: 1, digest: 'd'.repeat(64) };
 
 const img = () => find(document.body, (n) => n.tagName === 'IMG')[0];
 const box = (label) => find(document.body, (n) => n.tagName === 'INPUT' && n.attrs['aria-label'] === label)[0];
@@ -86,9 +94,11 @@ const tap = async (x, y) => {
 };
 
 beforeEach(() => {
+  if (sheet) sheet.close();   // drop the last sheet's store subscription
+  sheet = null;
   resetBody();
   data = {
-    plate: 1, label_object_enabled: true, available: true, reason: null, map: MAP,
+    ...IDENTITY, label_object_enabled: true, available: true, reason: null, map: MAP,
     objects: [
       { id: 63, name: 'cube.stl', skipped: false },
       { id: 74, name: 'bar.stl', skipped: false },
@@ -108,6 +118,7 @@ test('tapping the map toggles the object under the finger; skipped stay locked',
   await tap(10, 60);                     // cube
   assert.equal(box('cube.stl').checked, true);
   assert.match(img().src, /checked=63/);
+  assert.match(img().src, /digest=d{64}/);
   assert.equal(skipBtn.disabled, false);
   await tap(260, 60);                    // stray colour: nothing
   await tap(10, 10);                     // bed: nothing
@@ -127,7 +138,10 @@ test('Skip confirms with Orca wording and posts the checked ids', async () => {
   assert.ok(find(document.body, (n) => n.textContent === 'This action cannot be undone. Continue?').length);
   await buttons(document.body, 'Continue')[0].fire('click');
   await tick();
-  assert.deepEqual(posts, [{ path: '/printers/P1/skip_objects', body: { obj_list: [74] } }]);
+  assert.deepEqual(posts, [{
+    path: '/printers/P1/skip_objects',
+    body: { obj_list: [74], action: 'skip', ...IDENTITY },
+  }]);
 });
 
 test('Select All covers every remaining object and warns the print will stop', async () => {
@@ -166,4 +180,62 @@ test('objects the printer skips while the sheet is open lock in place', async ()
   assert.equal(box('cube.stl').checked, true);
   assert.match(img().src, /v=63%2C85|v=85%2C63/);
   assert.equal(buttons(document.body, 'Skip')[0].disabled, true);   // nothing left checked
+});
+
+
+test('Skip is disabled while its confirm or request is open (no double send)', async () => {
+  openSheet();
+  await tick();
+  await tap(10, 60);
+  const skipBtn = buttons(document.body, 'Skip')[0];
+  skipBtn.fire('click');
+  await tick();
+  assert.equal(skipBtn.disabled, true);
+  skipBtn.fire('click');                 // ignored: one confirm only
+  await tick();
+  assert.equal(buttons(document.body, 'Continue').length, 1);
+  let release;
+  reply = () => new Promise((resolve) => { release = resolve; });
+  buttons(document.body, 'Continue')[0].fire('click');
+  await tick();
+  assert.equal(skipBtn.disabled, true, 'still disabled while the POST runs');
+  release({ ok: false, status: 409, error: 'capability_unavailable', message: 'The print changed; reopen Skip Objects' });
+  await tick();
+  assert.equal(posts.length, 1);
+  assert.equal(skipBtn.disabled, false, 'usable again after a refusal');
+  assert.ok(find(document.body, (n) => /The print changed/.test(n.textContent)).length);
+});
+
+test('the toast follows the action the bridge took', async () => {
+  openSheet();
+  await tick();
+  await tap(10, 60);
+  reply = async () => ({ ok: true, status: 200, data: { action: 'stop' } });
+  buttons(document.body, 'Skip')[0].fire('click');
+  await tick();
+  buttons(document.body, 'Continue')[0].fire('click');
+  await tick();
+  assert.ok(find(document.body, (n) => n.textContent === 'Stopping…').length);
+});
+
+test('a new job on the printer reloads the sheet', async () => {
+  store.applySnapshot(PID, { printer_id: PID, job: { skipped_objects: [85] }, _raw: { subtask_name: 'multi3', gcode_file: 'multi3.gcode.3mf' } });
+  openSheet();
+  await tick();
+  assert.equal(gets, 1);
+  store.applyDelta(PID, { _raw: { layer_num: 3 } });
+  assert.equal(gets, 1, 'telemetry alone does not reload');
+  store.applyDelta(PID, { _raw: { subtask_name: 'next', gcode_file: 'next.gcode.3mf' } });
+  await tick();
+  assert.equal(gets, 2);
+  // The bridge still answers with the old job: no reload loop.
+  store.applyDelta(PID, { _raw: { layer_num: 4 } });
+  await tick();
+  assert.equal(gets, 2);
+});
+
+test('jobChanged ignores a snapshot without job fields', () => {
+  assert.equal(skip.jobChanged(IDENTITY, { _raw: {} }), false);
+  assert.equal(skip.jobChanged(IDENTITY, { _raw: { subtask_name: 'multi3', gcode_file: 'multi3.gcode.3mf' } }), false);
+  assert.equal(skip.jobChanged(IDENTITY, { _raw: { gcode_file: 'Metadata/plate_1.gcode' } }), true);
 });

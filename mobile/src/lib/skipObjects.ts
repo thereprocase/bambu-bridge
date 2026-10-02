@@ -17,8 +17,11 @@ export interface SkipMap {
 }
 
 export interface SkipObjectsInfo {
+  /** The job identity the sheet is built from; the POST must echo it. */
   job: string | null;
+  gcode_file: string | null;
   plate: number;
+  digest: string;
   label_object_enabled: boolean;
   /** "pick" = Orca's pick image; "gcode" = printed footprint (CLI slices). */
   map_source: "pick" | "gcode" | null;
@@ -82,6 +85,26 @@ export function followPrinter(states: Map<number, PartState>, reported: number[]
   const next = new Map(states);
   for (const id of reported) if (next.has(id)) next.set(id, "skipped");
   return next;
+}
+
+/** True when the printer now reports a different job than the screen shows. */
+export function jobChanged(info: SkipObjectsInfo, raw: Record<string, unknown> | undefined): boolean {
+  const subtask = raw?.subtask_name;
+  const file = raw?.gcode_file;
+  return (typeof subtask === "string" && subtask !== info.job)
+    || (typeof file === "string" && file !== info.gcode_file);
+}
+
+/** The POST body: the selection, the confirmed action and the job identity. */
+export function skipRequest(info: SkipObjectsInfo, states: Map<number, PartState>) {
+  return {
+    obj_list: [...states].filter(([, s]) => s === "checked").map(([id]) => id),
+    action: confirmText(states).all ? "stop" as const : "skip" as const,
+    job: info.job,
+    gcode_file: info.gcode_file,
+    plate: info.plate,
+    digest: info.digest,
+  };
 }
 
 /** Base64 of raw bytes, for an image data URI. */

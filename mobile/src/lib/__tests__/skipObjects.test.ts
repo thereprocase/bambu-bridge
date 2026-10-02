@@ -1,5 +1,5 @@
 import {
-  applyRefusal, confirmText, followPrinter, hitTest, idAt, initialStates, toBase64,
+  applyRefusal, confirmText, followPrinter, hitTest, idAt, initialStates, jobChanged, skipRequest, toBase64,
   type SkipObjectsInfo, type SkipMap,
 } from "../skipObjects";
 
@@ -12,7 +12,8 @@ const MAP: SkipMap = {
 const IDS = new Set([63, 74]);
 
 const INFO: SkipObjectsInfo = {
-  job: "multi3", plate: 1, label_object_enabled: true, map_source: "gcode", max_objects: 64, available: true, reason: null,
+  job: "multi3", gcode_file: "multi3.gcode.3mf", plate: 1, digest: "d".repeat(64),
+  label_object_enabled: true, map_source: "gcode", max_objects: 64, available: true, reason: null,
   map: MAP,
   objects: [
     { id: 63, name: "cube.stl", skipped: false },
@@ -64,4 +65,22 @@ test("confirmation text warns when every object would be skipped", () => {
 
 test("toBase64 encodes bytes", () => {
   expect(toBase64(new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer)).toBe("iVBORw==");
+});
+
+test("the request echoes the job identity and the confirmed action", () => {
+  const states = initialStates(INFO);
+  states.set(63, "checked");
+  expect(skipRequest(INFO, states)).toEqual({
+    obj_list: [63], action: "skip", job: "multi3", gcode_file: "multi3.gcode.3mf", plate: 1, digest: "d".repeat(64),
+  });
+  states.set(74, "checked");
+  expect(skipRequest(INFO, states).action).toBe("stop");
+});
+
+test("jobChanged compares the live report with the screen's job", () => {
+  expect(jobChanged(INFO, {})).toBe(false);
+  expect(jobChanged(INFO, undefined)).toBe(false);
+  expect(jobChanged(INFO, { subtask_name: "multi3", gcode_file: "multi3.gcode.3mf" })).toBe(false);
+  expect(jobChanged(INFO, { subtask_name: "next" })).toBe(true);
+  expect(jobChanged(INFO, { gcode_file: "Metadata/plate_1.gcode" })).toBe(true);
 });
