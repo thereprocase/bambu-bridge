@@ -401,3 +401,42 @@ async def test_empty_idle_report_emits_interruption_after_reconnect_and_split_id
         )
         ev = await _next(sub, lambda e: e.name == "print_interrupted", timeout=1)
         assert ev.data["reason"] == "printer_job_lost"
+
+
+async def test_run_log_follows_what_the_bridge_sent_and_the_run_edges():
+    """Skip Objects' RunLog: starts and skips published through send_raw, bound
+    to the fresh RUNNING edge and dropped when the run ends."""
+    from unittest.mock import AsyncMock
+
+    from bambu_bridge.protocol.models import ReportMessage
+
+    service = _service(8883)
+    service._mqtt.publish = AsyncMock()  # type: ignore[method-assign]
+
+    async def report(fields):
+        await service._handle_report(ReportMessage.model_validate({"print": fields}))
+
+    await report({"gcode_state": "FINISH", "subtask_name": "old", "gcode_file": "old.gcode.3mf"})
+    await service.send_raw({"print": {
+        "command": "project_file", "param": "Metadata/plate_2.gcode",
+        "url": "file:///sdcard/multi.gcode.3mf", "subtask_name": "multi", "sequence_id": "1",
+    }})
+    await report({"gcode_state": "PREPARE", "subtask_name": "multi",
+                  "gcode_file": "multi.gcode.3mf"})
+    await report({"gcode_state": "RUNNING"})
+    started_at = service.snapshot()["job"]["started_at"]
+    assert started_at
+    assert service.run_log.plate("multi", "multi.gcode.3mf", started_at) == 2
+
+    await service.send_raw(
+        {"print": {"command": "skip_objects", "obj_list": [63], "sequence_id": "2"}}
+    )
+    assert service.run_log.pending([]) == {63}
+    await report({"gcode_state": "PAUSE"})
+    await report({"gcode_state": "RUNNING"})          # a resume is not a new run
+    assert service.run_log.plate("multi", "multi.gcode.3mf", started_at) == 2
+    assert service.run_log.pending([]) == {63}
+
+    await report({"gcode_state": "FINISH"})
+    assert service.run_log.pending([]) == set()
+    assert service.run_log.plate("multi", "multi.gcode.3mf", started_at) is None

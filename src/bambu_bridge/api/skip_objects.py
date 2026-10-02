@@ -25,10 +25,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import time
+import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -47,16 +47,14 @@ from bambu_bridge.api.control import _online, _send
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.preview_source import source_name
 from bambu_bridge.protocol import commands
-from bambu_bridge.protocol.ftps import FtpsTransfer
+from bambu_bridge.protocol.ftps import UPLOAD_DIR_CACHE, UPLOAD_DIR_PERSISTENT, FtpsTransfer
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.service.viz_cache import VizFillError, locate_exact
 
 router = APIRouter(prefix="/printers", tags=["control"])
 
 CHANGED = "The print changed; reopen Skip Objects"
-# Ids sent but not yet echoed in s_obj count as skipped for this long, like
-# Orca's set_part_skipped_dirty filter after an apply.
-PENDING_S = 30.0
+_UNRESOLVED = "The bridge cannot tell which file is printing"
 
 
 @dataclass(frozen=True)
@@ -65,21 +63,20 @@ class Loaded:
 
     job_name: str | None
     gcode_file: str | None
+    started_at: str | None
     archive: str
     plates: tuple[int, ...]
     digest: str
     job: skip.SkipJob
 
-    def identity(self) -> tuple[str | None, str | None, int, str]:
-        return self.job_name, self.gcode_file, self.job.plate, self.digest
+    def identity(self) -> tuple[Any, ...]:
+        return self.job_name, self.gcode_file, self.started_at, self.job.plate, self.digest
 
 
 @dataclass
 class _PrinterState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     loaded: Loaded | None = None
-    pending_for: tuple[Any, ...] = ()
-    pending: dict[int, float] = field(default_factory=dict)
 
 
 def _states(request: Request) -> dict[str, _PrinterState]:
@@ -94,21 +91,85 @@ def _raw(service: Any) -> dict[str, Any]:
     return service.snapshot().get("_raw") or {}
 
 
-def _candidates(raw: dict[str, Any]) -> tuple[list[str], bool]:
-    """Exact archive names to look for, and whether only /cache may hold it.
+def _started_at(service: Any) -> str | None:
+    """The run token: job.started_at, stamped on every fresh RUNNING edge."""
+    value = (service.snapshot().get("job") or {}).get("started_at")
+    return value if isinstance(value, str) else None
 
-    preview_source.source_name gives the reported gcode_file when it names an
-    archive; when it is the inner plate member, the subtask name, tried as
-    ``{subtask}.gcode.3mf`` then ``{subtask}.3mf`` (never stem-truncated).
+
+def _skipped(service: Any, raw: dict[str, Any]) -> set[int]:
+    """s_obj plus the skips the bridge sent this run that are not echoed yet."""
+    reported = skip.skipped_ids(raw)
+    run_log = getattr(service, "run_log", None)
+    return set(reported) | (run_log.pending(reported) if run_log else set())
+
+
+ROOT, CACHE = UPLOAD_DIR_PERSISTENT, UPLOAD_DIR_CACHE
+
+
+def _where(path: str) -> tuple[str, tuple[str, ...]] | None:
+    """A reported file path as (name, directories to search); None = unreadable.
+
+    ``/``, ``/sdcard`` and ``file:///sdcard`` or ``ftp://`` forms are the
+    root; a ``cache`` folder is /cache; any other folder is refused. Only a
+    bare name may be in either.
+    """
+    bare = re.sub(r"^(?:file|ftps?)://", "", path)
+    parts = [p for p in bare.split("/") if p]
+    if not parts:
+        return None
+    folders = parts[:-1][1:] if parts[:1] == ["sdcard"] and len(parts) > 1 else parts[:-1]
+    if folders == ["cache"]:
+        return parts[-1], (CACHE,)
+    if folders:
+        return None
+    rooted = bare != path or bare.startswith("/")
+    return parts[-1], (ROOT,) if rooted else (ROOT, CACHE)
+
+
+def _target(raw: dict[str, Any], starts: list[dict[str, Any]]) -> tuple[list[str], tuple[str, ...]]:
+    """The exact names and directories to look for the running archive in.
+
+    An open native-inbox start for this subtask names its file exactly;
+    otherwise preview_source.source_name gives the reported gcode_file when
+    it names an archive, else the subtask, tried as ``{subtask}.gcode.3mf``
+    and ``{subtask}.3mf`` (both looked for; two hits refuse).
     """
     name = source_name(raw)
+    gcode_file = str(raw.get("gcode_file") or "")
+    if starts:
+        if len(starts) > 1:
+            raise HTTPException(409, _UNRESOLVED)
+        where = _where(starts[0]["remote"])
+        reported = _where(gcode_file) if name == gcode_file else None
+        if where is None or (reported and reported[0] != where[0]):
+            raise HTTPException(409, _UNRESOLVED)
+        return [where[0]], where[1]
     if not name:
-        return [], False
-    path = PurePosixPath(name)
-    if name != str(raw.get("gcode_file") or ""):
+        raise HTTPException(404, "No current job on this printer.")
+    if name != gcode_file:
         names = [name] if name.endswith(".3mf") else [f"{name}.gcode.3mf", f"{name}.3mf"]
-        return names, False
-    return [path.name], "cache" in path.parts
+        return names, (ROOT, CACHE)
+    where = _where(name)
+    if where is None:
+        raise HTTPException(409, f"{name} is in a folder Skip Objects does not read")
+    return [where[0]], where[1]
+
+
+def _open_starts(gateway: Any, printer_id: str, raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """The native inbox's unresolved starts for this printer and subtask."""
+    inbox = getattr(gateway, "inbox", None)
+    if inbox is None:
+        return []
+    found = []
+    for row in inbox.unresolved_starts(printer_id):
+        try:
+            command = json.loads(row["command"] or "{}").get("print", {})
+        except ValueError:
+            continue
+        if command.get("subtask_name") == raw.get("subtask_name"):
+            found.append(row)
+    return found
 
 
 async def _source(request: Request, printer_id: str, service: Any) -> tuple[str, bytes]:
@@ -116,22 +177,22 @@ async def _source(request: Request, printer_id: str, service: Any) -> tuple[str,
     snapshot = service.snapshot()
     raw = snapshot.get("_raw") or {}
     gateway = getattr(request.app.state, "native_gateway", None)
+    starts = await asyncio.to_thread(_open_starts, gateway, printer_id, raw) if gateway else []
     if gateway is not None:
         local = await asyncio.to_thread(gateway.local_camera_source, snapshot)
         if local is not None:
             archive = str(raw.get("gcode_file") or "").rsplit("/", 1)[-1]
             if not archive.endswith(".3mf"):
-                archive = f"{raw.get('subtask_name') or ''}.gcode.3mf"
+                remote = starts[0]["remote"] if len(starts) == 1 else ""
+                archive = remote.rsplit("/", 1)[-1] or f"{raw.get('subtask_name') or ''}.gcode.3mf"
             return archive, local
-    names, cache_only = _candidates(raw)
-    if not names:
-        raise HTTPException(404, "No current job on this printer.")
+    names, directories = _target(raw, starts)
     from bambu_bridge.api.viz import _get_viz_cache
 
     viz = _get_viz_cache(request)
     ftps = FtpsTransfer(service.ip, service.access_code, port=request.app.state.ftps_port)
     try:
-        remote_dir, filename = await locate_exact(ftps, names, cache_only)
+        remote_dir, filename = await locate_exact(ftps, names, directories)
         await viz.validate_revision(printer_id, ftps, remote_dir, filename)
         data = await viz.source_bytes(printer_id, ftps, remote_dir, filename)
     except VizFillError as exc:
@@ -142,17 +203,27 @@ async def _source(request: Request, printer_id: str, service: Any) -> tuple[str,
     return filename, data
 
 
+def _plate(service: Any, raw: dict[str, Any], plates: tuple[int, ...], archive: str) -> int:
+    run_log = getattr(service, "run_log", None)
+    recorded = (
+        run_log.plate(raw.get("subtask_name"), archive, _started_at(service)) if run_log else None
+    )
+    return skip.resolve_plate(raw, list(plates), recorded) or 0
+
+
 async def _load(request: Request, printer_id: str, service: Any) -> Loaded:
     """The running job, re-read from storage; parsed once per file and plate."""
     raw = _raw(service)
-    job_name, gcode_file = raw.get("subtask_name"), raw.get("gcode_file")
+    job_name, gcode_file, started_at = (
+        raw.get("subtask_name"), raw.get("gcode_file"), _started_at(service)
+    )
     archive, data = await _source(request, printer_id, service)
     digest = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
     try:
         plates = tuple(await asyncio.to_thread(skip.archive_plates, data))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    plate = skip.resolve_plate(raw, list(plates), archive) or 0
+    plate = _plate(service, raw, plates, archive)
     state = _states(request)[printer_id]
     hit = state.loaded
     if hit and (hit.digest, hit.job.plate) == (digest, plate):
@@ -164,7 +235,7 @@ async def _load(request: Request, printer_id: str, service: Any) -> Loaded:
             raise HTTPException(422, str(exc)) from exc
     else:
         job = skip.SkipJob(0, False, ())
-    state.loaded = Loaded(job_name, gcode_file, archive, plates, digest, job)
+    state.loaded = Loaded(job_name, gcode_file, started_at, archive, plates, digest, job)
     return state.loaded
 
 
@@ -178,7 +249,8 @@ def _availability(service: Any, job: skip.SkipJob) -> str | None:
         return str(detail.get("message") if isinstance(detail, dict) else detail)
     if not skip.enabled():
         return "Control support under review"
-    return skip.unavailable_reason(_raw(service)) or skip.job_reason(job)
+    raw = _raw(service)
+    return skip.unavailable_reason(raw) or skip.job_reason(job) or skip.layer_reason(job, raw)
 
 
 def _service(registry: Registry, printer_id: str) -> Any:
@@ -195,12 +267,13 @@ async def get_skip_objects(
     service = _service(registry, printer_id)
     loaded = await _load(request, printer_id, service)
     job = loaded.job
-    skipped = set(skip.skipped_ids(_raw(service)))
+    skipped = _skipped(service, _raw(service))
     reason = _availability(service, job)
     pick = job.pick
     return {
         "job": loaded.job_name,
         "gcode_file": loaded.gcode_file,
+        "started_at": loaded.started_at,
         "plate": job.plate,
         "digest": loaded.digest,
         "label_object_enabled": job.label_object_enabled,
@@ -244,7 +317,8 @@ async def get_skip_map(
     hit = _states(request)[printer_id].loaded
     if not (
         hit
-        and (hit.job_name, hit.gcode_file) == (raw.get("subtask_name"), raw.get("gcode_file"))
+        and (hit.job_name, hit.gcode_file, hit.started_at)
+        == (raw.get("subtask_name"), raw.get("gcode_file"), _started_at(service))
         and (not digest or hit.digest == digest)
     ):
         hit = await _load(request, printer_id, service)
@@ -253,7 +327,7 @@ async def get_skip_map(
     job = hit.job
     if job.pick is None:
         raise HTTPException(404, "This print file has no object map.")
-    skipped = frozenset(skip.skipped_ids(raw)) & job.ids
+    skipped = frozenset(_skipped(service, raw)) & job.ids
     png = await asyncio.to_thread(
         skip.render_map, job.pick, (selected & job.ids) - skipped, skipped
     )
@@ -269,6 +343,7 @@ class SkipObjectsBody(BaseModel):
     obj_list: list[int] = Field(min_length=1, max_length=skip.MAX_OBJECTS)
     job: str | None
     gcode_file: str | None
+    started_at: str | None
     plate: int
     digest: str = Field(min_length=1)
     action: Literal["skip", "stop"]
@@ -291,9 +366,10 @@ async def post_skip_objects(
     then everything is checked again against the printer's latest report:
     the state, part-skip support, the job identity the user saw, and, like
     PartSkipDialog, a labelled plate of at most 64 objects whose listed,
-    not-yet-skipped ids were chosen. Ids sent moments ago count as skipped
-    until the printer echoes them, so the request that empties the plate
-    stops the print, and the client must have confirmed that same action.
+    not-yet-skipped ids were chosen, and the plate G-code's layer count must be
+    the running print's. Ids any client had the bridge send this run count as
+    skipped until the printer echoes them, so the request that empties the
+    plate stops the print, and the client must have confirmed that action.
     """
     state = _states(request)[printer_id]
     async with state.lock:
@@ -309,23 +385,19 @@ async def post_skip_objects(
         reason = skip.unavailable_reason(raw)
         if reason:
             unavailable(reason)
-        now_plate = skip.resolve_plate(raw, list(loaded.plates), loaded.archive) or 0
-        seen = (body.job, body.gcode_file, body.plate, body.digest)
-        current = (raw.get("subtask_name"), raw.get("gcode_file"), now_plate, loaded.digest)
+        now_plate = _plate(service, raw, loaded.plates, loaded.archive)
+        seen = (body.job, body.gcode_file, body.started_at, body.plate, body.digest)
+        current = (
+            raw.get("subtask_name"), raw.get("gcode_file"), _started_at(service), now_plate,
+            loaded.digest,
+        )
         if seen != loaded.identity() or current != loaded.identity():
             unavailable(CHANGED)
-        reason = skip.job_reason(loaded.job)
+        reason = skip.job_reason(loaded.job) or skip.layer_reason(loaded.job, raw)
         if reason:
             unavailable(reason)
-        reported = skip.skipped_ids(raw)
-        clock = time.monotonic()
-        if state.pending_for != loaded.identity():
-            state.pending_for, state.pending = loaded.identity(), {}
-        state.pending = {
-            i: t for i, t in state.pending.items() if i not in reported and t > clock
-        }
         try:
-            action, ids = skip.plan(loaded.job, [*reported, *state.pending], body.obj_list)
+            action, ids = skip.plan(loaded.job, sorted(_skipped(service, raw)), body.obj_list)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         if action != body.action:
@@ -335,6 +407,5 @@ async def post_skip_objects(
                 else "Other objects remain now; reopen Skip Objects"
             )
         envelope = commands.skip_objects(ids) if action == "skip" else commands.print_stop()
-        result = await _send(service, envelope)
-        state.pending.update({i: clock + PENDING_S for i in ids})
-        return {**result, "action": action}
+        # PrinterService.send_raw records the ids in its RunLog as pending.
+        return {**await _send(service, envelope), "action": action}

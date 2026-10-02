@@ -29,6 +29,7 @@ from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_comman
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.events import Event, EventBus, diff_state
 from bambu_bridge.service.material_inventory import MaterialInventory
+from bambu_bridge.skip_objects import RunLog
 from bambu_bridge.translate import (
     SnapshotContext,
     _started_at_iso,
@@ -238,6 +239,8 @@ class PrinterService:
         # snapshot ctx passes None → slot["memory"] is null for every slot).
         self._filament_memory: dict[int, FilamentMemory] | None = None
         self._load_filament_memory = load_filament_memory
+        # The plate this run was started with and the skips sent during it.
+        self.run_log = RunLog()
         self._invalidate_filament_memory = invalidate_filament_memory
 
         # TOFU cert state (PR A.2; contract §4.5). `expected_fingerprint` is
@@ -455,6 +458,8 @@ class PrinterService:
                 await self._mqtt.publish(envelope)
         else:
             await self._mqtt.publish(envelope)
+        # Every start and skip the bridge publishes, whoever asked for it.
+        self.run_log.sent(envelope)
 
     # ----------------------------------------------------------------- #
     # Dead-reckoned motion state (jog crash-prevention)
@@ -834,6 +839,10 @@ class PrinterService:
                 # if a future firmware ever supplies one. The event payload
                 # carries the same synthesized value the snapshot will expose.
                 self._print_started_at = datetime.now(UTC)
+                self.run_log.started(
+                    self._state.get("subtask_name"),
+                    _started_at_iso(self._state) or _dt_iso(self._print_started_at),
+                )
                 self.bus.publish(
                     Event(
                         "event",
@@ -845,11 +854,15 @@ class PrinterService:
                         name="print_started",
                     )
                 )
+            elif cur is GcodeState.IDLE:
+                self.run_log.ended()
             elif cur is GcodeState.FINISH:
                 self._print_started_at = None
+                self.run_log.ended()
                 self.bus.publish(Event("event", self._completion_data(), name="print_completed"))
             elif cur is GcodeState.FAILED:
                 self._print_started_at = None
+                self.run_log.ended()
                 self.bus.publish(
                     Event(
                         "event",

@@ -206,33 +206,101 @@ LIVE = "TW09-PF06-tweezer-v9-plus-latch-tune-PETG-z01.gcode.3mf"
 
 
 @pytest.mark.parametrize(
-    "raw,plates,plate",
+    "raw,plates,recorded,plate",
     [
-        ({"plate_idx": 3}, [1, 2, 3], 3),
-        ({"plate_idx": "2"}, [1, 2], 2),
-        ({"plate_idx": 0, "gcode_file": "/data/Metadata/plate_4.gcode"}, [4], 4),
-        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2], 2),
+        ({"plate_idx": 3}, [1, 2, 3], None, 3),
+        ({"plate_idx": "2"}, [1, 2], None, 2),
+        ({"plate_idx": 0, "gcode_file": "/data/Metadata/plate_4.gcode"}, [4], None, 4),
+        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2], None, 2),
         # Live P1S: no plate_idx, gcode_file is the project name, one plate.
-        ({"gcode_file": LIVE}, [1], 1),
-        ({"gcode_file": "part_3.gcode.3mf"}, [1], 1),
+        ({"gcode_file": LIVE}, [1], None, 1),
+        ({"gcode_file": "part_3.gcode.3mf"}, [1], None, 1),
         # A single-plate export of plate 3 keeps Orca's plate_3 naming.
-        ({"gcode_file": "job.gcode.3mf"}, [3], 3),
+        ({"gcode_file": "job.gcode.3mf"}, [3], None, 3),
+        # The plate the bridge started this run with.
+        ({"gcode_file": "job.gcode.3mf"}, [1, 2, 3], 2, 2),
+        ({"gcode_file": "Metadata/plate_2.gcode"}, [1, 2, 3], 2, 2),
         # Several plates and nothing names one: refuse, never assume plate 1.
-        ({"gcode_file": "job.gcode.3mf"}, [1, 2], None),
-        ({"plate_idx": True, "gcode_file": "job.gcode.3mf"}, [1, 2], None),
+        ({"gcode_file": "job.gcode.3mf"}, [1, 2], None, None),
+        ({"plate_idx": True, "gcode_file": "job.gcode.3mf"}, [1, 2], None, None),
+        # Named sources that disagree refuse (#11): the live report vs another.
+        ({"gcode_file": "Metadata/plate_3.gcode"}, [1, 2, 3], 2, None),
+        ({"plate_idx": 1, "gcode_file": "Metadata/plate_3.gcode"}, [1, 2, 3], None, None),
+        ({"plate_idx": 1}, [1, 2, 3], 2, None),
         # A named plate the archive does not hold is the wrong file.
-        ({"plate_idx": 4}, [1, 2], None),
-        ({}, [], None),
-        # param counts only when its echo's url names this archive.
+        ({"plate_idx": 4}, [1, 2], None, None),
+        ({}, [], None, None),
+        # The deep-merged param is never read (#10, #12).
         ({"param": "Metadata/plate_2.gcode", "url": "ftp://job.gcode.3mf",
-          "gcode_file": "job.gcode.3mf"}, [1, 2], 2),
-        ({"param": "Metadata/plate_2.gcode", "url": "ftp://other.gcode.3mf",
-          "gcode_file": "job.gcode.3mf"}, [1, 2], None),
-        ({"param": "Metadata/plate_2.gcode", "gcode_file": "job.gcode.3mf"}, [1, 2], None),
+          "gcode_file": "job.gcode.3mf"}, [1, 2], None, None),
     ],
 )
-def test_resolve_plate(raw, plates, plate):
-    assert skip.resolve_plate(raw, plates, "job.gcode.3mf") == plate
+def test_resolve_plate(raw, plates, recorded, plate):
+    assert skip.resolve_plate(raw, plates, recorded) == plate
+
+
+def test_plate_gcode_layer_count_must_be_the_running_prints():
+    job = skip.read_job(_fixture("multi3.gcode.3mf"), 1)
+    assert job.total_layers == 20                      # "; total layer number: 20"
+    assert skip.layer_reason(job, {"total_layer_num": 20}) is None
+    assert skip.layer_reason(job, {"total_layer_num": "20"}) is None
+    for raw in ({"total_layer_num": 15}, {}, {"total_layer_num": True}, {"total_layer_num": "x"}):
+        assert skip.layer_reason(job, raw) == "The file on the printer is not the one printing"
+    assert skip.layer_reason(skip.SkipJob(1, True, ()), {"total_layer_num": 20}) is not None
+
+
+# --------------------------------------------------------------------------- #
+# RunLog: what the bridge sent for this run
+# --------------------------------------------------------------------------- #
+
+
+def _start(plate="Metadata/plate_2.gcode", url="file:///sdcard/multi.gcode.3mf", subtask="multi"):
+    return {"print": {"command": "project_file", "param": plate, "url": url,
+                      "subtask_name": subtask, "sequence_id": "1"}}
+
+
+def test_run_log_binds_the_start_to_the_run_that_follows():
+    log = skip.RunLog()
+    log.sent(_start(), now=0)
+    log.started("multi", "T1", now=60)
+    assert log.plate("multi", "multi.gcode.3mf", "T1") == 2
+    assert log.plate("multi", "multi.gcode.3mf", "T2") is None     # another run
+    assert log.plate("multi", "other.gcode.3mf", "T1") is None     # another file
+    assert log.plate("other", "multi.gcode.3mf", "T1") is None
+    assert log.plate("multi", "multi.gcode.3mf", None) is None
+    # Pause/resume/speed echoes are not starts: nothing changes.
+    log.sent({"print": {"command": "pause", "param": ""}}, now=70)
+    log.sent({"print": {"command": "print_speed", "param": "2"}}, now=71)
+    assert log.plate("multi", "multi.gcode.3mf", "T1") == 2
+    # The start is used once: a later run (a screen reprint) has no plate.
+    log.ended()
+    log.started("multi", "T2", now=500)
+    assert log.plate("multi", "multi.gcode.3mf", "T2") is None
+
+
+def test_run_log_ignores_a_start_that_is_not_this_run():
+    log = skip.RunLog()
+    log.sent(_start(subtask="other"), now=0)
+    log.started("multi", "T1", now=60)
+    assert log.plate("multi", "multi.gcode.3mf", "T1") is None
+    log.sent(_start(), now=0)
+    log.started("multi", "T2", now=skip.START_WINDOW_S + 1)       # never ran in time
+    assert log.plate("multi", "multi.gcode.3mf", "T2") is None
+
+
+def test_run_log_counts_sent_skips_until_echoed_expired_or_run_ends():
+    log = skip.RunLog()
+    log.started("multi", "T1", now=0)
+    log.sent({"print": {"command": "skip_objects", "obj_list": [63, True, "x", 74]}}, now=10)
+    assert log.pending([], now=11) == {63, 74}
+    assert log.pending([63], now=12) == {74}                       # echoed
+    assert log.pending([], now=10 + skip.PENDING_S + 1) == set()   # expired
+    log.sent({"print": {"command": "skip_objects", "obj_list": [85]}}, now=50)
+    log.ended()
+    assert log.pending([], now=51) == set()
+    log.sent({"print": {"command": "skip_objects", "obj_list": [85]}}, now=60)
+    log.started("multi", "T2", now=61)
+    assert log.pending([], now=62) == set()
 
 
 def test_archive_plates():
@@ -482,6 +550,44 @@ def test_part_inside_a_ring_keeps_its_pixels(order):
     assert hit == 2
     assert (pick == 2).sum() >= 20 * 20               # the 10 mm part, interior included
     assert pick[30 * 2 - 30, 30 * 2 - 30] == 1           # (15, 45) mm: the ring's filled opening
+
+
+def _square(x0, y0, x1, y1):
+    return (f"G1 X{x0} Y{y0}\nG1 X{x1} Y{y0} E1\nG1 X{x1} Y{y1} E1\n"
+            f"G1 X{x0} Y{y1} E1\nG1 X{x0} Y{y0} E1\n")
+
+
+@pytest.mark.parametrize("order", ["frame first", "washers first"])
+def test_body_of_a_multi_body_object_inside_a_ring_keeps_its_bore(order):
+    # Review round 2, #9: object 74 is two washers (6 mm and 4 mm bores); one
+    # sits in the opening of frame 85. Whole-object ordering gave the nested
+    # washer's bore to the frame because the washers' total fill is larger.
+    frame = ("; start printing object, unique label id: 85\n"
+             + _square(40, 40, 80, 80) + _square(41, 41, 79, 79)
+             + "; stop printing object, unique label id: 85\n")
+    washers = ("; start printing object, unique label id: 74\n"
+               + _square(52, 52, 68, 68) + _square(57, 57, 63, 63)       # in the opening
+               + _square(5, 5, 35, 35) + _square(10, 10, 30, 30)         # a big one outside
+               + "; stop printing object, unique label id: 74\n")
+    body = frame + washers if order == "frame first" else washers + frame
+    gcode = "M83\n; LINE_WIDTH: 1\n" + body
+    pick = skip.gcode_footprint(
+        io.BytesIO(gcode.encode()), frozenset({74, 85}), (0.0, 0.0, 100.0, 100.0)
+    )
+    centre = pick[(100 - 60) * 2, 60 * 2]
+    assert centre == 74, "the nested washer's bore belongs to the washer"
+    assert pick[(100 - 20) * 2, 20 * 2] == 74            # the outer washer's bore
+    assert pick[(100 - 45) * 2, 45 * 2] == 85            # between frame and washer
+
+
+def test_components_split_4_connected_regions():
+    mask = np.zeros((5, 6), dtype=bool)
+    mask[0, 0:2] = mask[1, 1] = True          # one region
+    mask[2, 2] = True                          # diagonal only: a second region
+    mask[4, 0:6] = True                        # a third
+    parts = skip._components(mask)
+    assert sorted(int(p.sum()) for p in parts) == [1, 3, 6]
+    assert (np.sum(parts, axis=0) == mask).all()          # disjoint and complete
 
 
 def test_bed_comes_from_printable_area():

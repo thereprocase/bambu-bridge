@@ -30,9 +30,10 @@ import json
 import math
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -77,6 +78,8 @@ class SkipJob:
     pick: np.ndarray | None = field(default=None, repr=False)
     # "pick" (Orca's pick_<plate>.png) or "gcode" (printed footprint).
     map_source: str | None = None
+    # "; total layer number: N" from the plate G-code's header.
+    total_layers: int | None = None
 
     @property
     def ids(self) -> frozenset[int]:
@@ -97,32 +100,54 @@ def archive_plates(data: bytes) -> list[int]:
     return sorted(int(m.group(1)) for m in found if m and int(m.group(1)) > 0)
 
 
-def resolve_plate(raw: dict[str, Any], plates: list[int], archive: str) -> int | None:
-    """The plate this archive is printing, or None when nothing says.
+def resolve_plate(
+    raw: dict[str, Any], plates: list[int], recorded: int | None = None
+) -> int | None:
+    """The plate this archive is printing, or None when nothing proves it.
 
     In order: ``plate_idx`` (MachineObject::parse_json); a ``plate_N.gcode``
-    in ``param`` or ``gcode_file`` (MachineObject's local-task parse, and
-    preview_source.selected_plate); else the archive's only plate. ``param``
-    is deep-merged from the last command echo, so it counts only when that
-    echo's ``url`` names this archive. PartSkipDialog falls back to plate 1;
-    with several plates that would show and skip another plate's objects,
-    so several plates and no name is None.
+    in ``gcode_file`` (MachineObject's local-task parse), the printer's live
+    report; the plate the bridge sent to start this very run (RunLog);
+    else the archive's only plate. Named sources that disagree refuse. The
+    deep-merged ``param`` is never read: any print.* echo overwrites it.
+    PartSkipDialog falls back to plate 1; with several plates that would
+    show and skip another plate's objects, so several plates and no name is
+    None, as is a named plate the archive does not hold.
     """
     value = raw.get("plate_idx")
     try:
         index = int(value) if isinstance(value, int | str) and not isinstance(value, bool) else 0
     except (TypeError, ValueError):
         index = 0
-    named = index if index > 0 else None
-    if named is None and archive and _basename(raw.get("url")) == archive:
-        match = _PLATE_MEMBER.search(str(raw.get("param") or ""))
-        named = int(match.group(1)) if match else None
-    if named is None:
-        match = _PLATE_MEMBER.search(str(raw.get("gcode_file") or ""))
-        named = int(match.group(1)) if match else None
-    if named is not None:
-        return named if named in plates else None
+    match = _PLATE_MEMBER.search(str(raw.get("gcode_file") or ""))
+    named = {
+        n for n in (index or None, int(match.group(1)) if match else None, recorded) if n
+    }
+    if len(named) > 1:
+        return None
+    if named:
+        plate = named.pop()
+        return plate if plate in plates else None
     return plates[0] if len(plates) == 1 else None
+
+
+def layer_reason(job: SkipJob, raw: dict[str, Any]) -> str | None:
+    """Refuse unless the plate G-code's layer count is the running print's.
+
+    The bytes are the file of that name on the printer now; this proves they
+    are the G-code the printer is running (an overwritten namesake or another
+    plate of the archive almost always differs).
+    """
+    reported = raw.get("total_layer_num")
+    try:
+        layers = int(reported) if isinstance(reported, int | str) else None
+    except ValueError:
+        layers = None
+    if isinstance(reported, bool):
+        layers = None
+    if job.total_layers is None or layers != job.total_layers:
+        return "The file on the printer is not the one printing"
+    return None
 
 
 def _basename(value: Any) -> str:
@@ -236,16 +261,34 @@ def read_job(data: bytes, plate: int) -> SkipJob:
                 source = "pick" if pick is not None else None
             except KeyError:
                 pick, source = None, None
-            if pick is None and ids:
-                try:
+            try:
+                with zf.open(f"Metadata/plate_{plate}.gcode") as gcode:
+                    layers = _total_layers(gcode)
+                if pick is None and ids:
                     with zf.open(f"Metadata/plate_{plate}.gcode") as gcode:
                         pick = gcode_footprint(gcode, ids, _bed(zf))
                     source = "gcode" if pick is not None else None
-                except KeyError:
-                    pass
+            except KeyError:
+                layers = None
     except (zipfile.BadZipFile, OSError, EOFError) as exc:
         raise ValueError(f"project archive unreadable: {exc}") from exc
-    return SkipJob(plate, objects[0], objects[1], pick, source)
+    return SkipJob(plate, objects[0], objects[1], pick, source, layers)
+
+
+_LAYERS = b"; total layer number:"
+
+
+def _total_layers(lines: Any) -> int | None:
+    """``; total layer number: N`` from the G-code header block."""
+    for n, raw in enumerate(lines):
+        if raw.startswith(_LAYERS):
+            try:
+                return int(raw[len(_LAYERS):])
+            except ValueError:
+                return None
+        if n > 200 or raw.startswith(b"; HEADER_BLOCK_END"):
+            return None
+    return None
 
 
 def _objects(
@@ -385,10 +428,54 @@ def gcode_footprint(
                 draw.ellipse((c1 - rr, r1 - rr, c1 + rr, r1 + rr), fill=255)
         masks[object_id] = np.asarray(mask) > 0
         pick[masks[object_id] & (pick == 0)] = object_id
-    filled = {object_id: _fill_holes(printed) for object_id, printed in masks.items()}
-    for object_id in sorted(filled, key=lambda i: int(filled[i].sum())):
-        pick[filled[object_id] & (pick == 0)] = object_id
+    # Then every enclosed hole, one connected component at a time across all
+    # objects, smallest first: a hole nested in another hole is always the
+    # smaller, so a body inside an opening keeps its own bore.
+    holes = [
+        (int(part.sum()), object_id, part)
+        for object_id, printed in masks.items()
+        for part in _components(_fill_holes(printed) & ~printed)
+    ]
+    for _area, object_id, part in sorted(holes, key=lambda h: (h[0], h[1])):
+        pick[part & (pick == 0)] = object_id
     return pick
+
+
+def _components(mask: np.ndarray) -> list[np.ndarray]:
+    """4-connected regions of ``mask``, by union-find over row runs."""
+    runs: list[tuple[int, int, int]] = []          # (row, start, stop)
+    row_runs: list[list[int]] = []
+    for r, row in enumerate(mask):
+        edges = np.flatnonzero(np.diff(np.concatenate(([0], row.view(np.uint8), [0]))))
+        row_runs.append(list(range(len(runs), len(runs) + len(edges) // 2)))
+        runs.extend((r, int(a), int(b)) for a, b in zip(edges[0::2], edges[1::2], strict=True))
+    parent = list(range(len(runs)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for r in range(1, len(row_runs)):
+        above = row_runs[r - 1]
+        for i in row_runs[r]:
+            _, a, b = runs[i]
+            for j in above:
+                _, c, d = runs[j]
+                if a < d and c < b:   # column ranges overlap: 4-connected
+                    parent[root(i)] = root(j)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(runs)):
+        groups.setdefault(root(i), []).append(i)
+    out = []
+    for members in groups.values():
+        part = np.zeros_like(mask)
+        for i in members:
+            r, a, b = runs[i]
+            part[r, a:b] = True
+        out.append(part)
+    return out
 
 
 def _arc(
@@ -487,6 +574,87 @@ def render_map(pick: np.ndarray, checked: frozenset[int], skipped: frozenset[int
 
 
 UNKNOWN_PLATE = "The printer does not say which plate of this file is printing"
+
+
+PENDING_S = 30.0
+START_WINDOW_S = 3600.0
+
+
+@dataclass(frozen=True)
+class StartRecord:
+    """A project_file start the bridge published, and the run it began."""
+
+    archive: str
+    plate: int | None
+    subtask: str | None
+    at: float
+    started_at: str | None = None
+
+
+class RunLog:
+    """What the bridge itself sent for the current run of one printer.
+
+    PrinterService feeds it every command it publishes, whoever asked (the
+    web, the app, the queue, Orca's print-host or native relay, a library
+    replay), and the run edges. It remembers:
+
+    * the plate of the last project_file start, bound to the run that next
+      reaches RUNNING with the same subtask (a start that never ran expires);
+    * the ids of every print.skip_objects sent this run, which count as
+      skipped until the printer echoes them in s_obj or PENDING_S passes,
+      like Orca's set_part_skipped_dirty filter after an apply.
+    """
+
+    def __init__(self) -> None:
+        self.start: StartRecord | None = None
+        self.run: StartRecord | None = None
+        self.skips: dict[int, float] = {}
+
+    def sent(self, envelope: dict[str, Any], now: float | None = None) -> None:
+        body = envelope.get("print")
+        if not isinstance(body, dict):
+            return
+        now = time.monotonic() if now is None else now
+        if body.get("command") == "project_file":
+            match = _PLATE_MEMBER.search(str(body.get("param") or ""))
+            self.start = StartRecord(
+                _basename(body.get("url")),
+                int(match.group(1)) if match else None,
+                body.get("subtask_name"),
+                now,
+            )
+        elif body.get("command") == "skip_objects":
+            for object_id in body.get("obj_list") or []:
+                if isinstance(object_id, int) and not isinstance(object_id, bool):
+                    self.skips[object_id] = now + PENDING_S
+
+    def started(self, subtask: Any, started_at: str | None, now: float | None = None) -> None:
+        """A fresh RUNNING edge: bind the last start to this run, if it is this run's."""
+        now = time.monotonic() if now is None else now
+        record, self.start = self.start, None
+        if record and now - record.at <= START_WINDOW_S and record.subtask == subtask:
+            self.run = replace(record, started_at=started_at)
+        else:
+            self.run = None
+        self.skips = {}
+
+    def ended(self) -> None:
+        """FINISH, FAILED or a lost job: nothing carries into the next run."""
+        self.run = None
+        self.skips = {}
+
+    def plate(self, subtask: Any, archive: str, started_at: Any) -> int | None:
+        run = self.run
+        if run and started_at and (run.started_at, run.subtask, run.archive) == (
+            started_at, subtask, archive
+        ):
+            return run.plate
+        return None
+
+    def pending(self, reported: list[int], now: float | None = None) -> set[int]:
+        now = time.monotonic() if now is None else now
+        self.skips = {i: t for i, t in self.skips.items() if t > now and i not in reported}
+        return set(self.skips)
 
 
 def job_reason(job: SkipJob) -> str | None:

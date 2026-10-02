@@ -265,6 +265,16 @@ class NativeInbox:
                 raise ValueError("Unknown upload")
             return dict(row)
 
+    def unresolved_starts(self, printer: str) -> list[dict[str, Any]]:
+        """Starts sent, or being sent, to the printer whose outcome is still open."""
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM uploads WHERE printer=? AND start_state IN "
+                "('dispatching','sent','accepted','running','unknown')",
+                (printer,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def lookup(self, printer: str, path: str) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute(

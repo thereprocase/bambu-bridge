@@ -32,6 +32,7 @@ from bambu_bridge.protocol.camera import build_auth_packet
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 from bambu_bridge.service.events import Event, EventBus
 from bambu_bridge.service.printer import PrinterService
+from bambu_bridge.skip_objects import RunLog
 from tests.conftest import ACCESS_CODE
 
 SERIAL = "NATIVE_TEST_P1S"
@@ -607,6 +608,7 @@ async def test_common_service_gate_serializes_native_and_app_starts(gateway):
     service = PrinterService.__new__(PrinterService)
     service.command_guard = gateway.guard_inbox_command
     service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
     command = {
         "print": {
             "command": "project_file",
@@ -722,6 +724,7 @@ async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gat
     service = PrinterService.__new__(PrinterService)
     service.command_guard = gateway.guard_inbox_command
     service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
     cancelled = asyncio.Event()
     async with gateway.guard_managed_job(cancelled):
         assert gateway.inbox.status()[0]["start_state"] == "reserved"
@@ -752,6 +755,7 @@ async def test_managed_job_stops_its_running_print(gateway):
     service = PrinterService.__new__(PrinterService)
     service.command_guard = gateway.guard_inbox_command
     service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
     live = gateway.service().native_snapshot()["print"]
     async with gateway.guard_managed_job(asyncio.Event()):
         await service.send_command(
@@ -783,6 +787,7 @@ async def test_restore_during_managed_job_keeps_its_stop(gateway):
     service = PrinterService.__new__(PrinterService)
     service.command_guard = gateway.guard_inbox_command
     service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=gateway)))
     async with gateway.guard_managed_job(asyncio.Event()):
         await service.send_command("print", "project_file", url="file:///sdcard/m.gcode.3mf")

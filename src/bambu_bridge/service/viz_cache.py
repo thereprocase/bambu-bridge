@@ -159,36 +159,36 @@ async def find_3mf(ftps: FtpsTransfer, job_name: str) -> tuple[str, str] | None:
 
 
 async def locate_exact(
-    ftps: FtpsTransfer, names: list[str], cache_only: bool = False
+    ftps: FtpsTransfer, names: list[str], directories: tuple[str, ...]
 ) -> tuple[str, str]:
-    """Find the first of ``names`` on printer storage, refusing to guess.
+    """The one (directory, name) among ``names`` x ``directories``; never a guess.
 
-    Unlike :func:`find_3mf` (the viewer's forgiving lookup), a failed root
-    LIST raises ``VizFillError("download")`` instead of reading as empty, so
-    a same-named file in /cache cannot stand in for the running one; a
-    missing /cache directory (550) counts as empty. A name found in both
-    directories is ``VizFillError("ambiguous")`` unless ``cache_only``.
+    Unlike :func:`find_3mf` (the viewer's forgiving lookup), every candidate
+    in every directory is looked for, and more than one hit is
+    ``VizFillError("ambiguous")``. A failed LIST raises
+    ``VizFillError("download")`` instead of reading as empty, except a 550 on
+    /cache while the root listing shows no ``cache`` entry (no such folder).
     """
-    directories = (UPLOAD_DIR_CACHE,) if cache_only else (UPLOAD_DIR_PERSISTENT, UPLOAD_DIR_CACHE)
     listings: dict[str, list[str]] = {}
-    for remote_dir in directories:
+    for remote_dir in sorted(directories):   # root ("") first
         try:
             listings[remote_dir] = await ftps.list_dir(remote_dir, strict=True)
         except ftplib.error_perm as exc:
-            if remote_dir != UPLOAD_DIR_CACHE:
+            absent = remote_dir == UPLOAD_DIR_CACHE and "cache" not in listings.get(
+                UPLOAD_DIR_PERSISTENT, ["cache"]
+            )
+            if not absent:
                 raise VizFillError("download", f"FTPS list failed: {exc}") from exc
             listings[remote_dir] = []
         except Exception as exc:  # noqa: BLE001 — any transfer failure refuses
             raise VizFillError("download", f"FTPS list failed: {exc}") from exc
-    for name in names:
-        found = [d for d in directories if name in listings[d]]
-        if len(found) > 1:
-            raise VizFillError(
-                "ambiguous", f"{name} is in both the root and /cache; which one is printing?"
-            )
-        if found:
-            return found[0], name
-    raise VizFillError("not_found", "Print source unavailable on printer storage")
+    hits = [(d, n) for n in names for d in directories if n in listings[d]]
+    if len(hits) > 1:
+        found = ", ".join("/" + "/".join(p for p in (d, n) if p) for d, n in hits)
+        raise VizFillError("ambiguous", f"Several files could be the running print: {found}")
+    if not hits:
+        raise VizFillError("not_found", "Print source unavailable on printer storage")
+    return hits[0]
 
 
 # ------------------------------------------------------------------ #

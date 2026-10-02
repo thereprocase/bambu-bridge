@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import ftplib
 import io
+import json
+import re
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,9 +33,10 @@ FUN = format(1 << PART_SKIP_FUN_BIT, "X")
 MULTI3 = (FIXTURES / "multi3.gcode.3mf").read_bytes()      # objects 63, 74, 85
 SPARSE13 = (FIXTURES / "sparse13.gcode.3mf").read_bytes()  # objects 45, 56
 MULTI3_IDS = [63, 74, 85]
+RUN_A, RUN_B = "2026-10-01T20:00:00Z", "2026-10-01T23:00:00Z"
 
 
-def _with_plate_gcode(data: bytes, gcode: bytes = b"; no labels\n") -> bytes:
+def _with_plate_gcode(data: bytes, gcode: bytes = b"; total layer number: 60\n") -> bytes:
     """gui_pick1.3mf keeps only the GUI slice's metadata; give it a plate member."""
     buf = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(buf, "w") as dst:
@@ -81,17 +84,23 @@ def rig(monkeypatch):
         "gcode_state": "RUNNING",
         "subtask_name": "multi3",
         "gcode_file": "multi3.gcode.3mf",   # the live P1S reports the archive name
+        "total_layer_num": 20,              # multi3's "; total layer number: 20"
         "fun": FUN,
         "info": {"module": [{"name": "ota", "product_name": "P1S"}]},
     }
     snapshot = {
         "printer_id": "p",
         "_raw": raw,
+        "job": {"started_at": RUN_A},
         "session": {"connected": True, "last_telemetry_at": datetime.now(UTC).isoformat()},
     }
+    # PrinterService.send_raw feeds every published command to its RunLog.
+    run_log = core.RunLog()
+    run_log.started("multi3", RUN_A)
     service = SimpleNamespace(
         model=None, connected=True, cert_status="ok", ip="127.0.0.1", access_code="x" * 8,
-        snapshot=lambda: snapshot, send_raw=AsyncMock(),
+        snapshot=lambda: snapshot, run_log=run_log,
+        send_raw=AsyncMock(side_effect=lambda envelope: run_log.sent(envelope)),
     )
     storage = FakeStorage()
     storage.dirs[""]["multi3.gcode.3mf"] = MULTI3
@@ -115,7 +124,7 @@ def _get(rig):
     return rig.client.get("/printers/p/skip_objects")
 
 
-IDENTITY = ("job", "gcode_file", "plate", "digest")
+IDENTITY = ("job", "gcode_file", "started_at", "plate", "digest")
 
 
 def _body(seen, ids=(63,), action="skip", **override):
@@ -140,6 +149,7 @@ def test_get_lists_the_running_plate_and_its_identity(rig):
     rig.raw["s_obj"] = [74]
     body = _get(rig).json()
     assert (body["job"], body["gcode_file"], body["plate"]) == ("multi3", "multi3.gcode.3mf", 1)
+    assert body["started_at"] == RUN_A
     assert len(body["digest"]) == 64
     assert body["objects"] == [
         {"id": 63, "name": "cube.stl", "skipped": False},
@@ -170,9 +180,11 @@ def test_get_without_a_job_is_404(rig):
 
 def test_pick_map_rows_and_rendered_png(rig):
     rig.storage.dirs[""]["Brushwarden_Base.gcode.3mf"] = GUI
-    rig.raw.update(subtask_name="Brushwarden_Base", gcode_file="Metadata/plate_1.gcode")
+    rig.raw.update(
+        subtask_name="Brushwarden_Base", gcode_file="Metadata/plate_1.gcode", total_layer_num=60
+    )
     body = _get(rig).json()
-    assert body["map_source"] == "pick"
+    assert body["map_source"] == "pick" and body["available"] is True
     grid = body["map"]
     assert (grid["width"], grid["height"]) == (512, 512) and len(grid["rows"]) == 512
     assert all(sum(row[1::2]) == 512 for row in grid["rows"])
@@ -258,11 +270,20 @@ def test_dotted_subtask_is_never_stem_truncated(rig):
     assert _ids(_get(rig).json()) == MULTI3_IDS
 
 
-def test_subtask_prefers_the_sliced_gcode_3mf(rig):
+def test_subtask_finds_either_extension_but_refuses_two(rig):
     rig.raw.update(subtask_name="part", gcode_file="Metadata/plate_1.gcode")
-    rig.storage.dirs[""]["part.3mf"] = SPARSE13
-    rig.storage.dirs[""]["part.gcode.3mf"] = MULTI3
+    rig.storage.dirs[""]["part.3mf"] = MULTI3              # a Handy/cloud name
     assert _ids(_get(rig).json()) == MULTI3_IDS
+    rig.storage.dirs[""]["part.gcode.3mf"] = SPARSE13      # round 2 #1: both in root
+    assert _get(rig).status_code == 409
+    del rig.storage.dirs[""]["part.3mf"]
+    rig.storage.dirs["cache"]["part.3mf"] = MULTI3         # running /cache .3mf vs stale root
+    assert _get(rig).status_code == 409
+    assert rig.client.post("/printers/p/skip_objects", json={
+        "obj_list": [45], "action": "skip", "job": "part", "gcode_file": "Metadata/plate_1.gcode",
+        "started_at": RUN_A, "plate": 1, "digest": "d" * 64,
+    }).status_code == 409
+    rig.service.send_raw.assert_not_awaited()
 
 
 def test_same_name_in_root_and_cache_is_refused(rig):
@@ -287,6 +308,69 @@ def test_failed_root_listing_never_falls_back_to_cache(rig):
 def test_missing_cache_directory_counts_as_empty(rig):
     rig.storage.fail["cache"] = ftplib.error_perm("550 no such directory")
     assert _ids(_get(rig).json()) == MULTI3_IDS
+
+
+def test_cache_550_with_a_cache_folder_is_502(rig):
+    # Round 2 #5: a 550 on an existing /cache must not hide a namesake there.
+    rig.storage.dirs[""]["cache"] = b""            # the root LIST shows the folder
+    rig.storage.dirs["cache"]["multi3.gcode.3mf"] = SPARSE13
+    rig.storage.fail["cache"] = ftplib.error_perm("550 Failed to open directory")
+    assert _get(rig).status_code == 502
+
+
+@pytest.mark.parametrize(
+    "gcode_file,where,status",
+    [
+        # Explicit root forms read the root only (round 2 #4)...
+        ("/sdcard/multi3.gcode.3mf", "cache", 404),
+        ("/multi3.gcode.3mf", "cache", 404),
+        ("file:///sdcard/multi3.gcode.3mf", "cache", 404),
+        ("ftp://multi3.gcode.3mf", "cache", 404),
+        ("/sdcard/multi3.gcode.3mf", "", 200),
+        # ...a cache path /cache only...
+        ("/sdcard/cache/multi3.gcode.3mf", "", 404),
+        ("/cache/multi3.gcode.3mf", "cache", 200),
+        # ...a bare name either...
+        ("multi3.gcode.3mf", "cache", 200),
+        # ...and any other folder is refused.
+        ("/sdcard/prints/multi3.gcode.3mf", "", 409),
+    ],
+)
+def test_reported_path_maps_to_exactly_one_directory(rig, gcode_file, where, status):
+    del rig.storage.dirs[""]["multi3.gcode.3mf"]
+    rig.storage.dirs[where]["multi3.gcode.3mf"] = MULTI3
+    rig.raw["gcode_file"] = gcode_file
+    assert _get(rig).status_code == status
+
+
+def test_open_native_start_names_the_file_even_without_its_ack(rig):
+    # Round 2 #2: start sent, ACK lost (QoS 0), printer reports the plate member.
+    beluga = "beluga-" + "c" * 32 + ".gcode.3mf"
+    rig.raw.update(subtask_name="tray", gcode_file="Metadata/plate_1.gcode")
+    rig.storage.dirs[""]["tray.gcode.3mf"] = SPARSE13       # an older app print
+    command = {"print": {"command": "project_file", "subtask_name": "tray",
+                         "url": "file:///sdcard/" + beluga}}
+    rows = [{"remote": "/" + beluga, "command": json.dumps(command), "start_state": "sent"}]
+    rig.app.state.native_gateway = SimpleNamespace(
+        local_camera_source=lambda snap: None,
+        inbox=SimpleNamespace(unresolved_starts=lambda printer: rows),
+    )
+    assert _get(rig).status_code == 404                     # never the namesake
+    rig.storage.dirs[""][beluga] = MULTI3
+    assert _ids(_get(rig).json()) == MULTI3_IDS
+    rows.append(dict(rows[0]))                              # two open starts: which?
+    assert _get(rig).status_code == 409
+
+
+def test_overwritten_namesake_is_not_the_running_print(rig):
+    # Round 2 #3: the printer runs 20 layers; the card now holds a 15-layer slice.
+    rig.storage.dirs[""]["multi3.gcode.3mf"] = SPARSE13
+    body = _get(rig).json()
+    assert body["available"] is False
+    assert body["reason"] == "The file on the printer is not the one printing"
+    r = rig.client.post("/printers/p/skip_objects", json=_body(body, [45, 56], "stop"))
+    assert r.status_code == 409
+    rig.service.send_raw.assert_not_awaited()
 
 
 # --------------------------------------------------------------------------- #
@@ -341,18 +425,63 @@ def test_ids_sent_but_not_yet_echoed_count_as_skipped(rig):
     assert [p["command"] for p in _sent(rig)] == ["skip_objects", "stop"]
 
 
-def test_pending_ids_clear_when_echoed_or_the_job_changes(rig):
+def _new_run(rig, started_at=RUN_B, **raw):
+    """FINISH, then a fresh RUNNING edge, as PrinterService reports them."""
+    rig.service.run_log.ended()
+    rig.raw.update({"s_obj": [], **raw})
+    rig.snapshot["job"]["started_at"] = started_at
+    rig.service.run_log.started(rig.raw.get("subtask_name"), started_at)
+
+
+def test_pending_ids_clear_when_echoed_or_the_run_ends(rig):
     assert _post(rig, [63]).status_code == 200
     rig.raw["s_obj"] = [63]                           # echoed
     assert _post(rig, [74]).status_code == 200
-    rig.storage.dirs[""]["next.gcode.3mf"] = MULTI3
-    rig.raw.update(subtask_name="next", gcode_file="next.gcode.3mf", s_obj=[])
-    assert _post(rig, [63, 74]).status_code == 200    # a new job: nothing pending
+    _new_run(rig)                                     # a reprint of the same file
+    assert _post(rig, [63, 74]).status_code == 200    # nothing carried over (#7)
+
+
+def test_a_sheet_from_the_previous_run_of_the_same_file_is_refused(rig):
+    # Round 2 #6: same name, same bytes, same plate; only the run differs.
+    seen = _get(rig).json()
+    _new_run(rig)
+    r = rig.client.post("/printers/p/skip_objects", json=_body(seen, [74]))
+    assert r.status_code == 409
+    assert r.json()["detail"]["message"] == "The print changed; reopen Skip Objects"
+    rig.service.send_raw.assert_not_awaited()
+
+
+async def _relay(rig, ids):
+    """Orca's PartSkipDialog skip, relayed by the native gateway via send_raw."""
+    await rig.service.send_raw({"print": {"command": "skip_objects", "obj_list": ids}})
+
+
+def test_skips_relayed_from_orca_count_as_pending(rig):
+    # Round 2 #8: Orca skipped 63 through the bridge; the web then picks the rest.
+    import asyncio
+
+    asyncio.run(_relay(rig, [63]))
+    rig.service.send_raw.reset_mock()
+    assert _post(rig, [74, 85], action="skip").status_code == 409
+    assert _post(rig, [74, 85], action="stop").status_code == 200
+    assert [p["command"] for p in _sent(rig)] == ["stop"]
+
+
+def test_get_and_map_show_skips_not_yet_echoed(rig):
+    # Round 2 #15: Orca's dirty filter shows just-applied parts as skipped.
+    assert _post(rig, [63]).status_code == 200
+    body = _get(rig).json()
+    assert [o["skipped"] for o in body["objects"]] == [True, False, False]
+    r = rig.client.get("/printers/p/skip_objects/map.png", params={"checked": "63"})
+    colours = {tuple(c) for c in np.asarray(Image.open(io.BytesIO(r.content))).reshape(-1, 4)}
+    assert (159, 159, 159, 255) in colours            # drawn skipped, not checked
+    assert (239, 175, 175, 255) not in colours
 
 
 @pytest.mark.parametrize(
     "field,value",
-    [("job", "other"), ("gcode_file", "other.gcode.3mf"), ("plate", 2), ("digest", "0" * 64)],
+    [("job", "other"), ("gcode_file", "other.gcode.3mf"), ("plate", 2), ("digest", "0" * 64),
+     ("started_at", RUN_B), ("started_at", None)],
 )
 def test_a_selection_from_another_job_is_refused(rig, field, value):
     r = _post(rig, [63], **{field: value})
@@ -368,6 +497,7 @@ def test_a_selection_from_another_job_is_refused(rig, field, value):
         ({"gcode_file": "next.gcode.3mf"}, "The print changed; reopen Skip Objects"),
         ({"gcode_state": "FINISH"}, "Printer state: FINISH"),
         ({"gcode_state": "PREPARE"}, "Printer state: PREPARE"),
+        ({"total_layer_num": 15}, "The file on the printer is not the one printing"),
     ],
 )
 def test_printer_is_judged_again_after_the_slow_load(rig, change, message):
@@ -446,17 +576,51 @@ def test_unlabelled_job_is_refused(rig):
 # --------------------------------------------------------------------------- #
 
 
-def _two_plates() -> bytes:
+def _plates(plates: dict[int, tuple[int, int, int]]) -> bytes:
+    """multi3 rebuilt with plate N's objects renumbered (cube, bar, frame)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(MULTI3)) as src, zipfile.ZipFile(buf, "w") as dst:
+        gcode = src.read("Metadata/plate_1.gcode")
+        info = src.read("Metadata/slice_info.config").decode()
+        plate_xml = re.search(r"<plate>.*?</plate>", info, re.S).group(0)
+        blocks = []
+        for n, ids in plates.items():
+            remap = dict(zip((63, 74, 85), ids, strict=True))
+
+            def renumber(m: re.Match[bytes], remap: dict[int, int] = remap) -> bytes:
+                return m.group(1) + b",".join(b"%d" % remap[int(t)] for t in m.group(2).split(b","))
+
+            def ident(m: re.Match[str], remap: dict[int, int] = remap) -> str:
+                return f'identify_id="{remap[int(m.group(1))]}"'
+
+            labels = rb"(unique label id: |model label id: )([\d,]+)"
+            dst.writestr(f"Metadata/plate_{n}.gcode", re.sub(labels, renumber, gcode))
+            block = plate_xml.replace('key="index" value="1"', f'key="index" value="{n}"')
+            blocks.append(re.sub(r'identify_id="(\d+)"', ident, block))
         for name in src.namelist():
-            dst.writestr(name, src.read(name))
-        dst.writestr("Metadata/plate_2.gcode", src.read("Metadata/plate_1.gcode"))
+            if name not in ("Metadata/plate_1.gcode", "Metadata/slice_info.config"):
+                dst.writestr(name, src.read(name))
+        dst.writestr("Metadata/slice_info.config", info.replace(plate_xml, "\n".join(blocks)))
     return buf.getvalue()
 
 
+PLATES = {1: (63, 74, 85), 2: (101, 102, 103), 3: (201, 202, 203)}
+
+
+def _started_by_bridge(rig, plate: int, url="file:///sdcard/multi3.gcode.3mf"):
+    """A project_file start the bridge published, then that run's RUNNING edge."""
+    import asyncio
+
+    asyncio.run(rig.service.send_raw({"print": {
+        "command": "project_file", "param": f"Metadata/plate_{plate}.gcode", "url": url,
+        "subtask_name": "multi3", "sequence_id": "1",
+    }}))
+    rig.service.send_raw.reset_mock()
+    _new_run(rig)
+
+
 def test_several_plates_and_no_name_is_refused(rig):
-    rig.storage.dirs[""]["multi3.gcode.3mf"] = _two_plates()
+    rig.storage.dirs[""]["multi3.gcode.3mf"] = _plates(PLATES)
     body = _get(rig).json()
     assert body["plate"] == 0 and body["objects"] == [] and body["map"] is None
     assert body["reason"] == core.UNKNOWN_PLATE
@@ -465,11 +629,48 @@ def test_several_plates_and_no_name_is_refused(rig):
 
 
 def test_several_plates_named_by_plate_idx(rig):
-    rig.storage.dirs[""]["multi3.gcode.3mf"] = _two_plates()
+    rig.storage.dirs[""]["multi3.gcode.3mf"] = _plates(PLATES)
     rig.raw["plate_idx"] = 1
     body = _get(rig).json()
     assert body["plate"] == 1 and _ids(body) == MULTI3_IDS
     assert _post(rig, [63]).status_code == 200
+
+
+def test_plate_the_bridge_started_this_run_with(rig):
+    # Library replay, native Orca, the queue: the start names plate 2.
+    rig.storage.dirs[""]["multi3.gcode.3mf"] = _plates(PLATES)
+    _started_by_bridge(rig, 2)
+    body = _get(rig).json()
+    assert body["plate"] == 2 and _ids(body) == [101, 102, 103] and body["available"]
+    # A pause echo deep-merges param="" over the start's; the plate holds (#12).
+    rig.raw.update(param="", command="pause", gcode_state="PAUSE")
+    assert _post(rig, [102]).status_code == 200
+    assert _sent(rig)[-1]["obj_list"] == [102]
+
+
+def test_a_stale_param_names_no_plate(rig):
+    # Round 2 #10: plate 2 was started earlier; plate 3 now runs from the screen.
+    rig.storage.dirs[""]["multi3.gcode.3mf"] = _plates(PLATES)
+    _started_by_bridge(rig, 2)
+    _new_run(rig, "2026-10-02T09:00:00Z", param="Metadata/plate_2.gcode",
+             url="file:///sdcard/multi3.gcode.3mf")
+    body = _get(rig).json()
+    assert body["plate"] == 0 and body["reason"] == core.UNKNOWN_PLATE
+    assert _post(rig, [101, 102, 103], action="stop").status_code == 409
+    rig.service.send_raw.assert_not_awaited()
+
+
+def test_live_plate_member_beats_nothing_and_disagreement_refuses(rig):
+    # Round 2 #11: gcode_file says plate 3; the bridge's start said plate 2.
+    rig.storage.dirs[""]["multi3.gcode.3mf"] = _plates(PLATES)
+    _started_by_bridge(rig, 2)
+    rig.raw["gcode_file"] = "Metadata/plate_3.gcode"
+    body = _get(rig).json()
+    assert body["plate"] == 0
+    assert _post(rig, [101]).status_code == 409
+    rig.service.send_raw.assert_not_awaited()
+    rig.service.run_log.run = None                    # only the live report names it
+    assert _ids(_get(rig).json()) == [201, 202, 203]
 
 
 # --------------------------------------------------------------------------- #
