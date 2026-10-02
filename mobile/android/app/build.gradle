@@ -93,8 +93,8 @@ android {
         applicationId 'com.anonymous.bambubridgeapp'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 45
-        versionName "0.20.21"
+        versionCode 46
+        versionName "0.20.22"
 
         // C++ assertion strings must not embed the builder's private home or checkout path.
         externalNativeBuild {
