@@ -20,8 +20,8 @@ export interface SkipObjectsInfo {
   /** The job identity the sheet is built from; the POST must echo it. */
   job: string | null;
   gcode_file: string | null;
-  /** The run token: job.started_at, stamped on every fresh start. */
-  started_at: string | null;
+  /** The run token: job.run_id, moved on every run edge and reconnect. */
+  run_id: number | null;
   plate: number;
   digest: string;
   label_object_enabled: boolean;
@@ -90,15 +90,15 @@ export function followPrinter(states: Map<number, PartState>, reported: number[]
 }
 
 /** True when the printer now reports another job, or another run of it
- * (`started_at`, `undefined` when the snapshot does not carry it). */
+ * (`runId` is job.run_id, `undefined` when the snapshot does not carry it). */
 export function jobChanged(
-  info: SkipObjectsInfo, raw: Record<string, unknown> | undefined, startedAt?: unknown,
+  info: SkipObjectsInfo, raw: Record<string, unknown> | undefined, runId?: unknown,
 ): boolean {
   const subtask = raw?.subtask_name;
   const file = raw?.gcode_file;
   return (typeof subtask === "string" && subtask !== info.job)
     || (typeof file === "string" && file !== info.gcode_file)
-    || (startedAt !== undefined && (startedAt ?? null) !== (info.started_at ?? null));
+    || (runId !== undefined && (runId ?? null) !== (info.run_id ?? null));
 }
 
 /** The POST body: the selection, the confirmed action and the job identity. */
@@ -108,7 +108,7 @@ export function skipRequest(info: SkipObjectsInfo, states: Map<number, PartState
     action: confirmText(states).all ? "stop" as const : "skip" as const,
     job: info.job,
     gcode_file: info.gcode_file,
-    started_at: info.started_at,
+    run_id: info.run_id,
     plate: info.plate,
     digest: info.digest,
   };

@@ -20,9 +20,9 @@
 //     the print, as Orca does).
 //
 // The POST carries the job identity this sheet was built from (job,
-// gcode_file, started_at, plate, digest) and the action the user confirmed;
-// the bridge refuses with 409 if either no longer holds. The sheet reloads
-// when the printer reports another job or another run of the same one.
+// gcode_file, run_id, plate, digest) and the action the user confirmed; the
+// bridge refuses with 409 if either no longer holds. The sheet reloads when
+// the printer reports another job or another run of the same one.
 
 import { el, clear, mountSheet, confirmSheet, toast, errorCard } from './ui.js';
 
@@ -67,21 +67,22 @@ export function applyRefusal(data, states) {
 
 /**
  * True when the printer now reports a different job than the sheet shows:
- * another file or subtask, or another run (job.started_at, stamped on every
- * fresh start, so a reprint of the same file counts).
+ * another file or subtask, or another run (job.run_id, which the bridge
+ * moves on every run edge and reconnect, so a reprint of the same file and
+ * a gap in the link both count).
  */
 export function jobChanged(data, snap) {
   const raw = (snap && snap._raw) || {};
   const job = (snap && snap.job) || {};
   return (typeof raw.subtask_name === 'string' && raw.subtask_name !== data.job)
     || (typeof raw.gcode_file === 'string' && raw.gcode_file !== data.gcode_file)
-    || ('started_at' in job && (job.started_at ?? null) !== (data.started_at ?? null));
+    || ('run_id' in job && (job.run_id ?? null) !== (data.run_id ?? null));
 }
 
 function reportedJob(snap) {
   const raw = (snap && snap._raw) || {};
   const job = (snap && snap.job) || {};
-  return `${raw.subtask_name}|${raw.gcode_file}|${job.started_at}`;
+  return `${raw.subtask_name}|${raw.gcode_file}|${job.run_id}`;
 }
 
 /**
@@ -128,7 +129,8 @@ export function open(app, pid) {
       body.appendChild(el('button', { class: 'btn btn--primary mt-3', text: 'Retry', onClick: load }));
       return;
     }
-    const sub = build(app, pid, r.data, body, errSlot, handle, reloadFor);
+    const live = () => mine === gen && !closed;
+    const sub = build(app, pid, r.data, body, errSlot, handle, reloadFor, live);
     // build()'s first follow() may already have started a newer load.
     if (mine !== gen || closed) { sub(); return; }
     unsub = sub;
@@ -146,7 +148,7 @@ export function open(app, pid) {
   return { close: () => handle.close() };
 }
 
-function build(app, pid, data, host, errSlot, handle, reload) {
+function build(app, pid, data, host, errSlot, handle, reload, live) {
   // part id -> 'unchecked' | 'checked' | 'skipped' (PartState), listed by id.
   const states = new Map(data.objects.map((o) => [o.id, o.skipped ? 'skipped' : 'unchecked']));
   const ids = new Set(states.keys());
@@ -203,7 +205,8 @@ function build(app, pid, data, host, errSlot, handle, reload) {
     skipBtn.disabled = !!refusal || sending;
     hint.textContent = refusal;
     const key = [...states].map(([id, s]) => `${id}:${s}`).join(',');
-    if (data.map && key !== mapKey) {
+    // A superseded build never asks the bridge for its (old) map.
+    if (data.map && key !== mapKey && live()) {
       // The bridge draws skipped parts from s_obj; `v` changes with them so
       // the image reloads when the printer skips something.
       mapKey = key;
@@ -234,7 +237,7 @@ function build(app, pid, data, host, errSlot, handle, reload) {
         action: all ? 'stop' : 'skip',
         job: data.job,
         gcode_file: data.gcode_file,
-        started_at: data.started_at,
+        run_id: data.run_id,
         plate: data.plate,
         digest: data.digest,
       });

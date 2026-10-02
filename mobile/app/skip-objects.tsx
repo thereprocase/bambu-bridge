@@ -64,8 +64,8 @@ export default function SkipObjectsScreen() {
   const liveFile: unknown = useLiveStore(
     (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?._raw?.gcode_file,
   );
-  const liveStarted: unknown = useLiveStore(
-    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?.job?.started_at,
+  const liveRun: unknown = useLiveStore(
+    (s) => ((printer ? s.printers[printer]?.snapshot : undefined) as any)?.job?.run_id,
   );
   const sending = useRef(false);
   const reloadedFor = useRef<string | null>(null);
@@ -96,14 +96,14 @@ export default function SkipObjectsScreen() {
   // Another job on the printer: reload, once per job it reports, so a bridge
   // answer that still disagrees with the live snapshot cannot loop.
   useEffect(() => {
-    if (!info || !jobChanged(info, { subtask_name: liveSubtask, gcode_file: liveFile }, liveStarted)) {
+    if (!info || !jobChanged(info, { subtask_name: liveSubtask, gcode_file: liveFile }, liveRun)) {
       return;
     }
-    const key = `${String(liveSubtask)}|${String(liveFile)}|${String(liveStarted)}`;
+    const key = `${String(liveSubtask)}|${String(liveFile)}|${String(liveRun)}`;
     if (reloadedFor.current === key) return;
     reloadedFor.current = key;
     load();
-  }, [info, liveSubtask, liveFile, liveStarted, load]);
+  }, [info, liveSubtask, liveFile, liveRun, load]);
 
   // PartSkipDialog::UpdatePartsStateFromPrinter.
   useEffect(() => {

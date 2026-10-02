@@ -83,9 +83,9 @@ function openSheet() {
   return sheet;
 }
 
-const RUN_A = '2026-10-01T20:00:00Z';
+const RUN_A = 1001;
 const IDENTITY = {
-  job: 'multi3', gcode_file: 'multi3.gcode.3mf', started_at: RUN_A, plate: 1, digest: 'd'.repeat(64),
+  job: 'multi3', gcode_file: 'multi3.gcode.3mf', run_id: RUN_A, plate: 1, digest: 'd'.repeat(64),
 };
 
 const img = () => find(document.body, (n) => n.tagName === 'IMG')[0];
@@ -261,7 +261,7 @@ function deferredApp() {
   return { app, calls };
 }
 
-const LIVE_A = { printer_id: PID, job: { skipped_objects: [], started_at: RUN_A },
+const LIVE_A = { printer_id: PID, job: { skipped_objects: [], run_id: RUN_A },
   _raw: { subtask_name: 'multi3', gcode_file: 'multi3.gcode.3mf' } };
 
 test('a sheet closed while loading never builds or fetches again', async () => {
@@ -301,13 +301,32 @@ test('a reprint of the same file is another run: the sheet reloads', async () =>
   openSheet();
   await tick();
   assert.equal(gets, 1);
-  // A ends; the queue starts the same file as B: new started_at.
-  store.applyDelta(PID, { job: { started_at: null } });
+  // A ends (the bridge moves run_id), then the queue starts the same file.
+  store.applyDelta(PID, { job: { run_id: RUN_A + 1 } });
   await tick();
   assert.equal(gets, 2);
-  store.applyDelta(PID, { job: { started_at: '2026-10-01T23:00:00Z', skipped_objects: [] } });
+  store.applyDelta(PID, { job: { run_id: RUN_A + 2, skipped_objects: [] } });
   await tick();
   assert.equal(gets, 3);
-  assert.equal(skip.jobChanged(IDENTITY, { job: { started_at: RUN_A }, _raw: {} }), false);
-  assert.equal(skip.jobChanged(IDENTITY, { job: { started_at: null }, _raw: {} }), true);
+  assert.equal(skip.jobChanged(IDENTITY, { job: { run_id: RUN_A }, _raw: {} }), false);
+  assert.equal(skip.jobChanged(IDENTITY, { job: { run_id: null }, _raw: {} }), true);
+});
+
+test('a build superseded by its own first follow() never requests its map', async () => {
+  // Review round 3 #18: the GET answered for run A while the store already
+  // reports run B; the A build is detached and must not cost a map.png.
+  store.applySnapshot(PID, LIVE_A);
+  const maps = [];
+  const { app, calls } = deferredApp();
+  app.api.tokenUrl = (path, params) => { maps.push(params.digest); return `${path}?${new URLSearchParams(params)}`; };
+  const handle = skip.open(app, PID);
+  store.applyDelta(PID, { job: { run_id: RUN_A + 1 } });
+  calls.pending[0]({ ok: true, status: 200, data });               // run A's answer
+  await tick();
+  assert.equal(calls.gets, 2, 'the reload for run B started');
+  assert.deepEqual(maps, [], 'no map.png for the superseded build');
+  calls.pending[1]({ ok: true, status: 200, data: { ...data, run_id: RUN_A + 1, digest: 'e'.repeat(64) } });
+  await tick();
+  assert.deepEqual(maps, ['e'.repeat(64)]);
+  handle.close();
 });
