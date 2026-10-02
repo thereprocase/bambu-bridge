@@ -2,7 +2,7 @@
   "expo": {
     "name": "Bambu Bridge",
     "slug": "bambu-bridge-app",
-    "version": "0.20.20",
+    "version": "0.20.21",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "bambubridgeapp",
