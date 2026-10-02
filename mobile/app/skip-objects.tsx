@@ -19,7 +19,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { getSkipMap, getSkipObjects, skipObjects } from "../src/api/control";
 import { BridgeError } from "../src/api/errors";
@@ -48,6 +48,9 @@ function message(e: unknown): string {
   return e instanceof BridgeError ? e.envelope.message : String(e);
 }
 
+/** One rendered map PNG, tagged with the job file it was drawn for. */
+type MapLayer = { seq: number; digest: string; uri: string };
+
 export default function SkipObjectsScreen() {
   const { c, space, type } = useTheme();
   const router = useRouter();
@@ -73,7 +76,12 @@ export default function SkipObjectsScreen() {
   const [info, setInfo] = useState<SkipObjectsInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [states, setStates] = useState<Map<number, PartState>>(new Map());
-  const [mapUri, setMapUri] = useState<string | null>(null);
+  // The map shown now and the one loading over it. A tap fetches a new PNG; it
+  // stacks on top and replaces the old one only once decoded, so the plate never
+  // blanks and fades back in (Android's default 300 ms fade on a new source).
+  const [shownMap, setShownMap] = useState<MapLayer | null>(null);
+  const [nextMap, setNextMap] = useState<MapLayer | null>(null);
+  const mapSeq = useRef(0);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [busy, setBusy] = useState(false);
 
@@ -117,10 +125,13 @@ export default function SkipObjectsScreen() {
 
   useEffect(() => {
     if (!printer || !info?.map) return;
+    const digest = info.digest;
     let live = true;
     getSkipMap(printer, checkedKey ? checkedKey.split(",").map(Number) : [],
       skippedKey ? skippedKey.split(",").map(Number) : [], info.digest)
-      .then((bytes) => { if (live) setMapUri(`data:image/png;base64,${toBase64(bytes)}`); })
+      .then((bytes) => {
+        if (live) setNextMap({ seq: ++mapSeq.current, digest, uri: `data:image/png;base64,${toBase64(bytes)}` });
+      })
       .catch(() => { /* the list still works without the picture */ });
     return () => { live = false; };
   }, [printer, info, checkedKey, skippedKey]);
@@ -205,7 +216,18 @@ export default function SkipObjectsScreen() {
           }}
           style={{ width: "100%", aspectRatio: info.map.width / info.map.height }}
         >
-          {mapUri && <Image source={{ uri: mapUri }} style={{ width: "100%", height: "100%" }} resizeMode="stretch" />}
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: c.surface2 }]} />
+          {/* Keyed by sequence: the loaded layer keeps its element when it becomes the shown map. */}
+          {[shownMap, nextMap].filter((m): m is MapLayer => !!m && m.digest === info.digest).map((m) => (
+            <Image
+              key={m.seq}
+              source={{ uri: m.uri }}
+              style={StyleSheet.absoluteFill}
+              resizeMode="stretch"
+              fadeDuration={0}
+              onLoad={m === nextMap ? () => { setShownMap(m); setNextMap(null); } : undefined}
+            />
+          ))}
         </Pressable>
       ) : (
         <Text style={[type.small, { color: c.muted }]}>This print file has no object map; pick objects from the list.</Text>
