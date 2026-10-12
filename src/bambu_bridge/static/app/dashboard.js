@@ -122,7 +122,8 @@ export function mount(root, app) {
   function renderBanner(vm, facts) {
     clear(bannerHost);
     if (facts.live) return;
-    const ago = vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt) : null;
+    const ago = facts.ageMs != null ? Math.round(facts.ageMs / 1000)
+      : vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt, pid) : null;
     if (!everConnected && !vm.hasData) {
       // never reached: treat as no-bridge until we prove otherwise.
       bannerHost.appendChild(banner("Can't reach the bridge.", 'grey',
