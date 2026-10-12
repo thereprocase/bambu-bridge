@@ -1,5 +1,5 @@
 import { request } from "./client";
-import { EventRow } from "./types";
+import { EventRow, DiagnosticHistoryWire } from "./types";
 
 export function listEvents(printerId: string, opts?: {
   since?: number;
@@ -21,4 +21,8 @@ export function dismissEvent(printerId: string, eventId: number) {
 
 export function clearEvents(printerId: string) {
   return request<void>(`/printers/${printerId}/events/clear`, { method: "POST" });
+}
+
+export function diagnosticHistory(printerId: string) {
+  return request<DiagnosticHistoryWire>(`/printers/${printerId}/diagnostics`);
 }

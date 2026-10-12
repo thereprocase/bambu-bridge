@@ -1117,8 +1117,32 @@ current print: `{from_slot, to_slot, status, observed_at}`. Slots are 1-based;
 an unknown destination is `null`. Status is `switching`, `completed`, or
 `interrupted`. Only explicit firmware purge/auto-switch HMS notices create
 records; an ordinary tray change is not a refill. Completed events remain when
-HMS clears, across phone reconnection, and until a new print starts. History
-currently lives in the printer service process; missed events and history before
-that process started are not reconstructed. A seed containing multiple old
+HMS clears, across phone reconnection, and until a new print starts. History is saved atomically in private per-printer journals beside the jobs DB.
+Restart recovery requires matching print identity/start information and
+nonregressed layer progress; otherwise the previous chain is archived. Missed
+events before tracking began are not reconstructed. A seed containing multiple old
 success notices cannot establish their destinations or chronological order.
 Information-severity notices do not contribute to the mobile issue count.
+
+
+### Diagnostic history
+
+Authenticated `GET /printers/{id}/diagnostics` returns `{durable, faults,
+current_refills, archived_refills}`. Fault records retain code, description,
+severity, channel, first/last seen, occurrence count, active/latched state and
+last clear time. Counts increment on reappearance after a printer-reported clear,
+not on each telemetry frame. Partial reports with no diagnostic fields do not
+clear saved faults. At most 200 fault records and 20 previous refill runs are
+retained. Refill records keep observed start, completion and interruption times;
+an unobserved start remains null. The app presents these details in collapsed
+Activity sections, with one-tap clipboard copying for faults. Status retains its
+compact refill badge. Journals exclude raw telemetry and credentials, are mode
+0600, and use hashed printer filenames. A disk failure is reported in Activity
+while live telemetry continues.
+
+Diagnostic description selection follows BambuStudio's device-family prefix
+(first three characters of the printer ID). Matching catalog variants replace
+cross-model descriptions; existing severity, advice and phase notes remain.
+Unsupported device families use the general published catalog. The frozen P1S
+01P response records its official URL, vendor version and SHA256; no runtime
+cloud requests are made.

@@ -15,7 +15,7 @@ _CODE = re.compile(r"^0700_2([0-3])00_0003_000([12])$")
 
 
 def notices(raw: dict[str, Any]) -> dict[int, str]:
-    result = {}
+    result: dict[int, str] = {}
     for item in raw.get("hms", []) if isinstance(raw.get("hms"), list) else []:
         if not isinstance(item, dict):
             continue
@@ -35,7 +35,10 @@ def notices(raw: dict[str, Any]) -> dict[int, str]:
 
 def slot(raw: dict[str, Any]) -> int | None:
     try:
-        value = int((raw.get("ams") or {}).get("tray_now"))
+        tray = (raw.get("ams") or {}).get("tray_now")
+        if tray is None:
+            return None
+        value = int(tray)
         return value + 1 if 0 <= value < 4 else None
     except (ValueError, TypeError):
         return None
@@ -53,6 +56,7 @@ class AutoRefillHistory:
             and old_state in {"IDLE", "FINISH", "FAILED", "PREPARE"}
             or current.get("subtask_name") != previous.get("subtask_name")
             and current.get("subtask_name") is not None
+            and previous.get("subtask_name") is not None
         )
         active = notices(current)
         if new_run:
@@ -67,6 +71,7 @@ class AutoRefillHistory:
             for row in self.transitions:
                 if row["status"] == "switching":
                     row["status"] = "interrupted"
+                    row["interrupted_at"] = datetime.now(UTC).isoformat()
             return
         for source, status in active.items():
             if self._seen.get(source) == status:
@@ -100,13 +105,17 @@ class AutoRefillHistory:
                 and destination != source
                 and (slot(previous) == source or len(active) == 1)
             )
+            now = datetime.now(UTC).isoformat()
             row = {
                 "from_slot": source,
                 "to_slot": destination if status == "completed" and known else None,
                 "status": status,
-                "observed_at": datetime.now(UTC).isoformat(),
+                "observed_at": now,
+                "started_at": now if status == "switching" else None,
+                "completed_at": now if status == "completed" else None,
             }
             if pending is not None and status == "completed":
+                row["started_at"] = pending.get("started_at")
                 pending.update(row)
             else:
                 self.transitions.append(row)

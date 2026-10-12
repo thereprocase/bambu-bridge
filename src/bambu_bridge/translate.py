@@ -83,6 +83,7 @@ class SnapshotContext:
     # MQTT reconnect, so a sheet built for one run is refused in another.
     run_id: int | None = None
     auto_refill_history: list[dict[str, Any]] = field(default_factory=list)
+    diagnostic_history: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -109,6 +110,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
             "last_connect_attempt": ctx.last_connect_attempt,
             "last_failure_phase": ctx.last_failure_phase,
         },
+        "diagnostics": ctx.diagnostic_history,
         "cert_status": ctx.cert_status,
         "phase": phase,
         "phase_reason": phase_reason,
@@ -122,9 +124,9 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
         "print_params": _print_params(raw),
         "motion": _motion(raw),
         "ams": {**_ams(raw, ctx), "refill_history": [dict(row) for row in ctx.auto_refill_history]},
-        "print_error": build_print_error(active_error_code(raw)),
+        "print_error": build_print_error(active_error_code(raw), ctx.serial[:3]),
         "stage": _stage(raw),
-        "hms": _hms_list(raw, job_ctx),
+        "hms": _hms_list(raw, job_ctx, ctx.serial[:3]),
         "_raw": _raw_passthrough(raw),
     }
 
@@ -753,7 +755,7 @@ def _external_from_ams(ams: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def build_print_error(code: Any) -> dict[str, Any] | None:
+def build_print_error(code: Any, catalog_model: str | None = None) -> dict[str, Any] | None:
     """Structured §6 ``print_error`` object from a raw P1S error code.
 
     Single source of the ``{code, hex, text, category, severity,
@@ -766,7 +768,7 @@ def build_print_error(code: Any) -> dict[str, Any] | None:
     """
     if code in (None, 0, "0", ""):
         return None
-    entry = hms_lookup(code)
+    entry = hms_lookup(code, catalog_model)
     # The hex form is what hms.lookup normalized; surface it back so the
     # APK can render "Code: 0300_0d00_0003_0001" if it wants.
     if isinstance(code, str):
@@ -785,8 +787,6 @@ def build_print_error(code: Any) -> dict[str, Any] | None:
         "wiki_url": hms_wiki_url(hex_form),
         "_raw": code,
     }
-
-
 
 
 # --------------------------------------------------------------------------- #
@@ -813,7 +813,9 @@ def _stage(raw: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _hms_list(raw: dict[str, Any], job_context: JobContext | None = None) -> list[dict[str, Any]]:
+def _hms_list(
+    raw: dict[str, Any], job_context: JobContext | None = None, catalog_model: str | None = None
+) -> list[dict[str, Any]]:
     """Decode the MQTT ``hms[]`` array into a list of structured entries.
 
     Each entry in the printer's ``hms`` payload is ``{"attr": int, "code": int}``.
@@ -839,7 +841,7 @@ def _hms_list(raw: dict[str, Any], job_context: JobContext | None = None) -> lis
         code = _as_int(item.get("code"))
         if attr is None or code is None:
             continue
-        decoded = decode_hms_entry(attr, code, job_context)
+        decoded = decode_hms_entry(attr, code, job_context, catalog_model)
         result.append(
             {
                 "code": f"{attr}:{code}",

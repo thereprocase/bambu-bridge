@@ -353,3 +353,17 @@ def test_delete_ignores_interrupted_jobs(
         assert r.json()["active_job_ids"] == ["live"]
         c.portal.call(functools.partial(repo.update, "live", state=JobState.COMPLETED))
         assert c.delete(f"/api/v1/printers/{SERIAL}", headers=_AUTH).status_code == 204
+
+
+def test_diagnostic_history_requires_auth_and_is_printer_scoped(tmp_path, monkeypatch):
+    patch_discovery_ok(monkeypatch, serial=SERIAL)
+    with TestClient(build_app(tmp_path / "history.db")) as client:
+        assert _post_register(client).status_code == 201
+        route = f"/api/v1/printers/{SERIAL}/diagnostics"
+        assert client.get(route).status_code == 401
+        result = client.get(route, headers=_AUTH)
+        assert result.status_code == 200
+        assert result.json() == {
+            "durable": True, "faults": [], "archived_refills": [], "current_refills": []
+        }
+        assert client.get("/api/v1/printers/missing/diagnostics", headers=_AUTH).status_code == 404

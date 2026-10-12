@@ -16,6 +16,7 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import structlog
@@ -28,6 +29,7 @@ from bambu_bridge.protocol.job_identity import empty_idle_report, job_lost
 from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_command
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.auto_refill import AutoRefillHistory
+from bambu_bridge.service.diagnostic_journal import DiagnosticJournal
 from bambu_bridge.service.events import Event, EventBus, diff_state
 from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.skip_objects import RunLog
@@ -199,6 +201,7 @@ class PrinterService:
         recover_started_at: RecoverStartedAt | None = None,
         load_filament_memory: LoadFilamentMemory | None = None,
         invalidate_filament_memory: InvalidateFilamentMemory | None = None,
+        diagnostic_history_path: Path | None = None,
     ) -> None:
         self.serial = serial
         self.ip = ip
@@ -254,6 +257,7 @@ class PrinterService:
         # Skip Objects' run boundary, the skips sent this run and its file.
         self.run_log = RunLog()
         self.auto_refill = AutoRefillHistory()
+        self.diagnostic_journal = DiagnosticJournal(diagnostic_history_path)
         self._gap: tuple[Any, ...] | None = None
         self._invalidate_filament_memory = invalidate_filament_memory
 
@@ -395,6 +399,7 @@ class PrinterService:
             filament_memory=self._filament_memory,
             run_id=self.run_log.run_id,
             auto_refill_history=self.auto_refill.transitions,
+            diagnostic_history={"durable": self.diagnostic_journal.durable},
         )
         return translate_snapshot(self._state, ctx)
 
@@ -721,7 +726,14 @@ class PrinterService:
         elif delta:
             self.bus.publish(Event("delta", delta))
 
-        self.auto_refill.update(prev_state, self._state)
+        history_previous = self.diagnostic_journal.restore(
+            prev_state, self._state, self.auto_refill, _dt_iso(self._print_started_at)
+        )
+        self.auto_refill.update(history_previous, self._state)
+        self.diagnostic_journal.update(
+            self._state, self.snapshot(), self.auto_refill,
+            _dt_iso(self._print_started_at), incoming
+        )
 
         # Re-read layer_num *after* the merge so we see the printer's view.
         try:
@@ -903,7 +915,9 @@ class PrinterService:
                     Event(
                         "event",
                         {
-                            "print_error": build_print_error(active_error_code(self._state)),
+                            "print_error": build_print_error(
+                                active_error_code(self._state), self.serial[:3]
+                            ),
                             "layer_num": self._state.get("layer_num"),
                         },
                         name="print_failed",
@@ -952,7 +966,7 @@ class PrinterService:
         self._error_signature = raw_code
         if raw_code is None:
             return  # error just cleared
-        entry = hms_lookup(raw_code)
+        entry = hms_lookup(raw_code, self.serial[:3])
         # Bucketed event name — the §8.4 catalog distinguishes
         # `filament_runout` from generic `error` so the APK can render
         # an actionable warning rather than a red alarm.

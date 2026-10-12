@@ -12,12 +12,15 @@
  * crash. Same screen post-PR-B will pull both.
  */
 
-import { useEffect, useRef, useState } from "react";
+import * as Clipboard from "expo-clipboard";
+import { useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 
-import { dismissEvent, listEvents } from "../../src/api/events";
+import { diagnosticHistory, dismissEvent, listEvents } from "../../src/api/events";
 import { BridgeError, BridgeNetworkError } from "../../src/api/errors";
-import { EventRow } from "../../src/api/types";
+import { EventRow, DiagnosticHistoryWire } from "../../src/api/types";
+import { faultDetails, refillDetails } from "../../src/lib/diagnosticHistory";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
 import { useLiveStore } from "../../src/store/live";
@@ -31,6 +34,9 @@ export default function ActivityScreen() {
   const live = useLiveStore((s) => (selectedId ? s.printers[selectedId] : undefined));
   const wsLog = live?.eventLog ?? [];
 
+  const [diagnostics, setDiagnostics] = useState<DiagnosticHistoryWire | null>(null);
+  const [faultsExpanded, setFaultsExpanded] = useState(false);
+  const [refillsExpanded, setRefillsExpanded] = useState(false);
   const [persisted, setPersisted] = useState<EventRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [endpointMissing, setEndpointMissing] = useState(false);
@@ -39,14 +45,21 @@ export default function ActivityScreen() {
   currentPrinter.current = selectedId;
   const [historyPrinter, setHistoryPrinter] = useState<string | null>(null);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     if (!selectedId) return;
     const id = ++requestId.current;
     const current = () => id === requestId.current && selectedId === currentPrinter.current;
     setLoading(true);
     try {
-      const got = await listEvents(selectedId, { limit: 100 });
+      const [got, history] = await Promise.all([
+        listEvents(selectedId, { limit: 100 }),
+        diagnosticHistory(selectedId).catch((error) => {
+          if (error instanceof BridgeError && error.status === 404) return null;
+          throw error;
+        }),
+      ]);
       if (!current()) return;
+      setDiagnostics(history);
       setPersisted(got);
       setHistoryPrinter(selectedId);
       setEndpointMissing(false);
@@ -60,16 +73,21 @@ export default function ActivityScreen() {
     } finally {
       if (current()) setLoading(false);
     }
-  }
+  }, [selectedId, showToast]);
+
+  useFocusEffect(useCallback(() => {
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 15000);
+    return () => { clearInterval(timer); requestId.current++; };
+  }, [refresh]));
 
   useEffect(() => {
     const requests = requestId;
+    setDiagnostics(null);
     setPersisted([]);
     setHistoryPrinter(null);
     setEndpointMissing(false);
-    refresh();
     return () => { requests.current++; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   async function dismiss(ev: EventRow) {
@@ -88,6 +106,34 @@ export default function ActivityScreen() {
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
       refreshControl={<RefreshControl refreshing={loading} tintColor={c.accent} onRefresh={refresh} />}
     >
+      {diagnostics && <Surface padded style={{ gap: space.md }}>
+        <Pressable accessibilityRole="button" onPress={() => setFaultsExpanded((value) => !value)}>
+          <Text style={[type.h2, { color: c.text }]}>Fault history ({diagnostics.faults.length}) {faultsExpanded ? "⌃" : "⌄"}</Text>
+        </Pressable>
+        {!diagnostics.durable && <Text style={[type.small, { color: c.warn }]}>History is currently held in memory; disk storage is unavailable.</Text>}
+        {faultsExpanded && diagnostics.faults.map((row) => <View key={row.id} style={{ gap: space.sm }}>
+          <Text selectable style={[type.small, { color: c.text }]}>{faultDetails(row)}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Copy ${row.code}`} onPress={() => {
+            void Clipboard.setStringAsync(faultDetails(row)).then(() => showToast("Diagnostic copied", { severity: "success" }))
+              .catch(() => showToast("Could not copy diagnostic", { severity: "danger" }));
+          }}><Text style={[type.small, { color: c.accent }]}>Copy details</Text></Pressable>
+        </View>)}
+      </Surface>}
+      {diagnostics && <Surface padded style={{ gap: space.md }}>
+        <Pressable accessibilityRole="button" onPress={() => setRefillsExpanded((value) => !value)}>
+          <Text style={[type.h2, { color: c.text }]}>Refill details {refillsExpanded ? "⌃" : "⌄"}</Text>
+        </Pressable>
+        {refillsExpanded && <>
+          <Text style={[type.body, { color: c.text }]}>Current print</Text>
+          {diagnostics.current_refills.length === 0 && <Text style={[type.small, { color: c.muted }]}>No refills observed.</Text>}
+          {diagnostics.current_refills.map((row, index) => <Text selectable key={index} style={[type.small, { color: c.text }]}>{refillDetails(row)}</Text>)}
+          {diagnostics.archived_refills.map((run, index) => <View key={index} style={{ gap: space.sm }}>
+            <Text style={[type.body, { color: c.muted }]}>{run.print?.subtask_name ?? "Earlier print"}</Text>
+            {run.refills.map((row, i) => <Text selectable key={i} style={[type.small, { color: c.text }]}>{refillDetails(row)}</Text>)}
+          </View>)}
+        </>}
+      </Surface>}
+
       {/* This session (WS) -------------------------------------------------- */}
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>This session</Text>

@@ -278,3 +278,19 @@ export interface EventRow {
   job_id?: string | null;
   dismissed: boolean;
 }
+
+export interface FaultHistoryRow {
+  id: string; code: string; text: string; severity: string; channel: string;
+  first_seen: string; last_seen: string; cleared_at?: string;
+  count: number; active: boolean; stale?: boolean;
+}
+export interface RefillHistoryRow {
+  from_slot: number; to_slot: number | null;
+  status: "switching" | "completed" | "interrupted";
+  observed_at: string; started_at?: string | null; completed_at?: string | null;
+  interrupted_at?: string | null;
+}
+export interface DiagnosticHistoryWire {
+  durable: boolean; faults: FaultHistoryRow[]; current_refills: RefillHistoryRow[];
+  archived_refills: { print?: Record<string, string>; refills: RefillHistoryRow[] }[];
+}

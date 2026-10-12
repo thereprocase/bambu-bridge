@@ -121,7 +121,9 @@ class UpdatePrinter(BaseModel):
 
     friendly_name: str | None = Field(default=None, min_length=1, max_length=64)
     ip: str | None = Field(default=None, min_length=1, max_length=64)
-    access_code: str | None = Field(default=None, min_length=8, max_length=8, pattern=r"^[A-Za-z0-9]{8}$")
+    access_code: str | None = Field(
+        default=None, min_length=8, max_length=8, pattern=r"^[A-Za-z0-9]{8}$"
+    )
 
     @field_validator("ip")
     @classmethod
@@ -170,6 +172,20 @@ def get_printer(
     if (gate := errors.cert_gate(svc)) is not None:
         return gate
     return svc.snapshot()
+
+
+@router.get("/{printer_id}/diagnostics")
+def diagnostic_history(printer_id: str, registry: Registry = Depends(get_registry)) -> Any:
+    try:
+        svc = registry.get(printer_id)
+    except PrinterNotFoundError:
+        return errors.not_found("printer_id", printer_id)
+    if (gate := errors.cert_gate(svc)) is not None:
+        return gate
+    return {
+        **svc.diagnostic_journal.view(),
+        "current_refills": [dict(row) for row in svc.auto_refill.transitions],
+    }
 
 
 # --------------------------------------------------------------------------- #

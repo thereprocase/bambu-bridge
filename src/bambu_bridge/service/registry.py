@@ -8,9 +8,11 @@ to a :class:`PrinterService` it didn't get from here.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 import structlog
 
@@ -41,7 +43,9 @@ class Registry:
         mqtt_port: int = 8883,
         camera_port: int = 6000,
         camera_linger_s: float = 10.0,
+        diagnostic_history_dir: Path | None = None,
     ) -> None:
+        self._diagnostic_history_dir = diagnostic_history_dir
         self._repo = repo
         # Optional jobs repo, used only to give each PrinterService a
         # restart-recovery hook for job.started_at (the P1S firmware reports no
@@ -185,6 +189,12 @@ class Registry:
             friendly_name=record.friendly_name,
             model=record.model,
             on_seen=_touch,
+            diagnostic_history_path=(
+                self._diagnostic_history_dir
+                / (hashlib.sha256(record.id.encode()).hexdigest() + ".json")
+                if self._diagnostic_history_dir is not None
+                else None
+            ),
             mqtt_port=self._mqtt_port,
             camera_port=self._camera_port,
             camera_linger_s=self._camera_linger_s,

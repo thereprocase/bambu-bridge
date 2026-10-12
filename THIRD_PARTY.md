@@ -63,3 +63,12 @@ fill previously unmapped codes; raw identifiers and unknown-code fallbacks remai
 The source files contain some model-specific text variants; first-file precedence
 is recorded by their ordered provenance list. This is description coverage, not
 firmware-specific validation of every failure or a hardware diagnosis.
+
+
+The catalog now retains device-family text overrides. Selection follows
+BambuStudio's `DeviceCore/DevHMSQuery.cpp` at the same pinned revision, which
+uses the device ID's first three characters. The additional P1S `01P` catalog
+was downloaded from the official public English diagnostics endpoint
+`https://e.bambulab.com/query.php?lang=en&d=01P`; its response hash and vendor
+version are preserved in the artifact. The refresh script accepts `--p1s-json`
+for reproducing this snapshot from an already downloaded response.

@@ -99,6 +99,7 @@ def create_app(
         await db.connect()
         registry = Registry(
             PrinterRepo(db),
+            diagnostic_history_dir=Path(settings.bridge_db_path).parent / "diagnostic-history",
             jobs=JobRepo(db),
             filament_memory=FilamentMemoryRepo(db),
             mqtt_port=mqtt_port,
