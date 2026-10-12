@@ -133,6 +133,8 @@
         Set-OrcaProperty $machine 'dev_name' 'Bridge P1S'
         Set-OrcaProperty $machine 'dev_ip' $setup.host
         Set-OrcaProperty $machine 'printer_type' 'C12'
+        Set-OrcaProperty $machine 'printer_agent_id' 'bbl'
+        Set-OrcaProperty $machine 'access_code' $setup.code
         Set-OrcaProperty $json.local_machines $setup.serial $machine
         Set-OrcaProperty $json.access_code $setup.serial $setup.code
         Set-OrcaProperty $json.user_access_code $setup.serial $setup.code

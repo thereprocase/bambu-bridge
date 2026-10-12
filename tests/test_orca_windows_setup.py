@@ -111,7 +111,12 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
                 "access_code": {"01PPHYSICAL0001": "OTHER123"},
             }
             if existing:
-                original["local_machines"][serial] = {"dev_ip": "192.0.2.33", "extra": "preserve"}
+                original["local_machines"][serial] = {
+                    "dev_ip": "192.0.2.33",
+                    "extra": "preserve",
+                    "printer_agent_id": "",
+                    "access_code": "",
+                }
             body = json.dumps(original, ensure_ascii=False, indent="\t")
             before = (
                 body + "\n# MD5 checksum " + hashlib.md5(body.encode()).hexdigest().upper() + "\n"
@@ -152,6 +157,8 @@ def test_windows_setup_preserves_profiles_and_certificate_bundle(tmp_path):
                 assert parsed["user_access_code"]["01PPHYSICAL0001"] == "OTHER123"
                 assert parsed["local_machines"][serial]["dev_ip"] == "127.0.0.1"
                 assert parsed["local_machines"][serial]["dev_name"] == "Bridge P1S"
+                assert parsed["local_machines"][serial]["printer_agent_id"] == "bbl"
+                assert parsed["local_machines"][serial]["access_code"] == "FIXTURE1"
                 assert len(parsed["local_machines"]) == 2
                 assert parsed["access_code"]["01PPHYSICAL0001"] == "OTHER123"
                 assert (

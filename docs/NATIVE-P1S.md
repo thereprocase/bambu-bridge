@@ -96,7 +96,10 @@ clients configured before 0.4.1.
 
 The helper registers the printer, corrects a saved LAN address, saves the same
 native code in Orca, and trusts this bridge's exact certificate in Orca's
-printer bundle. It verifies the certificate against the fingerprint supplied
+printer bundle. It also assigns the Bambu printer-agent scope required by
+Orca 2.5-dev. If Bridge P1S disappears from Device after upgrading, run a fresh
+setup command to migrate the saved entry while retaining its native code.
+It verifies the certificate against the fingerprint supplied
 by your authenticated dashboard and checks the printer and camera ports.
 Other printers and existing certificates are preserved, with backups next to
 changed files. It never force-closes Orca, rotates the code, starts a print,
