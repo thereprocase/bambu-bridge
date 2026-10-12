@@ -786,3 +786,18 @@ async def test_ready_report_before_expiry_keeps_unconfirmed_start(tmp_path):
     report = {"print": {"gcode_state": "FINISH", "gcode_file": "/previous.gcode.3mf"}}
     inbox.observe("fixture-printer", report, report)
     assert inbox.get(row["id"])["start_state"] == "sent"
+
+
+def test_unresolved_starts_are_open_starts_of_that_printer(tmp_path):
+    # Skip Objects names the running file from an open start (ACK or not).
+    inbox = NativeInbox(tmp_path)
+    command = start("ftp://tray.gcode.3mf")
+    command["print"]["subtask_name"] = "tray"
+    identifier = inbox.claim_external("fixture-printer", command)
+    rows = inbox.unresolved_starts("fixture-printer")
+    assert [(r["id"], r["remote"], r["start_state"]) for r in rows] == [
+        (identifier, "/tray.gcode.3mf", "dispatching")
+    ]
+    assert inbox.unresolved_starts("other-printer") == []
+    inbox.dispatched(identifier, "sent")
+    assert [r["start_state"] for r in inbox.unresolved_starts("fixture-printer")] == ["sent"]

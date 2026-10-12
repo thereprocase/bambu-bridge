@@ -187,7 +187,7 @@ function severityColor(c: ReturnType<typeof useTheme>["c"], name: string, sev?: 
   if (sev === "warn" || sev === "warning") return c.warn;
   if (sev === "info") return c.text;
   if (name.includes("error") || name.includes("failed") || name === "cert_changed") return c.danger;
-  if (name.includes("warning") || name.includes("runout") || name === "feed_warning") return c.warn;
+  if (name.includes("warning") || name.includes("runout")) return c.warn;
   if (name === "print_completed" || name === "cert_trusted") return c.accent;
   return c.text;
 }

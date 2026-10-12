@@ -12,6 +12,7 @@ import ssl
 import struct
 import threading
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -31,6 +32,7 @@ from bambu_bridge.protocol.camera import build_auth_packet
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 from bambu_bridge.service.events import Event, EventBus
 from bambu_bridge.service.printer import PrinterService
+from bambu_bridge.skip_objects import RunLog
 from tests.conftest import ACCESS_CODE
 
 SERIAL = "NATIVE_TEST_P1S"
@@ -71,6 +73,10 @@ async def gateway(tmp_path):
         raw_bus=EventBus(),
         send_raw=AsyncMock(),
         native_snapshot=lambda: snapshot,
+        # A live printer streams status; start readiness requires it to be fresh.
+        snapshot=lambda: {
+            "session": {"connected": True, "last_telemetry_at": datetime.now(UTC).isoformat()}
+        },
         camera=SimpleNamespace(subscribe=frames),
     )
     app = SimpleNamespace(
@@ -361,6 +367,32 @@ async def test_native_ftps_roundtrip_reaches_printer_before_success(gateway, ftp
     await asyncio.to_thread(exchange)
 
 
+async def test_native_passthrough_never_overwrites_the_printing_file(gateway, ftps_server):
+    # Skip review round 4: a STOR over the running file (case-insensitive, as
+    # the card is FAT/exFAT) is refused before any byte reaches the printer.
+    upstream_port, storage = ftps_server
+    gateway.app.state.ftps_port = upstream_port
+    service = gateway.service()
+    service.snapshot = lambda: {"_raw": {
+        "gcode_state": "RUNNING", "subtask_name": "box", "gcode_file": "box.gcode.3mf",
+    }}
+    (storage / "box.gcode.3mf").write_bytes(b"running")
+
+    def exchange():
+        ftp = _ImplicitFTP_TLS(context=tls(), timeout=10)
+        ftp.connect("127.0.0.1", port(gateway, 1))
+        ftp.login("bblp", gateway.test_code)
+        ftp.prot_p()
+        with pytest.raises(ftplib.error_perm, match="553 BBFTP_FILE_PRINTING"):
+            ftp.storbinary("STOR /BOX.gcode.3mf", io.BytesIO(b"re-slice"))
+        assert ftp.storbinary("STOR /other.gcode.3mf", io.BytesIO(b"x")).startswith("226")
+        ftp.quit()
+
+    await asyncio.to_thread(exchange)
+    assert (storage / "box.gcode.3mf").read_bytes() == b"running"
+    assert (storage / "other.gcode.3mf").read_bytes() == b"x"
+
+
 async def test_native_upload_failure_is_sanitized_and_fresh_session_can_retry(
     gateway,
     ftps_server,
@@ -602,6 +634,7 @@ async def test_common_service_gate_serializes_native_and_app_starts(gateway):
     service = PrinterService.__new__(PrinterService)
     service.command_guard = gateway.guard_inbox_command
     service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
     command = {
         "print": {
             "command": "project_file",
@@ -717,6 +750,7 @@ async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gat
     service = PrinterService.__new__(PrinterService)
     service.command_guard = gateway.guard_inbox_command
     service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
     cancelled = asyncio.Event()
     async with gateway.guard_managed_job(cancelled):
         assert gateway.inbox.status()[0]["start_state"] == "reserved"
@@ -732,9 +766,65 @@ async def test_managed_job_reserves_before_upload_and_cancel_blocks_dispatch(gat
     async with gateway.guard_managed_job(asyncio.Event()):
         await service.send_command("print", "project_file", url="file:///sdcard/managed.3mf")
         assert gateway.inbox.status()[0]["start_state"] == "sent"
-        with pytest.raises(ValueError, match="BBSTOP_START_NOT_CONFIRMED"):
-            await service.send_command("print", "stop")
-    service._mqtt.publish.assert_awaited_once()
+        # Like Orca's abort, the job's own stop is published whatever its start state.
+        await service.send_command("print", "stop")
+    assert service._mqtt.publish.await_count == 2
+
+
+async def test_managed_job_stops_its_running_print(gateway):
+    """The P1S reports gcode_file=Metadata/plate_1.gcode, never the archive name."""
+    from bambu_bridge.slicedoc import project_file_command
+
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
+    live = gateway.service().native_snapshot()["print"]
+    async with gateway.guard_managed_job(asyncio.Event()):
+        await service.send_command(
+            "print",
+            "project_file",
+            **project_file_command("benchy.gcode.3mf", use_ams=True, ams_mapping=[0]),
+        )
+        row = gateway.inbox.status()[0]
+        sequence = gateway.inbox.get(row["id"])["dispatch_seq"]
+        live.update(
+            gcode_state="RUNNING", gcode_file="Metadata/plate_1.gcode", subtask_name="benchy"
+        )
+        await gateway.observe_inbox(
+            {"print": {"command": "project_file", "sequence_id": sequence, "result": "SUCCESS"}}
+        )
+        await gateway.observe_inbox({"print": {"gcode_state": "RUNNING"}})
+        assert gateway.inbox.get(row["id"])["start_state"] == "running"
+        await service.send_command("print", "stop")
+        await service.send_command("print", "pause")
+    published = [call.args[0]["print"]["command"] for call in service._mqtt.publish.await_args_list]
+    assert published == ["project_file", "stop", "pause"]
+
+
+async def test_restore_during_managed_job_keeps_its_stop(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    backup = create_backup(gateway.inbox, gateway.store.directory, SERIAL)
+    service = PrinterService.__new__(PrinterService)
+    service.command_guard = gateway.guard_inbox_command
+    service._mqtt = SimpleNamespace(publish=AsyncMock())
+    service.run_log = RunLog()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(native_gateway=gateway)))
+    async with gateway.guard_managed_job(asyncio.Event()):
+        await service.send_command("print", "project_file", url="file:///sdcard/m.gcode.3mf")
+        await recovery_restore(
+            backup["id"],
+            RestoreAction(confirm="Restore native inbox and review every pending start"),
+            request,
+        )
+        # The restored inbox no longer holds this job's row; its stop must still go out.
+        await service.send_command("print", "stop")
+    assert service._mqtt.publish.await_count == 2
 
 
 @pytest.mark.parametrize("protocol,version", [(b"MQTT", 4), (b"MQIsdp", 3)])
@@ -882,3 +972,54 @@ async def test_native_overlay_sends_decodable_keyframe(gateway):
     finally:
         writer.close()
         await writer.wait_closed()
+
+
+async def test_failed_enable_releases_the_inbox_and_can_be_retried(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    printer = gateway.app.state.registry.get(SERIAL)
+    printer.cert_status = "changed"
+    with pytest.raises(ValueError, match="certificate"):
+        await gateway.enable(SERIAL)
+    assert gateway.config is None
+    assert gateway.inbox is None  # lock released, hooks removed
+    assert getattr(printer, "command_guard", None) is None
+    printer.cert_status = "trusted"
+    setup = await gateway.enable(SERIAL)
+    assert setup["enabled"] and gateway.inbox is not None
+    await gateway.disable()
+    assert gateway.inbox is None and gateway.config is None
+
+
+async def test_changed_certificate_never_raises_into_the_printer_report_path(gateway):
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    gateway.app.state.registry.get(SERIAL).cert_status = "changed"
+    # Called from PrinterService._handle_report; raising here would drop the MQTT session.
+    await gateway.observe_inbox({"print": {"gcode_state": "IDLE"}})
+
+
+async def test_changed_certificate_blocks_a_queued_start_but_keeps_the_worker(
+    gateway, monkeypatch
+):
+    monkeypatch.setattr("bambu_bridge.native_gateway.INBOX_TICK", 0.01)
+    await gateway.close()
+    gateway.app.state.settings.bridge_native_durable_inbox = True
+    await gateway.start()
+    row = gateway.inbox.reserve(SERIAL, "/queued.3mf", 4)
+    with gateway.inbox.connect() as db:
+        db.execute(
+            "UPDATE uploads SET state='delivered',start_state='queued',command=? WHERE id=?",
+            ('{"print":{"command":"project_file","url":"file:///sdcard/queued.3mf"}}', row["id"]),
+        )
+    gateway.app.state.registry.get(SERIAL).cert_status = "changed"
+    gateway.inbox_wake.set()
+    async with asyncio.timeout(2):
+        while gateway.inbox.get(row["id"])["start_state"] != "blocked":
+            await asyncio.sleep(0.01)
+    assert "certificate" in gateway.inbox.get(row["id"])["code"]
+    gateway.app.state.registry.get(SERIAL).send_raw.assert_not_awaited()
+    await asyncio.sleep(0.05)
+    assert gateway.inbox_task is not None and not gateway.inbox_task.done()

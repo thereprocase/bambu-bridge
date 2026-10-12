@@ -27,6 +27,7 @@ includes the file size so a re-sliced file with the same name is never stale.
 from __future__ import annotations
 
 import asyncio
+import ftplib
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -67,6 +68,7 @@ class VizFillError(Exception):
       - ``"not_found"``  → 404
       - ``"download"``   → 502
       - ``"parse"``      → 422
+      - ``"ambiguous"``  → 409 (Skip Objects' strict lookup only)
 
     This exception is deliberately thin: no FastAPI imports, no Request
     objects.  The HTTP layer (api/viz.py) owns the mapping.
@@ -156,6 +158,39 @@ async def find_3mf(ftps: FtpsTransfer, job_name: str) -> tuple[str, str] | None:
     return None
 
 
+async def locate_exact(
+    ftps: FtpsTransfer, names: list[str], directories: tuple[str, ...]
+) -> tuple[str, str]:
+    """The one (directory, name) among ``names`` x ``directories``; never a guess.
+
+    Unlike :func:`find_3mf` (the viewer's forgiving lookup), every candidate
+    in every directory is looked for, and more than one hit is
+    ``VizFillError("ambiguous")``. A failed LIST raises
+    ``VizFillError("download")`` instead of reading as empty, except a 550 on
+    /cache while the root listing shows no ``cache`` entry (no such folder).
+    """
+    listings: dict[str, list[str]] = {}
+    for remote_dir in sorted(directories):   # root ("") first
+        try:
+            listings[remote_dir] = await ftps.list_dir(remote_dir, strict=True)
+        except ftplib.error_perm as exc:
+            absent = remote_dir == UPLOAD_DIR_CACHE and "cache" not in listings.get(
+                UPLOAD_DIR_PERSISTENT, ["cache"]
+            )
+            if not absent:
+                raise VizFillError("download", f"FTPS list failed: {exc}") from exc
+            listings[remote_dir] = []
+        except Exception as exc:  # noqa: BLE001 — any transfer failure refuses
+            raise VizFillError("download", f"FTPS list failed: {exc}") from exc
+    hits = [(d, n) for n in names for d in directories if n in listings[d]]
+    if len(hits) > 1:
+        found = ", ".join("/" + "/".join(p for p in (d, n) if p) for d, n in hits)
+        raise VizFillError("ambiguous", f"Several files could be the running print: {found}")
+    if not hits:
+        raise VizFillError("not_found", "Print source unavailable on printer storage")
+    return hits[0]
+
+
 # ------------------------------------------------------------------ #
 # VizCache
 # ------------------------------------------------------------------ #
@@ -209,8 +244,11 @@ class VizCache:
 
     async def validate_revision(
         self, printer_id: str, ftps: FtpsTransfer, remote_dir: str, filename: str
-    ) -> None:
-        """Revalidate before both API conditional responses and pre-warm reuse."""
+    ) -> tuple[str, tuple[int, str]] | None:
+        """Revalidate before both API conditional responses and pre-warm reuse.
+
+        Returns (directory, (SIZE, MDTM)), or None when the firmware has neither.
+        """
         key = (printer_id, filename)
         try:
             revision = await ftps.file_revision(filename, remote_dir=remote_dir)
@@ -222,6 +260,7 @@ class VizCache:
             self.invalidate(printer_id, filename)
         if current is not None:
             self._revisions[key] = current
+        return current
 
     def content_id(self, printer_id: str, filename: str) -> str:
         return self._digests.get((printer_id, filename), "")

@@ -90,7 +90,9 @@ class CameraView(private val react: ThemedReactContext) : FrameLayout(react), Li
         startHls(current, encoded)
     }
     private fun closeVideo() {
-        video?.let { it.close(); removeView(it) }; video = null
+        // Keep the last frame on screen (labelled paused/reconnecting by Camera.tsx)
+        // rather than the dark host background while the stream is torn down.
+        video?.let { v -> v.heldFrame()?.let(picture::setImageBitmap); v.close(); removeView(v) }; video = null
         picture.visibility = VISIBLE
     }
     // React Native owns this host's layout and does not run another native
@@ -127,7 +129,7 @@ class CameraView(private val react: ThemedReactContext) : FrameLayout(react), Li
                     if (generation != current || !active) { transport.close(); return@post }
                     try {
                         video = HlsCamera(react, transport, url,
-                            { fps, w, h -> emit("frame", current, fps, w, h, "hls") },
+                            { fps, w, h -> picture.visibility = GONE; emit("frame", current, fps, w, h, "hls") },
                             { state ->
                                 if (generation == current) {
                                     closeVideo()
@@ -135,8 +137,8 @@ class CameraView(private val react: ThemedReactContext) : FrameLayout(react), Li
                                     else startMjpeg(current, encoded)
                                 }
                             })
-                        picture.visibility = GONE
-                        addView(video, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+                        // Under the held frame until the first new frame decodes.
+                        addView(video, 0, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                         layoutVideo()
                         transform()
                     } catch (e: Exception) {

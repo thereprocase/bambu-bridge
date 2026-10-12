@@ -181,15 +181,11 @@ export function mount(root, app) {
     refreshDisabled();
 
     testBtn.addEventListener('click', async () => {
-      // Point api.js at the typed address for the Test. Same-origin -> '' so the
-      // happy path keeps working if the user is served by the bridge itself.
+      // Test the typed address and key; both are saved only on success.
+      // Same-origin -> '' so the bridge-served page needs no override.
       const typed = addrInput.value.trim();
-      app.api.setBaseUrl(typed === location.origin ? '' : typed);
-
-      // Temporarily set the key so testConnection()'s /printers call carries it.
-      // We REVERT on failure — the key is only persisted on success.
-      const prevKey = app.getKey();
-      app.setKey(keyInput.value.trim());
+      const base = typed === location.origin ? '' : typed;
+      const key = keyInput.value.trim();
 
       testBtn.disabled = true;
       setTestLabel(true);
@@ -197,7 +193,7 @@ export function mount(root, app) {
 
       let res;
       try {
-        res = await app.api.testConnection();
+        res = await app.api.testConnection(base, key);
       } catch (e) {
         res = { outcome: 'bridge_error', detail: { status: 0 } };
       }
@@ -205,10 +201,12 @@ export function mount(root, app) {
       setTestLabel(false);
 
       if (res.outcome === 'connected') {
+        app.api.setBaseUrl(base);
+        app.setKey(key);
         const n = res.printerCount || 0;
         setStatus(n ? STATUS_COPY.connected(n) : STATUS_COPY.connected0, 'ok');
-        // Key is correct -> it stays persisted (we set it above). Remember the
-        // printer list so Step 2 can be skipped / dashboard can land on one.
+        // Remember the printer list so Step 2 can be skipped / dashboard can
+        // land on one.
         if (n && res.printers && res.printers[0]) {
           const first = res.printers[0];
           app.setCurrentPrinterId(first.printer_id || first.serial);
@@ -228,8 +226,6 @@ export function mount(root, app) {
         return;
       }
 
-      // failure: revert to the previous key (never store a bad one)
-      app.setKey(prevKey);
       testBtn.disabled = false;
       continueBtn.classList.add('hidden');
 

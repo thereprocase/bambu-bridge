@@ -10,7 +10,6 @@ Wave 2 — YELLOW/GREEN (typed, phase-aware, clamped):
   POST /{id}/ams/rfid                 trigger RFID re-read for a slot
   POST /{id}/ams/drying               start AMS filament drying cycle
   POST /{id}/ams/user_setting         configure AMS RFID read behaviour
-  POST /{id}/skip_objects             per-object cancel mid-print
   POST /{id}/calibration              withheld pending protocol qualification
   POST /{id}/set_accessories/nozzle   set nozzle type + diameter
 
@@ -24,14 +23,9 @@ BLACK — gated by env var:
 Contract §11 (Advanced controls) table:
   See docs/API-CONTRACT.md §11 for the risk tier column and guard list.
 
-Nozzle write-back note:
-  set_accessories/nozzle sends the command to the printer and updates the
-  in-memory ``service.nozzle_type`` attribute (used by the temperature clamp).
-  Persistent write-back to the ``printers`` DB row is a one-line follow-up
-  for the architect: ``await registry.update_nozzle_type(printer_id, nozzle_type)``
-  (or equivalent) — not done here because the DB layer is outside this file
-  partition. The in-memory update is sufficient for the temp-clamp gate within
-  the current session.
+Nozzle note:
+  set_accessories/nozzle only tells the printer which nozzle is fitted. The
+  nozzle type does not set the temperature ceiling (see POST /temperature).
 
 M84 position-state note:
   steppers/off sends M84 and calls ``service.reset_motion_state("M84")`` to
@@ -225,45 +219,6 @@ async def set_print_option(
             detail="print_option requires at least one flag",
         )
     return await _send(service, _build(commands.print_option, **flag_dict))
-
-
-# --------------------------------------------------------------------------- #
-# Wave-2: skip_objects (YELLOW)                                               #
-# --------------------------------------------------------------------------- #
-
-
-class SkipObjectsBody(BaseModel):
-    """Per-object cancellation.
-
-    ``obj_list`` must be a non-empty list of integer Bambu object IDs from
-    the slice (not user-facing indices).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    obj_list: list[int] = Field(
-        min_length=1,
-        description="non-empty list of Bambu object IDs from the slice",
-    )
-
-
-@router.post("/{printer_id}/skip_objects")
-async def skip_objects(
-    printer_id: str,
-    body: SkipObjectsBody,
-    registry: Registry = Depends(get_registry),
-) -> dict[str, Any]:
-    """Cancel specific objects mid-print without stopping the job.
-
-    Object IDs are the internal Bambu IDs from the slice, not user-facing
-    indices. Requires Bambu Studio to have sliced with object information
-    (the object map must be in the .gcode.3mf file).
-
-    Risk: YELLOW — removes objects from a running print; irreversible for
-    those objects but the remaining objects continue normally.
-    """
-    service = _online(registry, printer_id)
-    return await _send(service, _build(commands.skip_objects, body.obj_list))
 
 
 # --------------------------------------------------------------------------- #
@@ -500,16 +455,10 @@ async def set_nozzle(
     """Notify the printer of the installed nozzle type and diameter.
 
     Sends a ``system.set_accessories`` command to update the printer's
-    nozzle profile. Also updates the in-memory service attribute
-    ``nozzle_type`` so the temperature clamp in ``POST /temperature`` uses
-    the correct ceiling (280 °C stainless vs 300 °C hardened) immediately.
+    nozzle profile.
 
-    NOTE — persistent write-back to the DB ``printers`` row is a one-line
-    follow-up owned by the architect: ``registry.update_nozzle_type(id, type)``.
-    The in-memory update is sufficient for the temp-clamp gate within this session.
-
-    Risk: YELLOW — incorrect nozzle settings affect temperature limits and
-    could cause under/over-temp on the next print.
+    Risk: YELLOW — incorrect nozzle settings mislead the printer's own
+    filament/nozzle compatibility checks.
     """
     service = _online(registry, printer_id)
     result = await _send(
@@ -520,9 +469,6 @@ async def set_nozzle(
             nozzle_diameter=body.nozzle_diameter,
         ),
     )
-    # Update in-memory service attribute so the temperature clamp picks it up
-    # immediately — no restart or re-register needed.
-    # Reported hardware, rather than publication, determines temperature policy.
     return result
 
 

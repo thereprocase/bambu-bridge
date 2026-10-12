@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from bambu_bridge.api import advanced, control
+from bambu_bridge.api import advanced, control, skip_objects
 from bambu_bridge.api.auth import require_auth
 
 
@@ -28,7 +28,6 @@ def rig():
         model=None,
         connected=True,
         cert_status="ok",
-        nozzle_type="hardened_steel",
         snapshot=lambda: snapshot,
         send_raw=AsyncMock(),
     )
@@ -37,6 +36,7 @@ def rig():
     app.dependency_overrides[require_auth] = lambda: None
     app.include_router(control.router)
     app.include_router(advanced.router)
+    app.include_router(skip_objects.router)
     with TestClient(app) as client:
         yield client, service, snapshot
 
@@ -49,7 +49,7 @@ def rig():
         ("ams/drying", {}),
         ("set_accessories/nozzle", {"nozzle_type": "hardened_steel", "nozzle_diameter": 0.4}),
         ("home", {}),
-        ("move", {"axis": "Z", "distance_mm": -50}),
+        ("move", {"axis": "Z", "distance_mm": -10}),
         ("extrude", {"distance_mm": 10}),
         ("steppers/off", {}),
         ("ams/change", {"target_tray": 0}),
@@ -131,3 +131,41 @@ def test_sparse_ams_address_rejected_before_publication(rig):
     response = client.post("/printers/p/ams/rfid", json={"ams_id": 1, "slot_id": 3})
     assert response.status_code == 200, response.text
     service.send_raw.assert_awaited_once()
+
+
+def _with_ams(snapshot):
+    snapshot["_raw"]["ams"] = {"ams": [{"id": "0", "tray": [{"id": "0"}, {"id": "1"}]}]}
+
+
+def test_ams_resume_reaches_printer_without_unit_id(rig):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    response = client.post("/printers/p/ams/control", json={"action": "resume"})
+    assert response.status_code == 200, response.text
+    assert service.send_raw.await_args.args[0]["print"]["param"] == "resume"
+
+
+@pytest.mark.parametrize("action", ["pause", "reset"])
+def test_ams_actions_orca_never_sends_are_refused(rig, action):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    assert client.post("/printers/p/ams/control", json={"action": action}).status_code == 422
+    service.send_raw.assert_not_awaited()
+
+
+def test_ams_control_needs_a_reported_ams(rig):
+    client, service, _ = rig
+    assert client.post("/printers/p/ams/control", json={"action": "resume"}).status_code == 409
+    service.send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize("path", ["ams/rfid", "ams/control", "ams/user_setting", "print_option"])
+@pytest.mark.parametrize("body", [b"[1]", b"7", b"null", b"not json"])
+def test_non_object_bodies_are_422_not_500(rig, path, body):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    response = client.post(
+        f"/printers/p/{path}", content=body, headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422, response.text
+    service.send_raw.assert_not_awaited()

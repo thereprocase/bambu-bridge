@@ -4,7 +4,7 @@
  * Risk tiers follow the server's P1S-CONTROL-MATRIX:
  *   GREEN  — XCam toggles, get_version, RFID re-read
  *   YELLOW — print_option flags, AMS filament/drying/user settings,
- *            skip_objects, set_accessories (nozzle type/diameter),
+ *            set_accessories (nozzle type/diameter),
  *            calibration (P1S-confirmed bits only)
  *   RED    — extrude/retract, steppers-off   → always confirm dialog
  *   BLACK  — raw G-code console             → visible but gated (403 path)
@@ -15,7 +15,7 @@
  *                    nozzle_blob, sound
  *   3. AMS ops     — filament setting (color/material/temps for untagged),
  *                    RFID re-read, drying, user settings
- *   4. Skip obj    — integer list entry + send
+ *   (Skip objects lives on the Status tab, as Orca's device panel has it.)
  *   5. Calibration — P1S-confirmed options (1/2/4/7 bitmask)
  *   6. Nozzle      — set_accessories nozzle type + diameter
  *   7. Firmware    — get_version info card (reads from live snapshot)
@@ -40,7 +40,6 @@ import {
   setNozzle,
   setPrintOption,
   setXcam,
-  skipObjects,
   steppersOff,
   sendRawGcode,
 } from "../../src/api/control";
@@ -109,9 +108,6 @@ export default function AdvancedScreen() {
 
   // ── AMS user setting ──────────────────────────────────────────────────────
   const [usAmsId, setUsAmsId] = useState("0");
-
-  // ── Skip objects ──────────────────────────────────────────────────────────
-  const [skipInput, setSkipInput] = useState("");
 
   // ── Calibration ───────────────────────────────────────────────────────────
 
@@ -369,41 +365,6 @@ export default function AdvancedScreen() {
       </Surface>
       </CapabilityCard>
 
-      {/* 4. Skip objects ---------------------------------------------------- */}
-      <CapabilityCard title="Skip objects" availability={capabilities.get("skipObjects")}>
-      <Surface padded style={{ gap: space.md }}>
-        <Text style={[type.h2, { color: c.text }]}>Skip objects</Text>
-        <Text style={[type.small, { color: c.muted }]}>
-          Cancel specific objects mid-print without stopping the job. Enter
-          comma-separated Bambu object IDs from the slice (integers).
-        </Text>
-        <Field
-          label="Object IDs (comma-separated)"
-          value={skipInput}
-          onChangeText={setSkipInput}
-          keyboardType="number-pad"
-          placeholder="0,1,3"
-        />
-        <Button
-          label="Skip objects"
-          disabled={!skipInput.trim()}
-          onPress={() => {
-            const tokens = skipInput.split(",").map((s) => s.trim());
-            const ids = tokens.map(Number);
-            if (!tokens.every((s) => /^\d+$/.test(s)) || !ids.every(Number.isSafeInteger)) {
-              showToast("Enter at least one valid integer ID", { severity: "warn" });
-              return;
-            }
-            safeCall(
-              () => skipObjects(selectedId, ids),
-              `Skipping ${ids.length} object(s)`,
-              () => setSkipInput(""),
-            );
-          }}
-        />
-      </Surface>
-      </CapabilityCard>
-
       {/* 5. Calibration ----------------------------------------------------- */}
       <CapabilityCard title="Calibration" availability={capabilities.get("calibration")}>
       <Surface padded style={{ gap: space.md }}>
@@ -441,8 +402,8 @@ export default function AdvancedScreen() {
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Nozzle type & diameter</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Tell the bridge which nozzle is installed. Hardened steel unlocks
-          the 300 °C temperature clamp; stainless is clamped at 280 °C.
+          Tell the printer which nozzle is installed. The nozzle limit stays
+          300 °C (or the range the printer reports), as in OrcaSlicer.
         </Text>
 
         <Text style={[type.small, { color: c.muted }]}>Nozzle type</Text>

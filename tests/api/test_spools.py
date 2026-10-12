@@ -172,3 +172,17 @@ def test_unauthenticated_rejected(tmp_path: Path) -> None:
     with TestClient(build_app(tmp_path / "spools.db")) as c:
         r = c.get("/api/v1/spools")
         assert r.status_code == 401
+
+
+def test_patch_null_on_required_field_is_422_not_500(tmp_path: Path) -> None:
+    with TestClient(build_app(tmp_path / "spools.db")) as c:
+        created = _make(c)
+        url = f"/api/v1/spools/{created['id']}"
+        for field in ("name", "material", "color_hex"):
+            r = c.patch(url, headers=_AUTH, json={field: None})
+            assert r.status_code == 422, r.text
+        # Optional columns still clear with an explicit null.
+        r = c.patch(url, headers=_AUTH, json={"brand": None, "notes": None})
+        assert r.status_code == 200, r.text
+        assert r.json()["brand"] is None
+        assert r.json()["name"] == created["name"]

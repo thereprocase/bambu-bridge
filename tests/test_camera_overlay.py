@@ -309,6 +309,30 @@ async def test_no_duplicate_live_frames_between_camera_arrivals(monkeypatch):
             await asyncio.wait_for(queue.get(), 1.2)
 
 
+async def test_cold_camera_waits_for_first_frame_then_placeholder_when_dead(monkeypatch):
+    """A cold upstream (TLS connect + auth, ~1.5 s) must not snapshot as 'Camera unavailable'."""
+    from bambu_bridge import camera_overlay
+
+    raw = asyncio.Queue()
+
+    @asynccontextmanager
+    async def subscribe():
+        yield raw
+
+    service = SimpleNamespace(camera=SimpleNamespace(subscribe=subscribe), snapshot=snapshot)
+    monkeypatch.setattr(
+        camera_overlay, "render_frame", lambda frame, *args: frame or b"unavailable"
+    )
+    stream = OverlayStream(lambda: service, lambda: [])
+    asyncio.get_running_loop().call_later(1.3, raw.put_nowait, b"live")
+    async with stream.subscribe() as queue:
+        assert await asyncio.wait_for(queue.get(), 4) == b"live"
+    # A camera that never delivers still shows the placeholder once the grace ends.
+    monkeypatch.setattr(camera_overlay, "STALE_FRAME_S", 0.1)
+    async with stream.subscribe() as queue:
+        assert await asyncio.wait_for(queue.get(), 3) == b"unavailable"
+
+
 @pytest.mark.parametrize(
     "stamp, remaining, expected",
     [

@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth, require_read_or_viz
-from bambu_bridge.db.jobs import JobRepo, JobState, PrinterRepo
+from bambu_bridge.db.jobs import JobRepo, PrinterRepo
 from bambu_bridge.protocol import discovery
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.registry import (
@@ -323,7 +323,7 @@ async def delete_printer(
         active = [
             j.id
             for j in await repo.list(printer_id=printer_id)
-            if j.state not in {JobState.COMPLETED, JobState.FAILED, JobState.CANCELED}
+            if not j.state.terminal
         ]
         if active:
             return errors.conflict(

@@ -10,7 +10,13 @@ from __future__ import annotations
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Owner authority is ambient here, so no page (even same-site *.ts.net) may frame it.
+NO_FRAMING = [
+    (b"x-frame-options", b"DENY"),
+    (b"content-security-policy", b"frame-ancestors 'none'"),
+]
 
 
 class DashboardGateway:
@@ -36,6 +42,14 @@ class DashboardGateway:
         self.owner_key = owner_key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def framed(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                message["headers"] = [*message.get("headers", []), *NO_FRAMING]
+            await send(message)
+
+        await self.handle(scope, receive, framed)
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return

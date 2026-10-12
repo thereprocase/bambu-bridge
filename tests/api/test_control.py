@@ -376,78 +376,47 @@ async def test_get_version_reaches_printer(
 
 
 @pytest.mark.asyncio
-async def test_nozzle_clamp_default_stainless(
+async def test_nozzle_ceiling_defaults_to_300(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """Stainless default: 280 accepted, 281 rejected with 422."""
+    """OrcaSlicer's ceiling: 300 accepted, 301 rejected, whatever the nozzle."""
     app = build_app(tmp_path / "nozzle_std.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
         with TestClient(app) as c:
             _register(c)
             _wait_connected(c)
-
-            # 280 accepted
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/temperature",
-                headers=_AUTH,
-                json={"nozzle": 280},
-            )
+            url = f"/api/v1/printers/{SERIAL}/temperature"
+            r = c.post(url, headers=_AUTH, json={"nozzle": 300})
             assert r.status_code == 200, r.text
             _wait_request(
                 mock_printer,
-                lambda r: r.get("print", {}).get("param") == "M104 S280\n",
+                lambda r: r.get("print", {}).get("param") == "M104 S300\n",
             )
-
-            # 281 rejected
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/temperature",
-                headers=_AUTH,
-                json={"nozzle": 281},
-            )
+            r = c.post(url, headers=_AUTH, json={"nozzle": 301})
             assert r.status_code == 422, r.text
 
     await asyncio.to_thread(run)
 
 
 @pytest.mark.asyncio
-async def test_nozzle_clamp_hardened_steel(
+async def test_nozzle_ceiling_follows_reported_range(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """Hardened-steel nozzle: 300 accepted, 301 always rejected."""
-    app = build_app(tmp_path / "nozzle_hd.db", mqtt_port=mqtt_broker)
+    """A printer-reported nozzle_temp_range replaces the 300 °C default."""
+    app = build_app(tmp_path / "nozzle_range.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
         with TestClient(app) as c:
             _register(c)
             _wait_connected(c)
-
-            # Manually set nozzle_type on the service to hardened_steel.
-            # Wave-1 provides the DB column; in tests we set it directly on
-            # the in-memory service to avoid needing a separate API endpoint.
-            registry = app.state.registry  # type: ignore[attr-defined]
-            svc = registry.get(SERIAL)
-            svc.nozzle_type = "hardened_steel"
-
-            # 300 accepted
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/temperature",
-                headers=_AUTH,
-                json={"nozzle": 300},
-            )
-            assert r.status_code == 200, r.text
-            _wait_request(
-                mock_printer,
-                lambda r: r.get("print", {}).get("param") == "M104 S300\n",
-            )
-
-            # 301 rejected even for hardened
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/temperature",
-                headers=_AUTH,
-                json={"nozzle": 301},
-            )
+            svc = app.state.registry.get(SERIAL)  # type: ignore[attr-defined]
+            svc._state["nozzle_temp_range"] = [20, 250]
+            url = f"/api/v1/printers/{SERIAL}/temperature"
+            r = c.post(url, headers=_AUTH, json={"nozzle": 260})
             assert r.status_code == 422, r.text
+            r = c.post(url, headers=_AUTH, json={"nozzle": 250})
+            assert r.status_code == 200, r.text
 
     await asyncio.to_thread(run)
 

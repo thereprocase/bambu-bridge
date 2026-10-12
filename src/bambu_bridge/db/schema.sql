@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS print_queue (
   printer_id        TEXT NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
   file_path         TEXT NOT NULL,              -- printer-side path (model/<name>.gcode.3mf)
   file_name         TEXT NOT NULL,              -- display name
-  ams_mapping_json  TEXT,                       -- JSON array of physical_slot ints, e.g. "[1,3]"
+  ams_mapping_json  TEXT,                       -- Orca ams_mapping: tray per project filament, -1 unused, e.g. "[1,-1]"
   position          INTEGER NOT NULL,           -- 0-based ordering within printer_id
   added_at          INTEGER NOT NULL,           -- unix epoch seconds
   notes             TEXT

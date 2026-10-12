@@ -11,13 +11,23 @@ from typing import Any
 
 import pytest
 
+from bambu_bridge import hms
 from bambu_bridge.translate import SnapshotContext, _started_at_iso, translate_snapshot
+
+# A runout entry keyed the way an integer print_error canonicalises. The real
+# device-error table is not transcribed yet, so tests inject one.
+_RUNOUT_ENTRY = {
+    "severity": "warn",
+    "category": "ams",
+    "user_message": "Filament runout — AMS spool empty.",
+    "remediation": "Load a fresh spool into the AMS slot and resume.",
+}
 
 
 def _ctx(**overrides: Any) -> SnapshotContext:
     defaults: dict[str, Any] = {
-        "printer_id": "01P00A3C00000001",
-        "serial": "01P00A3C00000001",
+        "printer_id": "01P00A000000001",
+        "serial": "01P00A000000001",
         "friendly_name": "Workshop P1S",
         "model": "P1S",
         "connected": True,
@@ -90,7 +100,7 @@ def test_missing_gcode_state_is_unknown() -> None:
 
 def test_print_error_during_idle_classifies_as_failed() -> None:
     """A sticky error overrides classification even when gcode_state would say IDLE."""
-    raw = {"gcode_state": "IDLE", "mc_print_error_code": "0300_0d00_0003_0001"}
+    raw = {"gcode_state": "IDLE", "print_error": 0x0300400C}
     out = translate_snapshot(raw, _ctx())
     assert out["phase"] == "failed"
 
@@ -176,14 +186,29 @@ def test_printing_headline_includes_layer_pct_eta() -> None:
     assert out["headline"]["indicator"] == "progress"
 
 
-def test_failed_headline_uses_hms_user_message() -> None:
-    out = translate_snapshot(
-        {"gcode_state": "FAILED", "mc_print_error_code": "0300_0d00_0003_0001"},
-        _ctx(),
-    )
+def test_failed_headline_uses_hms_user_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(hms._TABLE, "0700_8011_0000_0000", _RUNOUT_ENTRY)
+    out = translate_snapshot({"gcode_state": "FAILED", "print_error": 0x07008011}, _ctx())
     assert out["headline"]["title"] == "Print failed"
     assert "runout" in out["headline"]["subtitle"].lower()
     assert out["headline"]["indicator"] == "red"
+
+
+def test_string_zero_mc_print_error_code_does_not_mask_print_error() -> None:
+    """The P1S sends mc_print_error_code "0" beside a real print_error. Like
+    OrcaSlicer, only the integer print_error counts."""
+    raw = {"gcode_state": "FAILED", "mc_print_error_code": "0", "print_error": 0x07008011}
+    out = translate_snapshot(raw, _ctx())
+    assert out["print_error"] is not None
+    assert out["print_error"]["code"] == str(0x07008011)
+    assert out["headline"]["subtitle"] != "No active error."
+
+
+def test_mc_print_error_code_alone_is_ignored() -> None:
+    raw = {"gcode_state": "IDLE", "mc_print_error_code": "0300_0d00_0003_0001", "print_error": 0}
+    out = translate_snapshot(raw, _ctx())
+    assert out["print_error"] is None
+    assert out["phase"] == "idle"
 
 
 def test_idle_headline_is_ready() -> None:
@@ -402,10 +427,9 @@ def test_print_error_zero_is_null() -> None:
     assert out["print_error"] is None
 
 
-def test_print_error_known_code_decoded() -> None:
-    out = translate_snapshot(
-        {"mc_print_error_code": "0300_0d00_0003_0001"}, _ctx()
-    )
+def test_print_error_known_code_decoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(hms._TABLE, "0700_8011_0000_0000", _RUNOUT_ENTRY)
+    out = translate_snapshot({"print_error": 0x07008011}, _ctx())
     assert out["print_error"] is not None
     assert out["print_error"]["severity"] == "warn"
     assert out["print_error"]["category"] == "ams"
@@ -413,7 +437,7 @@ def test_print_error_known_code_decoded() -> None:
 
 
 def test_print_error_unmapped_code_falls_through() -> None:
-    out = translate_snapshot({"mc_print_error_code": "dead_beef_dead_beef"}, _ctx())
+    out = translate_snapshot({"print_error": 0x0DEADBEE}, _ctx())
     assert out["print_error"]["severity"] == "unknown"
     assert out["print_error"]["category"] == "unmapped"
 
@@ -666,3 +690,16 @@ def test_reordered_sparse_multi_ams_uses_hardware_ids() -> None:
     assert ams["slots"][1]["remaining_g"] is None
     assert ams["slots"][1]["ams_id"] == 1
     assert ams["slots"][1]["tray_id"] == 3
+
+
+def test_job_carries_printer_skipped_objects_and_part_skip_support() -> None:
+    # MachineObject::parse_json: s_obj -> m_partskip_ids; fun bit 49 -> is_support_partskip.
+    raw = {"gcode_state": "RUNNING", "s_obj": [74, 85], "fun": format(1 << 49, "X")}
+    job = translate_snapshot(raw, _ctx())["job"]
+    assert job["skipped_objects"] == [74, 85]
+    assert job["part_skip_supported"] is True
+    job = translate_snapshot({"gcode_state": "RUNNING"}, _ctx())["job"]
+    assert job["skipped_objects"] == [] and job["part_skip_supported"] is False
+    # Legacy push format (P1S): no fun, but an s_obj list.
+    job = translate_snapshot({"gcode_state": "RUNNING", "s_obj": []}, _ctx())["job"]
+    assert job["part_skip_supported"] is True

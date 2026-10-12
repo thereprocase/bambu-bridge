@@ -16,7 +16,7 @@ without overrides. Injected positions below are test assumptions, not a claim
 that publishing a command establishes physical position.
 
 Invariants exercised here:
-  1. ``jog_step_not_allowed`` — 422 when distance_mm ∉ {1, 10, 50}.
+  1. ``jog_step_not_allowed`` — 422 when distance_mm ∉ {1, 10} (OrcaSlicer's steps).
   2. ``jog_not_homed``        — 409 when home_flag absent / axis bit unset.
   3. unknown-position fail-closed — 409 even when homed, for *any* direction,
      including the gap-closing Z- jog that crashed the bed.
@@ -129,7 +129,9 @@ def _inject_state(app: Any, patch: dict[str, Any], *, wait_seed: float = 2.0) ->
         if svc._state:  # noqa: SLF001
             break
         time.sleep(0.02)
-    svc._state.update(patch)  # noqa: SLF001
+    # The mock printer reports RUNNING; jogging is only allowed when no print
+    # is running (OrcaSlicer's rule, api/control.py require_not_busy).
+    svc._state.update({"gcode_state": "IDLE", **patch})  # noqa: SLF001
     # Brief pause to let any in-flight MQTT report drain before the HTTP
     # request is issued — avoids a race where a seed report arrives after the
     # patch and replaces home_flag.
@@ -159,7 +161,7 @@ def _seed_position(app: Any, x: float, y: float, z: float) -> None:
 async def test_jog_arbitrary_step_rejected(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """422 jog_step_not_allowed when distance_mm is not in {1, 10, 50}.
+    """422 jog_step_not_allowed when distance_mm is not in {1, 10}.
 
     Checked *first*, before the homed/position gates, so a bad magnitude never
     reaches the printer regardless of motion state.
@@ -173,7 +175,7 @@ async def test_jog_arbitrary_step_rejected(
             _inject_state(app, {"home_flag": 7})
             _seed_position(app, 128.0, 128.0, 128.0)
 
-            for bad_step in [0.5, 2.0, 7.0, 100.0, 200.0, -200.0]:
+            for bad_step in [0.1, 0.5, 2.0, 7.0, 50.0, -50.0, 100.0, 200.0, -200.0]:
                 r = c.post(
                     f"/api/v1/printers/{SERIAL}/move",
                     headers=_AUTH,
@@ -203,6 +205,7 @@ async def test_jog_rejected_when_not_homed(
         with TestClient(app) as c:
             _register(c)
             _wait_connected(c)
+            _inject_state(app, {})
             # SAMPLE_PUSH_STATUS has no home_flag — axis position unknown.
             r = c.post(
                 f"/api/v1/printers/{SERIAL}/move",
@@ -374,20 +377,20 @@ async def test_home_publish_leaves_position_unknown(
             # A publish response above intentionally leaves position unknown.
             _service(app).mark_homed()
 
-            # Gap-opening Z+ from the floor is allowed (0 → 10, inside [0,256]).
+            # Gap-opening Z+ from the floor is allowed (0 → 1, inside [0,256]).
             r = c.post(
                 f"/api/v1/printers/{SERIAL}/move",
                 headers=_AUTH,
-                json={"axis": "Z", "distance_mm": 10.0},
+                json={"axis": "Z", "distance_mm": 1.0},
             )
             assert r.status_code == 200, r.text
-            assert _service(app).tracked_position("Z") == 10.0
+            assert _service(app).tracked_position("Z") == 1.0
 
-            # Gap-closing Z- of 50 from Z=10 would hit -40 < floor → reject.
+            # Gap-closing Z- of 10 from Z=1 would hit -9 < floor → reject.
             r = c.post(
                 f"/api/v1/printers/{SERIAL}/move",
                 headers=_AUTH,
-                json={"axis": "Z", "distance_mm": -50.0},
+                json={"axis": "Z", "distance_mm": -10.0},
             )
             assert r.status_code == 409, r.text
             assert r.json()["error"] == "jog_out_of_envelope", r.text
@@ -396,16 +399,16 @@ async def test_home_publish_leaves_position_unknown(
 
 
 @pytest.mark.asyncio
-async def test_four_z_minus_50_sequence_first_unsafe_rejected(
+async def test_four_z_minus_10_sequence_first_unsafe_rejected(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """The exact bed-crash scenario: 4×Z-50 must NOT all be accepted.
+    """The bed-crash scenario: repeated Z- jogs must NOT all be accepted.
 
-    Place the bridge at a known mid-envelope Z (as if homed then jogged up),
-    then fire Z-50 repeatedly. Each accepted jog lowers the dead-reckon Z by
-    50; the first one that would cross the bed-crash floor (Z<0) is rejected
-    and every later one stays rejected. On the real printer the old guard
-    accepted all four and crashed the bed ~200 mm.
+    Place the bridge at a known Z just above the bed, then fire Z-10
+    repeatedly. Each accepted jog lowers the dead-reckon Z by 10; the first
+    one that would cross the bed-crash floor (Z<0) is rejected and every
+    later one stays rejected. On the real printer an older guard accepted
+    four Z-50 jogs and crashed the bed ~200 mm.
     """
     app = build_app(tmp_path / "jog_4x.db", mqtt_port=mqtt_broker)
 
@@ -414,23 +417,23 @@ async def test_four_z_minus_50_sequence_first_unsafe_rejected(
             _register(c)
             _wait_connected(c)
             _inject_state(app, {"home_flag": 7})
-            # Known starting Z = 120 (e.g. homed=0 then four Z+ steps). The
-            # accepted Z-50 jogs walk it 120 → 70 → 20 → (would be -30 REJECT).
-            _seed_position(app, 128.0, 128.0, 120.0)
+            # Known starting Z = 25. The accepted Z-10 jogs walk it
+            # 25 → 15 → 5 → (would be -5 REJECT).
+            _seed_position(app, 128.0, 128.0, 25.0)
 
             results = []
             for _ in range(4):
                 r = c.post(
                     f"/api/v1/printers/{SERIAL}/move",
                     headers=_AUTH,
-                    json={"axis": "Z", "distance_mm": -50.0},
+                    json={"axis": "Z", "distance_mm": -10.0},
                 )
                 results.append(r.status_code)
 
-            # 120→70 ok, 70→20 ok, 20→-30 REJECT, then stays REJECT at 20.
+            # 25→15 ok, 15→5 ok, 5→-5 REJECT, then stays REJECT at 5.
             assert results == [200, 200, 409, 409], results
             # Final tracked Z must never have gone below the floor.
-            assert _service(app).tracked_position("Z") == 20.0
+            assert _service(app).tracked_position("Z") == 5.0
             # The printer saw exactly the two accepted (safe) jogs — and never
             # the rejected ones. Poll briefly so the second publish can drain.
             deadline = time.time() + 5.0
@@ -438,7 +441,7 @@ async def test_four_z_minus_50_sequence_first_unsafe_rejected(
                 z_moves = [
                     req["print"]["param"]
                     for req in list(mock_printer.requests)
-                    if "G1 Z-50" in req.get("print", {}).get("param", "")
+                    if "G1 Z-10" in req.get("print", {}).get("param", "")
                 ]
                 if len(z_moves) >= 2:
                     break
@@ -462,11 +465,11 @@ async def test_jog_rejected_outside_top_envelope(
             _inject_state(app, {"home_flag": 7})
             _seed_position(app, 128.0, 128.0, 250.0)
 
-            # 250 + 50 = 300 > 256 → reject.
+            # 250 + 10 = 260 > 256 → reject.
             r = c.post(
                 f"/api/v1/printers/{SERIAL}/move",
                 headers=_AUTH,
-                json={"axis": "Z", "distance_mm": 50.0},
+                json={"axis": "Z", "distance_mm": 10.0},
             )
             assert r.status_code == 409, r.text
             body = r.json()
@@ -593,7 +596,7 @@ async def test_z_minus_sends_negative_gcode(
 async def test_all_allowed_steps_pass_when_homed_and_known(
     tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
 ) -> None:
-    """All three step sizes (1, 10, 50 mm) accepted when homed AND position known."""
+    """Both of OrcaSlicer's step sizes (1, 10 mm) accepted when homed AND position known."""
     app = build_app(tmp_path / "jog_steps.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
@@ -603,7 +606,7 @@ async def test_all_allowed_steps_pass_when_homed_and_known(
             _inject_state(app, {"home_flag": 7})
             # Re-seed mid-range before each step so deltas don't accumulate
             # out of the envelope.
-            for step in [1.0, 10.0, 50.0]:
+            for step in [1.0, 10.0]:
                 _seed_position(app, 128.0, 128.0, 128.0)
                 r = c.post(
                     f"/api/v1/printers/{SERIAL}/move",

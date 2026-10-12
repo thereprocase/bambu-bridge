@@ -8,6 +8,7 @@ job plus its full event log.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import (
@@ -19,13 +20,15 @@ from fastapi import (
     UploadFile,
     status,
 )
+from pydantic import TypeAdapter
 
 from bambu_bridge.api import errors as api_errors
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.db.jobs import JobState
-from bambu_bridge.service.jobs import JobManager, JobNotFoundError
+from bambu_bridge.protocol.commands import AmsMapping
+from bambu_bridge.service.jobs import JobManager, JobNotFoundError, PrinterBusyError
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.slicedoc import validate as slice_validate
 
@@ -36,15 +39,20 @@ def get_jobs(request: Request) -> JobManager:
     return request.app.state.jobs  # type: ignore[no-any-return]
 
 
+_AMS_MAPPING = TypeAdapter(AmsMapping)
+
+
 def _parse_ams(raw: str | None) -> list[int] | None:
+    """Orca's ams_mapping as a comma list: one tray (0-15) or -1 per project filament."""
     if not raw:
         return None
     try:
-        return [int(x) for x in raw.split(",") if x.strip() != ""]
-    except ValueError as exc:
+        return _AMS_MAPPING.validate_python([int(x) for x in raw.split(",") if x.strip() != ""])
+    except ValueError as exc:  # pydantic's ValidationError is a ValueError
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="ams_mapping must be comma-separated integers",
+            detail="ams_mapping must be comma-separated AMS trays: one per project filament, "
+            "0-15 (0 = slot 1) or -1 for unused",
         ) from exc
 
 
@@ -54,6 +62,7 @@ _GATE_CATEGORY = {
     "G3": "checksum",  # md5 integrity
     "G4": "thermal",  # safe temperature range
     "G5": "ams",  # filament / AMS mapping coherence
+    "G6": "printer",  # sliced for this printer model and nozzle
 }
 
 
@@ -89,21 +98,20 @@ async def submit_job(
     belt-and-suspenders against any future async re-entry.)
     """
     name = file.filename or "upload.3mf"
-    from bambu_bridge.api.capabilities import reported_nozzle, require_p1s, require_start_ready
+    from bambu_bridge.api.capabilities import require_start
 
     try:
         service = registry.get(printer_id)
     except PrinterNotFoundError:
         return api_errors.not_found("printer", printer_id)  # type: ignore[return-value]
-    require_p1s(service)
-    require_start_ready(service)
+    nozzle = require_start(service)
     data = await read_upload(file)
     ams = _parse_ams(ams_mapping)
-    report = slice_validate(
+    report = await asyncio.to_thread(
+        slice_validate,
         data,
         expected_ams_mapping=ams,
-        expected_model="C12",
-        expected_nozzle=reported_nozzle(service),
+        expected_nozzle=nozzle,
     )
     if not report.ok:
         return api_errors.envelope(  # type: ignore[return-value]
@@ -117,6 +125,10 @@ async def submit_job(
         job = await jobs.submit(printer_id, data, name, ams_mapping=ams)
     except PrinterNotFoundError:
         return api_errors.not_found("printer", printer_id)  # type: ignore[return-value]
+    except PrinterBusyError:
+        return api_errors.conflict(  # type: ignore[return-value]
+            "A bridge job is already active for this printer"
+        )
     return job.model_dump(mode="json")
 
 

@@ -49,6 +49,6 @@ test("AMS remains present during RFID discovery", () => {
 test("missing support telemetry remains unconfirmed", () => {
   expect(printerCapabilities({model: "P1S"}).get("tangle").reason).toBe("Availability unconfirmed");
 });
-test.each(["motion", "filamentMotion", "skipObjects"] as const)("%s stays withheld pending validation", feature => {
+test.each(["motion", "filamentMotion"] as const)("%s stays withheld pending validation", feature => {
   expect(printerCapabilities(p1s).get(feature)).toEqual({available: false, reason: "Control support under review"});
 });

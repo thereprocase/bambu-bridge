@@ -45,11 +45,10 @@ class CreateSpool(BaseModel):
 class UpdateSpool(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    material: str | None = Field(default=None, min_length=1, max_length=40)
-    color_hex: str | None = Field(
-        default=None, pattern=r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$"
-    )
+    # Omit to keep; these columns are NOT NULL, so an explicit null is a 422.
+    name: str = Field(default=None, min_length=1, max_length=120)
+    material: str = Field(default=None, min_length=1, max_length=40)
+    color_hex: str = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")
     brand: str | None = Field(default=None, max_length=60)
     total_g: float | None = Field(default=None, ge=0)
     remaining_g: float | None = Field(default=None, ge=0)

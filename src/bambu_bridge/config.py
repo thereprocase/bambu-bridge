@@ -111,6 +111,7 @@ def configure_logging(level: str = "info", fmt: str = "json",
     install(*secrets)
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level)
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # INFO lines carry URL secrets
 
     # JSON: serialise tracebacks into the record. Console (dev): let
     # ConsoleRenderer pretty-print exc_info itself (format_exc_info would

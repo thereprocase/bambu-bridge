@@ -204,14 +204,6 @@ def _format(event_type: str, payload: dict[str, Any]) -> tuple[str, str, str]:
             f"{where} ran out — swap the spool and resume.",
             f"Code: {payload.get('code') or '—'}",
         )
-    if event_type == "feed_warning":
-        since_ms = payload.get("since_ms")
-        detail = (
-            f"No extrusion for {int(since_ms) // 1000}s — the print may not be feeding."
-            if since_ms
-            else "The print may not be feeding filament."
-        )
-        return ("Filament not feeding", detail, payload.get("advice") or "—")
     if event_type == "error":
         err = payload.get("print_error")
         err = err if isinstance(err, dict) else {}

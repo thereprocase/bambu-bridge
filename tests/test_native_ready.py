@@ -10,7 +10,7 @@ from bambu_bridge.service.events import Event, EventBus
 def fixture(state="FINISH", *, stale=True, reply="FINISH"):
     status = {"gcode_state": state}
     stamp = datetime.now(UTC) - timedelta(seconds=30 if stale else 0)
-    session = {"last_telemetry_at": stamp.isoformat()}
+    session = {"connected": True, "last_telemetry_at": stamp.isoformat()}
     sent = []
     bus = EventBus()
 

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, cast
 import structlog
 
 from bambu_bridge.native_inbox import InboxError
+from bambu_bridge.preview_source import printing_names
 from bambu_bridge.protocol.ftps import FtpsTransfer, _ImplicitFTP_TLS
 
 if TYPE_CHECKING:
@@ -264,6 +265,17 @@ async def serve_ftps(
                     continue
                 if gateway.inbox is not None and gateway.transfer_lock.locked():
                     await reply("452 BBFTP_BUSY; upload not accepted")
+                    await clear_passive()
+                    continue
+                if (
+                    verb == "STOR"
+                    and gateway.inbox is None
+                    and argument.rsplit("/", 1)[-1].casefold()
+                    in printing_names(gateway.service().snapshot().get("_raw") or {})
+                ):
+                    # Passthrough STOR writes the printer's card directly:
+                    # never over the file a print is reading.
+                    await reply("553 BBFTP_FILE_PRINTING; the printer is printing this file")
                     await clear_passive()
                     continue
                 await reply("150 Opening data connection")

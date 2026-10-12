@@ -7,7 +7,9 @@ import { printerCapabilities } from "../../src/lib/capabilities";
  *   - POST /jobs — submit
  *
  * AMS slot picker is shown only when the printer has loaded slots; pick
- * one or "auto" (no `ams_mapping` → printer uses currently-loaded).
+ * one or External (no `ams_mapping` → external spool). The pick is sent as
+ * Orca's ams_mapping, a 0-based tray per project filament, so this tab
+ * covers single-filament projects; "Slot N" is only the label.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -101,7 +103,7 @@ export default function PrintScreen() {
       const res = await submitPrint({
         printer_id: selectedId,
         filename: f.name,
-        ams_mapping: pickedSlot != null ? [pickedSlot] : undefined,
+        ams_mapping: pickedSlot != null ? [pickedSlot - 1] : undefined, // physical slot N = tray N-1
       });
       showToast(`Job ${res.job_id} submitted`, { severity: "success" });
     } catch (e) {

@@ -68,9 +68,13 @@ export default function FilamentScreen() {
   // previous slots dimmed instead of flashing empty / "gibberish".
   const [lastSlots, setLastSlots] = useState<typeof view.ams>([]);
   const [slotsPrinter, setSlotsPrinter] = useState<string | null>(null);
+  // viewOf() builds a new ams array every render; key the effect on its content,
+  // or each setLastSlots re-renders into another run ("Maximum update depth exceeded").
+  const amsKey = JSON.stringify(view.ams);
   useEffect(() => {
     if (view.ams.length > 0) { setLastSlots(view.ams); setSlotsPrinter(selectedId); }
-  }, [selectedId, view.ams]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, amsKey]);
 
   // During a re-scan (`amsPresent && no slots`) fall back to the held view.
   const rescanning = view.amsPresent && view.ams.length === 0;
