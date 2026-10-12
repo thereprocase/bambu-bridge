@@ -99,6 +99,9 @@ export interface PrinterSnapshot {
     e: number | null;
   };
   ams: {
+    /** Bridge-observed handoffs for this print; persists when HMS clears. */
+    refill_history?: { from_slot: number; to_slot: number | null;
+      status: "switching" | "completed" | "interrupted"; observed_at: string }[];
     // Contract §6.1.1: AMS hardware attached? Independent of `slots`, which
     // transiently empties to [] during an RFID re-scan. `present && slots == []`
     // ⇒ re-scan in progress (hold the previous slot view), `!present` ⇒ no AMS.

@@ -82,6 +82,7 @@ class SnapshotContext:
     # Skip Objects' run token (RunLog.run_id): changes on every run edge and
     # MQTT reconnect, so a sheet built for one run is refused in another.
     run_id: int | None = None
+    auto_refill_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,7 +121,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
         "lights": _lights(raw),
         "print_params": _print_params(raw),
         "motion": _motion(raw),
-        "ams": _ams(raw, ctx),
+        "ams": {**_ams(raw, ctx), "refill_history": [dict(row) for row in ctx.auto_refill_history]},
         "print_error": build_print_error(active_error_code(raw)),
         "stage": _stage(raw),
         "hms": _hms_list(raw, job_ctx),

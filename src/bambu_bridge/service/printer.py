@@ -27,6 +27,7 @@ from bambu_bridge.protocol.camera import CameraStream
 from bambu_bridge.protocol.job_identity import empty_idle_report, job_lost
 from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_command
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
+from bambu_bridge.service.auto_refill import AutoRefillHistory
 from bambu_bridge.service.events import Event, EventBus, diff_state
 from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.skip_objects import RunLog
@@ -252,6 +253,7 @@ class PrinterService:
         self._load_filament_memory = load_filament_memory
         # Skip Objects' run boundary, the skips sent this run and its file.
         self.run_log = RunLog()
+        self.auto_refill = AutoRefillHistory()
         self._gap: tuple[Any, ...] | None = None
         self._invalidate_filament_memory = invalidate_filament_memory
 
@@ -392,6 +394,7 @@ class PrinterService:
             print_started_at=_dt_iso(self._print_started_at),
             filament_memory=self._filament_memory,
             run_id=self.run_log.run_id,
+            auto_refill_history=self.auto_refill.transitions,
         )
         return translate_snapshot(self._state, ctx)
 
@@ -717,6 +720,8 @@ class PrinterService:
             self.bus.publish(Event("snapshot", dict(self._state)))
         elif delta:
             self.bus.publish(Event("delta", delta))
+
+        self.auto_refill.update(prev_state, self._state)
 
         # Re-read layer_num *after* the merge so we see the printer's view.
         try:

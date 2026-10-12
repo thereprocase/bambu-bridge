@@ -9,7 +9,24 @@ vendor diagnostic catalog.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Literal, TypedDict
+
+_CATALOG: dict[str, str] = json.loads(
+    Path(__file__).with_name("hms_catalog.json").read_text(encoding="utf-8")
+)["messages"]
+
+
+def catalog_message(code: str | int) -> str | None:
+    key = (
+        f"{code & 0xFFFFFFFF:08x}"
+        if isinstance(code, int)
+        else code.lower().replace("_", "").replace("-", "")
+    )
+    return _CATALOG.get(key)
+
+
 
 Severity = Literal["info", "warn", "error", "unknown"]
 
@@ -678,6 +695,23 @@ _TABLE: dict[str, HmsEntry] = {
     },
 }
 
+# Explicit auto-refill progress/success notices must not inherit generic feed-fault advice.
+# Vendor text: BambuStudio's frozen English catalog; code high word 3 alone is
+# insufficient to infer information severity (other common faults are warnings).
+_REFILL_CODES: set[str] = set()
+for _slot in range(4):
+    for _notice in (1, 2):
+        _key = f"0700_2{_slot}00_0003_000{_notice}"
+        _REFILL_CODES.add(_key)
+        _TABLE[_key] = {
+            "severity": "info",
+            "category": "ams",
+            "user_message": catalog_message(_key) or "AMS auto-refill notice.",
+            "remediation": (
+                "Wait while the AMS purges and switches filament." if _notice == 1 else None
+            ),
+        }
+
 # ---------------------------------------------------------------------------
 # Wiki URL table
 # ---------------------------------------------------------------------------
@@ -862,6 +896,9 @@ def _hms_family(hex_key: str, category: str) -> str:
     Families are used as the first element of the _CONTEXT_NOTES key.
     The hex_key is "aaaa_bbbb_cccc_dddd" (lowercase).
     """
+    if hex_key in _REFILL_CODES:
+        return "ams-refill"
+
     # AMS module prefix: attr_high = "0700" means AMS.
     if hex_key.startswith("07"):
         # Retract family: keys with second group 7000 (hub-level retract),
@@ -973,7 +1010,7 @@ def decode_hms_entry(
         base = {
             "severity": derived_severity,
             "category": category,
-            "user_message": hex_key,
+            "user_message": catalog_message(hex_key) or hex_key,
             "remediation": None,
             "hex": hex_key,
             "wiki_url": wiki_url(hex_key),
@@ -1019,8 +1056,8 @@ def lookup(code: str | int | None) -> HmsEntry:
         return entry
     return {
         "severity": "unknown",
-        "category": "unmapped",
-        "user_message": canonical,
+        "category": "printer" if catalog_message(code) else "unmapped",
+        "user_message": catalog_message(code) or canonical,
         "remediation": None,
     }
 

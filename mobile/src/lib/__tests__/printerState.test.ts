@@ -119,3 +119,11 @@ test("aging status is labelled with its age and still allows controls", () => {
   expect(printerStateLabels(s, "open", NOW + 9_000)).toMatchObject({
     live: true, printerReady: true, freshness: "aging", connection: "Updated 9 s ago" });
 });
+
+test("completed auto-refill does not add an issue while real concurrent faults still do", () => {
+  const live = snapshot("RUNNING", 4);
+  live.hms = [{ hex: "0700_2000_0003_0002", severity: "unknown" }] as PrinterSnapshot["hms"];
+  expect(printerStateLabels(live, "open", NOW).issues).toEqual([]);
+  live.hms!.push({ hex: "0700_2000_0002_0001", severity: "error" } as never);
+  expect(printerStateLabels(live, "open", NOW).issues).toEqual(["Printer error"]);
+});

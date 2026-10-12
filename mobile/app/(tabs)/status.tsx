@@ -1,3 +1,4 @@
+import { autoRefillLabel, autoRefillSummary, autoRefillSource, autoRefillNotices } from "../../src/lib/autoRefill";
 import { amsEnvironmentLabel } from "../../src/lib/amsEnvironment";
 import { CapabilityCard } from "../../src/components/CapabilityCard";
 import { printerCapabilities } from "../../src/lib/capabilities";
@@ -70,6 +71,10 @@ export default function StatusScreen() {
   // the WS layer. `viewOf` reads the root blocks (`phase`, `headline`,
   // `temps`, `job`, `ams.slots`, …) directly — no `.state` wrapper.
   const view = viewOf((live?.snapshot as any) ?? null);
+  const issueHms = view.hms.filter((entry) => autoRefillSource(entry.hex) == null && entry.severity !== "info");
+  const infoHms = view.hms.filter((entry) => autoRefillSource(entry.hex) == null && entry.severity === "info");
+  const refills = live?.refills?.length ? live.refills : autoRefillNotices(live?.snapshot ?? null);
+  const issueCount = issueHms.length + (view.printErrorFull ? 1 : 0) + (view.jobAnomaly ? 1 : 0);
   const facts = printerStateLabels((live?.snapshot as unknown as PrinterSnapshot) ?? null, status);
 
   // Fail-safe: if the WS is not open we cannot reliably know the actual phase,
@@ -202,31 +207,33 @@ export default function StatusScreen() {
       {/* Issues card — HMS warnings + print_error + job_anomaly, shown only
           when at least one of these is present. job_anomaly is always warn
           severity; it has no wiki link. */}
-      {(view.hms.length > 0 || view.printErrorFull || view.jobAnomaly) && (
+      {(issueCount > 0 || refills.length > 0 || infoHms.length > 0) && (
         <Surface padded style={{ gap: space.sm }}>
           <Pressable
+            disabled={issueCount === 0 && infoHms.length === 0}
             onPress={() => setIssuesExpanded((x) => !x)}
             style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}
           >
             <Ionicons
-              name="warning-outline"
+              name={issueCount ? "warning-outline" : "swap-horizontal-outline"}
               size={18}
               color={
-                view.hms.some((e) => e.severity === "error" && !e.stale) || view.printErrorFull
+                issueHms.some((e) => e.severity === "error" && !e.stale) || view.printErrorFull
                   ? c.danger
-                  : c.warn
+                  : issueCount ? c.warn : c.accent
               }
             />
             <Text style={[type.h2, { color: c.text, flex: 1 }]}>
-              {facts.live ? "Issues" : "Last reported issues"} ({view.hms.length + (view.printErrorFull ? 1 : 0) + (view.jobAnomaly ? 1 : 0)})
+              {issueCount ? `${facts.live ? "Issues" : "Last reported issues"} (${issueCount})` : `${facts.live ? "" : "Last reported: "}${refills.length ? autoRefillSummary(refills) : `Notices (${infoHms.length})`}`}
             </Text>
-            <Ionicons
+            {(issueCount > 0 || infoHms.length > 0) && <Ionicons
               name={issuesExpanded ? "chevron-up" : "chevron-down"}
               size={16}
               color={c.muted}
-            />
+            />}
           </Pressable>
-          {issuesExpanded && (
+          {issueCount > 0 && refills.map((notice) => <Text key={notice.hex} style={[type.caption, { color: c.muted }]}>{autoRefillLabel(notice)}</Text>)}
+          {issuesExpanded && (issueCount > 0 || infoHms.length > 0) && (
             <View style={{ gap: space.md }}>
               {view.jobAnomaly && (
                 <IssueEntry
@@ -237,9 +244,10 @@ export default function StatusScreen() {
                   wikiUrl={null}
                 />
               )}
-              {view.hms.map((entry, i) => (
+              {[...issueHms, ...infoHms].map((entry, i) => (
                 <IssueEntry
                   key={`hms-${i}`}
+                  code={entry.hex}
                   severity={entry.severity}
                   text={entry.text}
                   remediation={entry.remediation}
@@ -251,6 +259,7 @@ export default function StatusScreen() {
               {view.printErrorFull && (
                 <IssueEntry
                   key="print_error"
+                  code={view.printErrorFull.hex}
                   severity={view.printErrorFull.severity ?? "error"}
                   text={view.printErrorFull.text}
                   remediation={view.printErrorFull.remediation ?? null}
@@ -462,6 +471,7 @@ export default function StatusScreen() {
 }
 
 interface IssueEntryProps {
+  code?: string;
   severity: string;
   text: string;
   remediation: string | null;
@@ -472,7 +482,7 @@ interface IssueEntryProps {
   stale?: boolean;
 }
 
-function IssueEntry({ severity, text, remediation, wikiUrl, contextNote, stale }: IssueEntryProps) {
+function IssueEntry({ code, severity, text, remediation, wikiUrl, contextNote, stale }: IssueEntryProps) {
   const { c, type, space, radius } = useTheme();
 
   // Map severity to an accent color. "error" → danger, "warn" → warn (amber),
@@ -501,6 +511,7 @@ function IssueEntry({ severity, text, remediation, wikiUrl, contextNote, stale }
       }}
     >
       <Text style={[type.body, { color: textColor }]}>{text}</Text>
+      {code && code !== text ? <Text selectable style={[type.caption, { color: c.muted }]}>{code.toUpperCase()}</Text> : null}
       {adviceLine ? (
         <Text style={[type.small, { color: c.muted }]}>{adviceLine}</Text>
       ) : null}

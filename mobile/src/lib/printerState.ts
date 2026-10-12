@@ -1,3 +1,4 @@
+import { autoRefillSource } from "./autoRefill";
 import type { PrinterSnapshot } from "../api/types";
 import type { LiveStatus } from "../ws/live";
 import { clockFor } from "./clockSync";
@@ -106,7 +107,7 @@ export function printerStateLabels(
               : "Unknown";
   const issues: string[] = [];
   if (snapshot.print_error) issues.push("Print error");
-  const hms = (snapshot.hms ?? []).filter((item) => !item.stale);
+  const hms = (snapshot.hms ?? []).filter((item) => !item.stale && autoRefillSource(item.hex) == null);
   if (hms.some((item) => item.severity === "error")) issues.push("Printer error");
   if (hms.some((item) => item.severity === "warn")) issues.push("Printer warning");
   if (hms.some((item) => item.severity !== "error" && item.severity !== "warn" && item.severity !== "info")) issues.push("Printer issue");

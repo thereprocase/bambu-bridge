@@ -1109,3 +1109,16 @@ ones you may also need:
 - **`src/bambu_bridge/api/errors.py`** — the canonical `ERR_*` enum constants
   and the exact `message` / `remediation_hint` copy the bridge emits. If this
   doc ever disagrees with that module, the code wins.
+
+### Auto-refill history
+
+`ams.refill_history` is an ordered list of bridge-observed transitions for the
+current print: `{from_slot, to_slot, status, observed_at}`. Slots are 1-based;
+an unknown destination is `null`. Status is `switching`, `completed`, or
+`interrupted`. Only explicit firmware purge/auto-switch HMS notices create
+records; an ordinary tray change is not a refill. Completed events remain when
+HMS clears, across phone reconnection, and until a new print starts. History
+currently lives in the printer service process; missed events and history before
+that process started are not reconstructed. A seed containing multiple old
+success notices cannot establish their destinations or chronological order.
+Information-severity notices do not contribute to the mobile issue count.

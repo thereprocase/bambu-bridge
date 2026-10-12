@@ -50,3 +50,16 @@ with GEOS and NumPy through the lockfile. Dense preview meshes use
 [fast-simplification](https://github.com/pyvista/fast-simplification), distributed
 under its upstream MIT license. These packages retain their distribution notices;
 the bridge does not vendor their implementation sources.
+
+## Frozen English diagnostic catalog (October 2026)
+
+`src/bambu_bridge/hms_catalog.json` imports the English HMS and device-error
+records from BambuStudio (AGPL-3.0), pinned at
+`47a13eeb1d9af65ef2371e361c856e21d4f6ca72`. Each source URL and SHA-256 is
+recorded in the artifact. `scripts/refresh_hms_catalog.py --revision SHA`
+refreshes it explicitly; the running bridge never downloads diagnostics.
+The existing curated advice and phase notes take precedence. Published descriptions
+fill previously unmapped codes; raw identifiers and unknown-code fallbacks remain.
+The source files contain some model-specific text variants; first-file precedence
+is recorded by their ordered provenance list. This is description coverage, not
+firmware-specific validation of every failure or a hardware diagnosis.
