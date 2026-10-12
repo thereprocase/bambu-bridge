@@ -394,3 +394,46 @@ async def test_two_filament_layer_list_is_a_clean_422_not_a_500(
     assert captured["status"] == 422, captured
     messages = " ".join(i["message"] for i in captured["body"]["issues"])  # type: ignore[index]
     assert "ams_mapping arity 1" in messages, captured
+
+
+async def _submit_and_wait(tmp_path: Path, mqtt_broker: int, ftps_port: int, payload: bytes,
+                           name: str) -> dict[str, Any]:
+    app = build_app(tmp_path / f"{name}.db", mqtt_port=mqtt_broker, ftps_port=ftps_port)
+    captured: dict[str, Any] = {}
+
+    def run() -> None:
+        with TestClient(app) as c:
+            _register(c)
+            sub = c.post(f"/api/v1/printers/{SERIAL}/jobs", headers=_AUTH,
+                         data={"ams_mapping": "1"},
+                         files={"file": ("cube.3mf", payload, "application/octet-stream")})
+            captured["detail"] = _poll_terminal(c, sub.json()["id"])
+
+    await asyncio.to_thread(run)
+    return captured["detail"]
+
+
+@pytest.mark.asyncio
+async def test_long_prepare_is_not_a_failure(
+    tmp_path: Path, mqtt_broker: int, slow_prepare_mock: MockPrinter,
+    ftps_server: tuple[int, Path], valid_gcode_3mf: bytes, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PREPARE outlasting the start window keeps the job preparing (2026-10-01)."""
+    monkeypatch.setattr(jobs_mod, "_RUNNING_TIMEOUT_S", 0.4)   # printer prepares 1.2 s
+    detail = await _submit_and_wait(tmp_path, mqtt_broker, ftps_server[0], valid_gcode_3mf, "prep")
+    assert detail["job"]["state"] == "completed", detail["job"]
+    changes = [e["payload"] for e in detail["events"] if e["event_type"] == "state_change"]
+    assert {"from": "submitted", "to": "preparing", "trigger": "printer_preparing"} in changes
+    assert sum(1 for c in changes if c["to"] == "preparing") == 1
+
+
+@pytest.mark.asyncio
+async def test_printer_failure_during_prepare_fails_the_job(
+    tmp_path: Path, mqtt_broker: int, prepare_fails_mock: MockPrinter,
+    ftps_server: tuple[int, Path], valid_gcode_3mf: bytes, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(jobs_mod, "_RUNNING_TIMEOUT_S", 0.4)
+    detail = await _submit_and_wait(
+        tmp_path, mqtt_broker, ftps_server[0], valid_gcode_3mf, "prepfail")
+    assert detail["job"]["state"] == "failed"
+    assert detail["job"]["error_code"] == "printer_error"

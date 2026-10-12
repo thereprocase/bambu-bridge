@@ -217,6 +217,8 @@ class MockPrinter:
         *,
         simulate_print: bool = False,
         stall: bool = False,
+        prepare_s: float = 0.0,
+        prepare_outcome: str = "RUNNING",
     ) -> None:
         self._host = host
         self._port = port
@@ -228,6 +230,10 @@ class MockPrinter:
         # FED_NO_PROGRESS watchdog has to fire.
         self._simulate = simulate_print
         self._stall = stall
+        # A real P1S reports PREPARE (file read, heat, level) before RUNNING;
+        # prepare_s > 0 reproduces that, ending in RUNNING or FAILED.
+        self._prepare_s = prepare_s
+        self._prepare_outcome = prepare_outcome
         self.report_topic = f"device/{SERIAL}/report"
         self.request_topic = f"device/{SERIAL}/request"
         self.requests: list[dict[str, Any]] = []
@@ -288,7 +294,9 @@ class MockPrinter:
         if not self._simulate:
             return
         cmd = payload.get("print", {}).get("command")
-        if cmd == "project_file":
+        if cmd == "project_file" and self._prepare_s > 0:
+            self._side_tasks.append(asyncio.create_task(self._prepare_then_start()))
+        elif cmd == "project_file":
             await self._emit(
                 {"gcode_state": "RUNNING", "mc_percent": 0, "subtask_name": "job"}
             )
@@ -298,6 +306,17 @@ class MockPrinter:
                 )
         elif cmd == "stop":
             await self._emit({"gcode_state": "IDLE", "mc_percent": 0})
+
+    async def _prepare_then_start(self) -> None:
+        await self._emit(
+            {"gcode_state": "PREPARE", "mc_percent": 0, "subtask_name": "job"}
+        )
+        await asyncio.sleep(self._prepare_s / 2)
+        await self._emit({"gcode_state": "PREPARE", "mc_percent": 0})   # repeated reports
+        await asyncio.sleep(self._prepare_s / 2)
+        await self._emit({"gcode_state": self._prepare_outcome, "mc_percent": 0})
+        if self._prepare_outcome == "RUNNING":
+            await self._finish_soon()
 
     async def _finish_soon(self) -> None:
         await asyncio.sleep(0.3)
@@ -394,6 +413,30 @@ async def printing_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
     printer = MockPrinter(
         "127.0.0.1", mqtt_broker, IDLE_PUSH_STATUS, simulate_print=True
     )
+    await printer.start()
+    try:
+        yield printer
+    finally:
+        await printer.stop()
+
+
+@pytest_asyncio.fixture
+async def slow_prepare_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
+    """PREPARE for longer than the start window, then RUNNING and FINISH."""
+    printer = MockPrinter("127.0.0.1", mqtt_broker, IDLE_PUSH_STATUS,
+                          simulate_print=True, prepare_s=1.2)
+    await printer.start()
+    try:
+        yield printer
+    finally:
+        await printer.stop()
+
+
+@pytest_asyncio.fixture
+async def prepare_fails_mock(mqtt_broker: int) -> AsyncIterator[MockPrinter]:
+    """PREPARE, then the printer itself reports FAILED."""
+    printer = MockPrinter("127.0.0.1", mqtt_broker, IDLE_PUSH_STATUS,
+                          simulate_print=True, prepare_s=1.2, prepare_outcome="FAILED")
     await printer.start()
     try:
         yield printer
