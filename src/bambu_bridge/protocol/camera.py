@@ -12,7 +12,13 @@ Two pieces:
   fanned out to N HTTP clients; a tiny ring buffer backs the snapshot
   endpoint. Reference-counts subscribers and **closes the printer-side
   connection when the last one leaves** (spec 5.3: don't hold the camera open
-  needlessly).
+  needlessly), unless the owner asks it to stay warm (``keep_warm``).
+
+On a cold connect the P1S first replays old frames from its internal buffer,
+so a one-shot snapshot taken right after connecting can show the chamber as it
+was minutes earlier. Two defences: each new session discards its first
+``settle_frames`` frames, and the printer service keeps the stream warm while a
+print is in flight so snapshots never pay for a cold connect.
 
 Byte layout reimplemented from the OpenBambuAPI description — not lifted.
 """
@@ -70,11 +76,13 @@ class CameraClient:
         *,
         on_frame: FrameHandler,
         port: int = CAMERA_PORT,
+        settle_frames: int = 0,
     ) -> None:
         self.ip = ip
         self.port = port
         self._access_code = access_code
         self._on_frame = on_frame
+        self._settle_frames = max(0, settle_frames)
         self._stop = asyncio.Event()
         self._session_had_frame = False
         self._log = log.bind(ip=ip, component="camera")
@@ -109,6 +117,9 @@ class CameraClient:
             writer.write(build_auth_packet(_USERNAME, self._access_code))
             await asyncio.wait_for(writer.drain(), _CONNECT_TIMEOUT_S)
             self._log.info("camera.connected")
+            # The first frames after a connect are replayed from the printer's
+            # buffer and can be minutes old; never hand them to a viewer.
+            to_skip = self._settle_frames
             while not self._stop.is_set():
                 # A half-open socket must not leave every viewer frozen forever.
                 # One deadline covers the header AND body, including slow drips.
@@ -122,6 +133,9 @@ class CameraClient:
                     self._log.warning("camera.bad_frame", head=jpeg[:2].hex())
                     continue
                 self._session_had_frame = True
+                if to_skip > 0:
+                    to_skip -= 1
+                    continue
                 self._on_frame(jpeg)
         finally:
             writer.close()
@@ -169,11 +183,15 @@ class CameraStream:
         port: int = CAMERA_PORT,
         buffer_size: int = 1,
         linger_s: float = _DEFAULT_LINGER_S,
+        settle_frames: int = 0,
     ) -> None:
         self._ip = ip
         self._access_code = access_code
         self._port = port
         self._linger_s = max(0.0, linger_s)
+        self._settle_frames = max(0, settle_frames)
+        # A background subscriber that holds the upstream open (keep_warm).
+        self._warm_task: asyncio.Task[None] | None = None
         self._ring: deque[bytes] = deque(maxlen=max(1, buffer_size))
         self._subscribers: set[asyncio.Queue[bytes]] = set()
         self._client: CameraClient | None = None
@@ -193,6 +211,30 @@ class CameraStream:
     @property
     def upstream_active(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def warm(self) -> bool:
+        return self._warm_task is not None and not self._warm_task.done()
+
+    def keep_warm(self, on: bool) -> None:
+        """Hold the upstream open (``on``) or release the hold.
+
+        Implemented as one internal subscriber, so the usual refcount and
+        linger rules apply when the hold is released. The P1S camera accepts a
+        single client, so a warm stream also keeps other LAN viewers out;
+        callers decide when that trade is worth it (the printer service holds
+        it only while a print is in flight, by default). Idempotent.
+        """
+        if on and not self.warm:
+            self._warm_task = asyncio.create_task(self._hold_warm())
+        elif not on and self._warm_task is not None:
+            self._warm_task.cancel()
+            self._warm_task = None
+
+    async def _hold_warm(self) -> None:
+        async with self.subscribe() as queue:
+            while True:
+                await queue.get()
 
     def latest(self) -> bytes | None:
         if time.monotonic() - self._last_frame_at > _FRAME_FRESH_S:
@@ -224,6 +266,7 @@ class CameraStream:
 
     async def aclose(self) -> None:
         """Force the upstream down regardless of subscribers (printer removed)."""
+        self.keep_warm(False)
         async with self._lock:
             self._subscribers.clear()
             self._cancel_linger()
@@ -249,7 +292,11 @@ class CameraStream:
 
     def _start_upstream(self) -> None:
         self._client = CameraClient(
-            self._ip, self._access_code, on_frame=self._on_frame, port=self._port
+            self._ip,
+            self._access_code,
+            on_frame=self._on_frame,
+            port=self._port,
+            settle_frames=self._settle_frames,
         )
         self._task = asyncio.create_task(self._client.run())
         log.info("camera.upstream_started", ip=self._ip)

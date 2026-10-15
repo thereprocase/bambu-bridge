@@ -43,6 +43,8 @@ class Registry:
         mqtt_port: int = 8883,
         camera_port: int = 6000,
         camera_linger_s: float = 10.0,
+        camera_settle_frames: int = 0,
+        camera_keep_warm: str = "off",
         diagnostic_history_dir: Path | None = None,
     ) -> None:
         self._diagnostic_history_dir = diagnostic_history_dir
@@ -62,6 +64,8 @@ class Registry:
         self._mqtt_port = mqtt_port
         self._camera_port = camera_port
         self._camera_linger_s = camera_linger_s
+        self._camera_settle_frames = camera_settle_frames
+        self._camera_keep_warm = camera_keep_warm
         # Fired with each PrinterService as it comes up (load/add). The
         # notification service uses this to attach without the registry
         # importing push code.
@@ -198,6 +202,8 @@ class Registry:
             mqtt_port=self._mqtt_port,
             camera_port=self._camera_port,
             camera_linger_s=self._camera_linger_s,
+            camera_settle_frames=self._camera_settle_frames,
+            camera_keep_warm=self._camera_keep_warm,
             # PR A.2: forward the stored TOFU pin so the service can
             # compare-on-connect and surface cert_status. None for legacy
             # rows persisted before the cert_fingerprint column existed.
