@@ -104,6 +104,8 @@ def create_app(
             mqtt_port=mqtt_port,
             camera_port=camera_port,
             camera_linger_s=settings.bridge_camera_linger_s,
+            camera_settle_frames=settings.bridge_camera_settle_frames,
+            camera_keep_warm=settings.bridge_camera_keep_warm,
         )
         dispatcher = NtfyDispatcher(settings.ntfy_url, settings.ntfy_topic)
         notifier = NotificationService(dispatcher, NotificationPrefsRepo(db))

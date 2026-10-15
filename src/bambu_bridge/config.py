@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     # request reuses the live stream instead of opening a new TCP+TLS
     # connection. 0 = immediate teardown (original behaviour). Default 10 s.
     bridge_camera_linger_s: float = 10.0
+    # Frames dropped at the start of every camera session: the P1S replays old
+    # buffered frames on a cold connect, which made one-shot snapshots stale.
+    bridge_camera_settle_frames: int = Field(default=3, ge=0)
+    # Hold the camera stream open so snapshots never start cold. "printing"
+    # holds it while a print is in flight (PREPARE/RUNNING/PAUSE); "always"
+    # holds it whenever the printer is known; "off" keeps viewer-driven
+    # connect plus linger. The P1S camera serves one client, so a held stream
+    # keeps other LAN viewers off the printer's own port.
+    bridge_camera_keep_warm: Literal["printing", "always", "off"] = "printing"
     # Shared native/HTTP HUD; HTTP ?overlay=false opts out.
     bridge_native_camera_overlay: bool = True
     bridge_native_video: bool = False
