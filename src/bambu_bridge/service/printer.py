@@ -79,6 +79,9 @@ CertStatus = Literal["unknown", "trusted", "changed"]
 # resume and is deliberately not reported as print_started (contract
 # §6.0.1: PREPARE is part of "preparing", not "printing" — the §6.3
 # boundary lives at layer_num > 0, fired separately as `print_progress`).
+# A print is in flight (the camera stream is held warm through these).
+_IN_FLIGHT = {GcodeState.PREPARE, GcodeState.RUNNING, GcodeState.PAUSE}
+
 _INACTIVE_STATES = {
     None,
     GcodeState.IDLE,
@@ -184,6 +187,8 @@ class PrinterService:
         mqtt_port: int = 8883,
         camera_port: int = 6000,
         camera_linger_s: float = 10.0,
+        camera_settle_frames: int = 0,
+        camera_keep_warm: str = "off",
         expected_fingerprint: str | None = None,
         recover_started_at: RecoverStartedAt | None = None,
         load_filament_memory: LoadFilamentMemory | None = None,
@@ -201,6 +206,8 @@ class PrinterService:
         self._mqtt_port = mqtt_port
         self._camera_port = camera_port
         self._camera_linger_s = camera_linger_s
+        self._camera_settle_frames = camera_settle_frames
+        self._camera_keep_warm = camera_keep_warm
         self._camera: CameraStream | None = None
 
         self.bus = EventBus()
@@ -323,6 +330,7 @@ class PrinterService:
         if self._task is None:
             self._task = asyncio.create_task(self._mqtt.run())
             self._log.info("printer.started")
+        self._update_camera_warmth()
 
     async def stop(self) -> None:
         self._cancel_feed_warning_watchdog()
@@ -345,8 +353,19 @@ class PrinterService:
                 self.access_code,
                 port=self._camera_port,
                 linger_s=self._camera_linger_s,
+                settle_frames=self._camera_settle_frames,
             )
         return self._camera
+
+    def _update_camera_warmth(self) -> None:
+        """Hold the camera stream open per ``camera_keep_warm`` (see config)."""
+        want = self._camera_keep_warm == "always" or (
+            self._camera_keep_warm == "printing" and self._gcode_state in _IN_FLIGHT
+        )
+        if want:
+            self.camera.keep_warm(True)
+        elif self._camera is not None:
+            self._camera.keep_warm(False)
 
     async def reconnect(self) -> None:
         """Re-establish the link after an ip/access_code change (open Q #4)."""
@@ -697,6 +716,8 @@ class PrinterService:
                 Event("event", {"reason": "printer_job_lost"}, name="print_interrupted")
             )
         self._emit_named_events(prev_gcode, prev_layer_num)
+        if self._gcode_state != prev_gcode:
+            self._update_camera_warmth()
 
     # ----------------------------------------------------------------- #
     # Event classification
