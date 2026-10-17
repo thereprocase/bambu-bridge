@@ -194,3 +194,15 @@ def test_missing_or_empty_layer_list_counts_as_out_of_range(attr: str) -> None:
     r = validate(_container(info, _TWO_FILAMENT_GCODE), expected_ams_mapping=[3, 1])
     assert not r.ok
     assert any("filament_list=-1 outside 0..1" in issue for issue in r.issues), r.issues
+
+
+@pytest.mark.parametrize(
+    ("temperature", "accepted"),
+    [(b"300", True), (b"300.0", True), (b"300.1", False), (b"301", False)],
+)
+def test_p1s_nozzle_limit_in_uploaded_container(temperature: bytes, accepted: bool) -> None:
+    gcode = b"M620 S0A\nT0\nM621 S0A\n    M109 S" + temperature + b"\n"
+    report = validate(_container(_SINGLE_PETG, gcode), expected_ams_mapping=[1])
+    assert report.ok is accepted, report.issues
+    if not accepted:
+        assert any(issue.startswith("G4 nozzle") for issue in report.issues)

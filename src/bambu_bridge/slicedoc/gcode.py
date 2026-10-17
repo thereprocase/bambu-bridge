@@ -35,7 +35,7 @@ from bambu_bridge.slicedoc.errors import (
 )
 
 # Physical-safety envelope (design review §5 gates 4/5).
-MAX_NOZZLE_C = 280
+MAX_NOZZLE_C = 300  # P1S manufacturer nozzle limit.
 MAX_BED_C = 100  # P1S manufacturer limit; other adapters require separate policy.
 
 EXTERNAL_SENTINEL = 255  # M620 S255 / T255 = external/virtual spool, not a bind
@@ -46,8 +46,8 @@ _MAX_REAL_TRAY = 15  # 4 AMS units × 4 trays; >this = flush/external pseudo-too
 _LOAD_RE = re.compile(rb"^M620[ \t]+S(\d+)A?\b", re.MULTILINE)
 _FINISH_RE = re.compile(rb"^M621[ \t]+S(\d+)A?\b", re.MULTILINE)
 _TOOL_RE = re.compile(rb"^T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
-_NOZZLE_RE = re.compile(rb"^M10[49][ \t]+S(\d+)", re.MULTILINE)
-_BED_RE = re.compile(rb"^M1[49]0[ \t]+S(\d+)", re.MULTILINE)
+_NOZZLE_RE = re.compile(rb"^[ \t]*M10[49][ \t]+S(\d+(?:\.\d+)?)", re.MULTILINE)
+_BED_RE = re.compile(rb"^[ \t]*M1[49]0[ \t]+S(\d+(?:\.\d+)?)", re.MULTILINE)
 
 # Rewrite forms: capture the lead, the digits, the tail so only digits change.
 _LOAD_SUB = re.compile(rb"(?m)^(M620[ \t]+S)(\d+)(A)")
@@ -66,8 +66,8 @@ class GcodeScan:
     finish_trays: frozenset[int]  # real M621 S<n>A finishes
     tool_trays: frozenset[int]  # real ``T<n>`` selects (flush/255 excluded)
     has_external: bool  # any S255/T255 seen (end-gcode unload, expected)
-    max_nozzle_c: int | None
-    max_bed_c: int | None
+    max_nozzle_c: float | None
+    max_bed_c: float | None
 
     @property
     def bound_trays(self) -> frozenset[int]:
@@ -79,8 +79,8 @@ def scan_gcode(gcode: bytes) -> GcodeScan:
     loads = [int(m) for m in _LOAD_RE.findall(gcode)]
     finishes = [int(m) for m in _FINISH_RE.findall(gcode)]
     tools = [int(m) for m in _TOOL_RE.findall(gcode)]
-    nozzles = [int(m) for m in _NOZZLE_RE.findall(gcode)]
-    beds = [int(m) for m in _BED_RE.findall(gcode)]
+    nozzles = [float(m) for m in _NOZZLE_RE.findall(gcode)]
+    beds = [float(m) for m in _BED_RE.findall(gcode)]
     return GcodeScan(
         load_trays=_real(loads),
         finish_trays=_real(finishes),

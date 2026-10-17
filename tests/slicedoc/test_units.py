@@ -210,6 +210,18 @@ def test_scan_separates_trays_from_temps() -> None:
 
 def test_temperature_envelope_rejects_unsafe() -> None:
     with pytest.raises(TemperatureEnvelopeError, match="nozzle"):
-        assert_temperature_envelope(scan_gcode(b"M104 S300\n"))
+        assert_temperature_envelope(scan_gcode(b"M104 S301\n"))
     with pytest.raises(TemperatureEnvelopeError, match="bed"):
         assert_temperature_envelope(scan_gcode(b"M190 S130\n"))
+
+
+@pytest.mark.parametrize("command", [b"M104 S300", b"M109 S300.0", b"M140 S100", b"M190 S100.0"])
+def test_p1s_temperature_limits_accepted(command: bytes) -> None:
+    assert_temperature_envelope(scan_gcode(command + b"\n"))
+
+
+@pytest.mark.parametrize("command", [b"M104 S300.1", b"M109 S301", b"M140 S100.1", b"M190 S101"])
+@pytest.mark.parametrize("indent", [b"", b"    ", b"\t"])
+def test_over_limit_temperatures_rejected(command: bytes, indent: bytes) -> None:
+    with pytest.raises(TemperatureEnvelopeError):
+        assert_temperature_envelope(scan_gcode(indent + command + b"\n"))

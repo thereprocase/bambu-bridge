@@ -25,7 +25,7 @@ class SliceConsistencyError(SlicedocError):
 class TemperatureEnvelopeError(SlicedocError):
     """A gcode temperature command exceeds the safe physical envelope.
 
-    design review gates 4/5 — physical-safety. Nozzle > 280 °C or bed > 120 °C is
+    design review gates 4/5 — physical-safety. Nozzle > 300 °C or bed > 100 °C is
     refused regardless of what the slice claims.
     """
 

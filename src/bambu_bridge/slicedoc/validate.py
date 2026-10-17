@@ -13,7 +13,7 @@ design review §5 gates 1–5:
 2. the three members the gate reads are present (NOT the donor's full
    15-member layout — a real OrcaSlicer container legitimately differs)
 3. md5 contract (UPPERCASE, no newline, matches the gcode)
-4. temperature envelope (≤ 280 °C nozzle / ≤ 120 °C bed) — physical safety
+4. temperature envelope (≤ 300 °C nozzle / ≤ 100 °C bed) — physical safety
 5. AMS consistency in slice-filament-index space: <filament> arity ≡
    len(ams_mapping); gcode handshake coherent (M620≡M621≡T) and only
    referencing filaments the slice defines. ams_mapping *values* are the
