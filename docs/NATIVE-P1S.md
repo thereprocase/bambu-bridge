@@ -87,7 +87,16 @@ clients configured before 0.4.1.
    **1. Enable Orca access**.
 3. Save your work and close Orca. Click **Copy Windows setup command**. Open
    Start, type **Windows PowerShell**, and open it normally. Paste and press
-   Enter. If Windows requests permission to update Orca's certificate file,
+   Enter. Or choose **Download Windows setup (.ps1)** to save the same complete
+   setup as `bambu-bridge-orca-setup.ps1`. Open Windows PowerShell in the folder
+   where you saved it and run:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bambu-bridge-orca-setup.ps1
+   ```
+
+   This applies only to that process; it does not change your saved execution
+   policy. If Windows requests permission to update Orca's certificate file,
    choose **Yes**. Wait for the green **Ready!** message.
 4. Open Orca > **Device** > select **Bridge P1S**. Use a Bambu Lab P1S preset
    with **Use 3rd-party print host** off. Press **Play** in the camera panel.
@@ -112,9 +121,10 @@ A portable/custom data-directory profile needs manual setup. Windows is the
 currently automated path; macOS/Linux instructions are below.
 
 Run setup on each computer. After an Orca update replaces its bundled
-certificates, run a fresh setup command from the dashboard. The command
-contains the native printer access code: keep it private, just as you would
-that code. It does not contain the bridge owner API key or physical printer's
+certificates, run a fresh setup command from the dashboard. The command and downloaded file
+contain the native printer access code: keep them private, just as you would
+that code, and delete the downloaded file after setup. The download is generated
+in your authenticated browser session, not published at a public script URL. It does not contain the bridge owner API key or physical printer's
 access code, and it is never stored in browser local storage.
 
 ## Manual setup and other operating systems

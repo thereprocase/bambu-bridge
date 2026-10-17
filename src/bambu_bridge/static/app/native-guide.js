@@ -13,24 +13,60 @@ export function mountNativeGuide(parent, app, current, manual) {
   const preview = el('details', { class: 'native-manual' }, [el('summary', { text: 'Review the setup command' }), command]);
   preview.hidden = true;
   const copy = el('button', { class: 'btn btn--primary', text: 'Copy Windows setup command' });
-  copy.addEventListener('click', async () => {
-    copy.disabled = true; setupMessage.textContent = 'Preparing setup for your bridge…';
-    const result = await app.api.api('/native/setup', { cache: 'no-store' });
-    if (!live()) return;
-    copy.disabled = false;
-    if (!result.ok) { setupMessage.textContent = result.message || 'Could not prepare setup. Open Manual setup below to save your existing native code, then try again.'; manual.open = true; return; }
-    command.value = result.data.script; preview.hidden = false;
-    try { await navigator.clipboard.writeText(command.value); toast('Setup command copied.'); setupMessage.textContent = 'Copied. Open Windows PowerShell normally, paste, and press Enter.'; }
-    catch { preview.open = true; command.focus(); command.select(); setupMessage.textContent = 'Select and copy the command below, then paste it into Windows PowerShell.'; }
-  });
+  const download = el('button', { class: 'btn', text: 'Download Windows setup (.ps1)' });
+  const downloads = new Map();
+  const forgetDownload = url => {
+    clearTimeout(downloads.get(url)); downloads.delete(url); URL.revokeObjectURL(url);
+  };
+  async function prepareSetup(action) {
+    copy.disabled = download.disabled = true;
+    setupMessage.textContent = 'Preparing setup for your bridge…';
+    try {
+      const result = await app.api.api('/native/setup', { cache: 'no-store' });
+      if (!live()) return;
+      if (!result.ok || typeof result.data?.script !== 'string' || !result.data.script.trim()) {
+        setupMessage.textContent = result.message || 'Could not prepare setup. Open Manual setup below to save your existing native code, then try again.';
+        manual.open = true; return;
+      }
+      command.value = result.data.script; preview.hidden = false;
+      if (action === 'download') {
+        // UTF-8 BOM makes Windows PowerShell 5.1 read non-ASCII text correctly.
+        // Use the same owner-authenticated script as Copy; never a public file.
+        const blob = new Blob(['\ufeff', command.value.replace(/\r?\n/g, '\r\n')], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        downloads.set(url, setTimeout(() => forgetDownload(url), 30000));
+        const link = el('a', { href: url, download: 'bambu-bridge-orca-setup.ps1', hidden: '' });
+        try { document.body.appendChild(link); link.click(); }
+        catch (error) { forgetDownload(url); throw error; }
+        finally { link.remove(); }
+        setupMessage.textContent = 'Download started. Run bambu-bridge-orca-setup.ps1 in Windows PowerShell; see the instructions below.';
+        runFile.open = true;
+      } else {
+        try { await navigator.clipboard.writeText(command.value); if (!live()) return; toast('Setup command copied.'); setupMessage.textContent = 'Copied. Open Windows PowerShell normally, paste, and press Enter.'; }
+        catch { if (!live()) return; preview.open = true; command.focus(); command.select(); setupMessage.textContent = 'Select and copy the command below, then paste it into Windows PowerShell.'; }
+      }
+    } catch {
+      if (live()) setupMessage.textContent = 'Could not prepare setup. Check your connection and try again.';
+    } finally {
+      if (live()) copy.disabled = download.disabled = false;
+    }
+  }
+  copy.addEventListener('click', () => prepareSetup('copy'));
+  download.addEventListener('click', () => prepareSetup('download'));
+  const runFile = el('details', { class: 'native-manual' }, [
+    el('summary', { text: 'Run the downloaded PowerShell script' }),
+    el('p', { text: 'Save your work and close Orca. Open Windows PowerShell normally in the folder where you saved the file, then run:' }),
+    el('code', { text: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\bambu-bridge-orca-setup.ps1', style: 'overflow-wrap:anywhere' }),
+    el('p', { class: 'field__hint', text: 'This allows this setup process to run without changing your saved execution policy. Only the certificate update asks for administrator approval.' }),
+  ]);
   const windows = el('div', { class: 'stack gap-2' }, [
     el('ol', {}, [
       el('li', { text: 'Save your work and close Orca.' }),
       el('li', { text: 'Copy the setup command below. Open Start, type Windows PowerShell, and open it normally.' }),
       el('li', { text: 'Paste the command and press Enter. If Windows asks to update Orca’s certificate file, choose Yes.' }),
       el('li', { text: 'Wait for the green “Ready!” message. The helper saves the correct address and code, trusts this bridge in Orca, and backs up changed files.' }),
-    ]), copy, setupMessage, preview,
-    el('p', { class: 'field__hint', text: 'Run this on each computer you use with Orca. The command contains your native printer code; keep it private. Run a fresh command after an Orca update if the connection stops working.' }),
+    ]), copy, download, setupMessage, runFile, preview,
+    el('p', { class: 'field__hint', text: 'Run this on each computer you use with Orca. The command and downloaded file contain your native printer code; keep them private and delete the file after setup. Run a fresh command after an Orca update if the connection stops working.' }),
   ]);
   const platform = el('select', { class: 'select', 'aria-label': 'Computer operating system' }, [
     el('option', { value: 'windows', text: 'Windows — guided setup' }),
@@ -71,5 +107,5 @@ export function mountNativeGuide(parent, app, current, manual) {
     el('p', { class: 'field__hint', text: 'This checks live connections from the computer displaying this page. Keep Orca open while checking. Seeing both checks does not start a print.' }),
   ]));
   parent.appendChild(guide);
-  return () => { alive = false; clearInterval(timer); command.value = ''; };
+  return () => { alive = false; clearInterval(timer); command.value = ''; for (const url of downloads.keys()) forgetDownload(url); };
 }
