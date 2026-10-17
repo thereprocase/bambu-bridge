@@ -1,0 +1,60 @@
+/* Public workshop: shared presentation layer; scientific media are never recolored. */
+body.gl-polished{background:#c6c6c6;color:#101010;font-family:var(--gl-font,'IBM Plex Sans',system-ui,sans-serif);line-height:1.6}
+.gl-polished *, .gl-polished *::before,.gl-polished *::after{box-sizing:border-box}
+.gl-polished :where(main,section,article,figure,.grid,.card,.panel,.wrap,.page){min-width:0}
+.gl-polished :where(h1,h2,h3,p,li,a,figcaption){overflow-wrap:anywhere}
+.gl-polished :where(h1,h2,h3){font-family:var(--gl-font);text-wrap:balance}
+.gl-polished h1{font-size:clamp(30px,4.2vw,64px)!important;letter-spacing:-.045em!important;line-height:1.08!important;font-weight:600}
+.gl-polished :where(p,li){line-height:1.65}
+.gl-polished img{max-width:100%;height:auto}
+.gl-polished :where(button,input,select){font-family:var(--gl-font);min-height:40px;border-radius:0}
+.gl-polished :where(a,button):focus-visible{outline:3px solid #008ea1;outline-offset:4px}
+.gl-polished :where(figure,.card,.panel,.box,article,.tile,.ps-hero){border-radius:0!important;box-shadow:none!important}
+.gl-polished .ps-hero{background:#f3efe6;color:#101010;border-top:6px solid #0000a8;padding:clamp(24px,3vw,56px)}
+.gl-polished .ps-hero h1{max-width:24ch;color:#0000a8}
+.gl-polished :where(.ps-section,.gl-pane){margin-bottom:28px}
+.gl-polished :where(.ps-media,.gl-detail-render,.gl-gallery-grid figure){border:1px solid #9a9a9a;background:#fff}
+.gl-polished :where(.ps-media,.gl-detail-render,.gl-gallery-grid figure)>img{width:100%;object-fit:contain;background:#f3efe6;max-height:650px}
+.gl-polished :where(.ps-media,.gl-detail-render,.gl-gallery-grid figure)>figcaption{padding:16px 20px;font-size:13px;color:#41474a;background:#f6f6f6;line-height:1.6}
+.gl-polished .gl-detail-render img{max-height:650px}
+.gl-polished .gl-introduction h1{color:#0000a8}
+.gl-polished .gl-introduction p{max-width:66ch}
+.gl-polished .gl-gallery-grid{gap:24px;padding:24px}
+.gl-polished .gl-gallery-grid img{width:100%;height:420px;object-fit:contain;border:0;background:#f3efe6}
+.gl-polished .ps-body{padding:clamp(20px,2.5vw,40px)}
+.gl-polished :where(pre,.table-wrap,.scroll){max-width:100%;overflow:auto}
+.gl-polished :where(.ps-network,.gl-titlebar){min-height:44px}
+.gl-network-strip{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 24px;background:#0000a8;color:white;font:12px/1.5 var(--gl-mono);border-bottom:1px solid #666}
+.gl-network-strip a{color:white!important;text-decoration:underline;min-height:28px;display:inline-flex;align-items:center}
+.gl-polish-figure{margin:28px 0;border:1px solid #666;background:#f3efe6;overflow:hidden}
+.gl-polish-figure>a{display:block}
+.gl-polish-figure img{display:block;width:100%;height:clamp(240px,35vw,580px);object-fit:contain}
+.gl-polish-figure figcaption{padding:16px 20px;border-top:1px solid #9a9a9a;color:#41474a;background:white;font:13px/1.6 var(--gl-font)}
+.gl-polished.gl-legacy{--ink:#101010;--text:#101010;--muted:#50565d;--paper:#fff;--bg:#c6c6c6;--line:#9a9a9a;--border:#666;--accent:#0000a8;--teal:#0000a8;--surface:#fff;background:#c6c6c6!important;color:#101010!important}
+.gl-legacy main{max-width:1600px!important;margin:0 auto!important;padding:clamp(18px,3vw,48px)!important;background:#f2f2f2;min-width:0}
+.gl-legacy :where(h1,h2,h3,h4,p,li,td,th,summary,label,.small,.muted,.eyebrow,.badge,.copy){color:#101010!important;font-family:var(--gl-font)}
+.gl-legacy :where(h1){color:#0000a8!important}
+.gl-legacy :where(a){color:#0000a8!important;text-underline-offset:4px}
+.gl-legacy :where(article,.card,.panel,.box,.tile,.viewer-card,.copy,.controls,.toolbar,details,.model-card,.side,.sidebar){background:#fff!important;color:#101010!important;border-color:#9a9a9a!important}
+.gl-legacy :where(article,.card,.panel,.box,.tile,.model-card){border:1px solid #9a9a9a!important}
+.gl-legacy :where(button,.button,.btn,select,input){background:white!important;color:#0000a8!important;border:1px solid #666!important;border-radius:0!important;min-height:42px}
+.gl-legacy :where(button[aria-pressed=true],.button.primary,.btn.primary){background:#0000a8!important;color:white!important}
+.gl-legacy :where(th){background:#e8e8e8!important;color:#101010!important}
+.gl-legacy :where(.lineup-nav,nav:not(.gl-network-strip)){background:#e8e8e8!important;color:#101010!important;border-bottom:1px solid #666;font-family:var(--gl-font)!important}
+.gl-legacy .lineup-nav a{color:#0000a8!important;text-decoration:underline!important;font-family:var(--gl-font)!important}
+.gl-legacy :where(.note,.warning,.lineup-note){background:#fff4dc!important;border-left:4px solid #b87900!important;color:#101010!important}
+.gl-legacy .gl-network-strip{background:#0000a8!important;color:white!important}
+.gl-legacy .gl-network-strip a{color:white!important}
+.gl-legacy :where(.kicker,.eyebrow,.badge){font-family:var(--gl-mono);font-size:12px;letter-spacing:.04em}
+.gl-legacy :where(model-viewer){border:1px solid #9a9a9a;border-radius:0!important}
+.gl-polished .gl-prose h3{margin-top:28px}
+.gl-polished .gl-link-list a{padding:18px 20px;min-height:52px}
+.gl-polished .gl-prose{padding:24px}
+@media(max-width:700px){.gl-polished h1{font-size:34px!important}.gl-polished .gl-gallery-grid{padding:14px;gap:16px}.gl-polished .gl-gallery-grid img{height:auto;max-height:520px}.gl-legacy .grid{grid-template-columns:1fr!important}.gl-polish-figure{margin:20px 0}.gl-network-strip{padding:10px 16px}.gl-legacy :where(.split,.two,.two-col,.columns){grid-template-columns:1fr!important}}
+@media(prefers-reduced-motion:reduce){.gl-polished{scroll-behavior:auto}.gl-polished *{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+.gl-polished.gl-legacy{max-width:none!important;padding:0!important}
+.gl-legacy figure{background:white!important;color:#101010!important;border:1px solid #9a9a9a;border-radius:0!important}
+.gl-legacy figcaption{background:#f2f2f2!important;color:#41474a!important;padding:16px!important;font:13px/1.6 var(--gl-font)!important}
+.gl-legacy figure img{object-fit:contain;border-radius:0!important}
+.gl-legacy .gl-polish-figure{background:#f3efe6!important}
+.gl-polished .gl-directory .gl-index{flex:0 0 2ch;white-space:nowrap}
