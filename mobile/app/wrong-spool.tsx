@@ -104,7 +104,7 @@ export default function WrongSpoolScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: c.bg, padding: space.lg, gap: space.md }}>
         <Text style={[type.h1, { color: c.text }]}>Wrong spool?</Text>
-        <Text style={body}>Couldn't tell which print this is for. Go back and tap it again.</Text>
+        <Text style={body}>Couldn&apos;t tell which print this is for. Go back and tap it again.</Text>
         <Button label="Back" variant="secondary" onPress={() => router.back()} fullWidth />
       </View>
     );

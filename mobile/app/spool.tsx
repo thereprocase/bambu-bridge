@@ -145,7 +145,7 @@ export default function SpoolScreen() {
   }
 
   /** Spoolman's catalog fills the new-product form; the vendor is matched or created on save. */
-  function useCatalogEntry(entry: CatalogEntry) {
+  function applyCatalogEntry(entry: CatalogEntry) {
     setProduct(null);
     setNewProduct(true);
     setVendor(null);
@@ -410,11 +410,11 @@ export default function SpoolScreen() {
             )}
             {catalog.length > 0 && (
               <>
-                <Text style={[type.h2, { color: c.text, marginTop: space.sm }]}>From Spoolman's catalog</Text>
+                <Text style={[type.h2, { color: c.text, marginTop: space.sm }]}>From Spoolman&apos;s catalog</Text>
                 {pick(
                   catalog.map((e, i) => ({ ...e, id: i })),
                   (e) => `${[e.manufacturer, (e.name ?? "").replace(/[™®©]/g, "")].filter(Boolean).join(" ")} · ${e.material ?? ""}${e.weight ? ` · ${Math.round(e.weight)} g` : ""}`,
-                  (e) => useCatalogEntry(catalog[e.id]),
+                  (e) => applyCatalogEntry(catalog[e.id]),
                 )}
               </>
             )}

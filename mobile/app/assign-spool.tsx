@@ -122,7 +122,7 @@ export default function AssignSpoolScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: c.bg, padding: space.lg, gap: space.md }}>
         <Text style={[type.h1, { color: c.text }]}>Assign spool</Text>
-        <Text style={body}>Couldn't tell which slot to assign. Go back and tap the slot again.</Text>
+        <Text style={body}>Couldn&apos;t tell which slot to assign. Go back and tap the slot again.</Text>
         <Button label="Back" variant="secondary" onPress={() => router.back()} fullWidth />
       </View>
     );
@@ -215,7 +215,7 @@ export default function AssignSpoolScreen() {
         <Text style={body}>Put a spool in first. The printer reports this slot as empty.</Text>
       )}
       {source && !empty && stale && (
-        <Text style={body}>The printer hasn't reported this slot lately ({stale}). Try again in a moment.</Text>
+        <Text style={body}>The printer hasn&apos;t reported this slot lately ({stale}). Try again in a moment.</Text>
       )}
 
       {source && !empty && !stale && (

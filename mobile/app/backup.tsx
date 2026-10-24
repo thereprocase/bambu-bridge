@@ -166,7 +166,7 @@ export default function BackupScreen() {
     return (
       <View style={{ flex: 1, backgroundColor: c.bg, padding: space.lg, gap: space.md }}>
         <Text style={[type.h1, { color: c.text }]}>Backup spool</Text>
-        <Text style={body}>Couldn't tell which slot this is for. Go back and tap the slot again.</Text>
+        <Text style={body}>Couldn&apos;t tell which slot this is for. Go back and tap the slot again.</Text>
         <Button label="Back" variant="secondary" onPress={() => router.back()} fullWidth />
       </View>
     );
@@ -281,7 +281,7 @@ export default function BackupScreen() {
                 : `No other ${from.source.material.trim()} slot is loaded.`}
             </Text>
           )}
-          <Text style={small}>The printer takes the change when it's idle. Both slots keep their own spools in Spoolman; the print is charged to whichever slot fed it.</Text>
+          <Text style={small}>The printer takes the change when it&apos;s idle. Both slots keep their own spools in Spoolman; the print is charged to whichever slot fed it.</Text>
         </Surface>
       )}
 

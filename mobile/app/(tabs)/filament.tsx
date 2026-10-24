@@ -385,7 +385,7 @@ export default function FilamentScreen() {
       {selectedId && inventoryOn && backup?.state === "needs_attention" && (
         <Surface padded style={{ gap: space.sm, borderLeftWidth: 3, borderLeftColor: c.warn }}>
           <Text style={[type.caption, { color: c.muted, textTransform: "uppercase" }]}>Needs you</Text>
-          <Text style={[type.h2, { color: c.text }]}>Backup for {slotWord(backup.from_wire)} didn't take</Text>
+          <Text style={[type.h2, { color: c.text }]}>Backup for {slotWord(backup.from_wire)} didn&apos;t take</Text>
           <Text style={[type.body, { color: c.text }]}>{backup.message ?? "The printer reports a different setting than the backup asked for."}</Text>
           <Button label="Open backup" variant="secondary" onPress={() => { const v = byWire.get(backup.from_wire); if (v) openBackup(v); }} />
         </Surface>
