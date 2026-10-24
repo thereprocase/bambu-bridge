@@ -59,9 +59,7 @@ def test_acknowledge_past_reviews_keeps_unknown_owner_and_receipt_evidence(tmp_p
         "acknowledgeable_count": 2,
     }
     first_review = inbox.status(printer="fixture-printer", view="review", limit=1)
-    assert [row["id"] for row in first_review] == [
-        "c" * 32
-    ]
+    assert [row["id"] for row in first_review] == ["c" * 32]
     assert inbox.acknowledge_past_reviews("fixture-printer") == 2
     assert inbox.acknowledge_past_reviews("fixture-printer") == 0
     assert inbox.queue_overview("fixture-printer")["review_count"] == 1
@@ -786,3 +784,77 @@ async def test_ready_report_before_expiry_keeps_unconfirmed_start(tmp_path):
     report = {"print": {"gcode_state": "FINISH", "gcode_file": "/previous.gcode.3mf"}}
     inbox.observe("fixture-printer", report, report)
     assert inbox.get(row["id"])["start_state"] == "sent"
+
+
+def test_unresolved_starts_are_open_starts_of_that_printer(tmp_path):
+    # Skip Objects names the running file from an open start (ACK or not).
+    inbox = NativeInbox(tmp_path)
+    command = start("ftp://tray.gcode.3mf")
+    command["print"]["subtask_name"] = "tray"
+    identifier = inbox.claim_external("fixture-printer", command)
+    rows = inbox.unresolved_starts("fixture-printer")
+    assert [(r["id"], r["remote"], r["start_state"]) for r in rows] == [
+        (identifier, "/tray.gcode.3mf", "dispatching")
+    ]
+    assert inbox.unresolved_starts("other-printer") == []
+    inbox.dispatched(identifier, "sent")
+    assert [r["start_state"] for r in inbox.unresolved_starts("fixture-printer")] == ["sent"]
+
+
+async def test_a_cancelled_print_is_interrupted_at_the_highest_layer_it_reached(tmp_path):
+    from tests.test_accounting_attempts import manifest
+
+    inbox = NativeInbox(tmp_path)
+    row = await stored(inbox, "/tray.gcode.3mf")
+    command = start("ftp://tray.gcode.3mf")
+    command["print"].update(
+        file="tray.gcode.3mf", param="Metadata/plate_1.gcode", subtask_name="tray"
+    )
+    identifier = inbox.hold_start("fixture-printer", command)["id"]
+    inbox.transition(identifier, "stored", "delivered", "BBDELIVERY_OK")
+    context = manifest()
+    context["artifact_sha256"] = row["sha256"]
+    inbox.freeze_accounting(identifier, context)
+    payload = inbox.claim_start(identifier)
+    ack = {
+        "print": {
+            "command": "project_file",
+            "sequence_id": payload["print"]["sequence_id"],
+            "result": "SUCCESS",
+        }
+    }
+    inbox.observe("fixture-printer", ack, {})
+    for layer in (3, 7, 5):  # a stale lower layer never lowers it
+        report = {
+            "print": {
+                "gcode_state": "RUNNING",
+                "gcode_file": "Metadata/plate_1.gcode",
+                "subtask_name": "tray",
+                "layer_num": layer,
+            }
+        }
+        inbox.observe("fixture-printer", report, report)
+    assert inbox.get(identifier)["layer_reached"] == 7
+    cancelled = {"print": {**report["print"], "gcode_state": "FAILED"}}
+    inbox.observe("fixture-printer", cancelled, cancelled)
+    assert inbox.get(identifier)["start_state"] == "resolved"
+    (event,) = inbox.accounting_events()
+    assert event["attempt_id"] == identifier and event["outcome"] == "interrupted"
+
+
+STATES = [None, "reserved", "queued", "dispatching", "sent", "accepted", "running", "unknown"]
+STATES += ["completed", "interrupted", "resolved", "rejected", "cancelled", "blocked"]
+
+
+@pytest.mark.parametrize("start_state", STATES)
+def test_every_start_owner_check_agrees_on_the_same_states(tmp_path, start_state):
+    from bambu_bridge.native_inbox import OWNER_STATES
+
+    inbox = NativeInbox(tmp_path)
+    inbox.claim_external("fixture-printer", start("file:///sdcard/a.3mf"))
+    with inbox.connect() as db:
+        db.execute("UPDATE uploads SET start_state=?,state='delivered'", (start_state,))
+    owned = start_state in OWNER_STATES
+    assert inbox.has_active_print("fixture-printer") is owned
+    assert inbox.unresolved("fixture-printer") is owned
+    assert (inbox.queue_overview("fixture-printer")["start_owner"] is not None) is owned
