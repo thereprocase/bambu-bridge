@@ -81,9 +81,9 @@ export interface InventorySource {
 export const inventoryStatus = () => request<InventoryStatus>("/inventory");
 export const inventorySpool = (id: number) =>
   request<InventorySpool>(`/inventory/spools/${id}`);
-export const inventorySpools = (query = "", offset = 0, material?: string) =>
+export const inventorySpools = (query = "", offset = 0, material?: string, limit = 50) =>
   request<InventorySpool[]>("/inventory/spools", {
-    query: { query, offset, limit: 50, ...(material ? { material } : {}) },
+    query: { query, offset, limit, ...(material ? { material } : {}) },
   });
 export const inventoryProducts = (query = "", offset = 0) =>
   request<InventoryProduct[]>("/inventory/products", {

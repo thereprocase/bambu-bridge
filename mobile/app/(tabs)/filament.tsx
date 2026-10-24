@@ -57,7 +57,7 @@ import {
   tagOriginNote,
   type SlotView,
 } from "../../src/lib/slotInventory";
-import { cameOutOf, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../../src/lib/shelf";
+import { cameOutOf, everySpool, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../../src/lib/shelf";
 import { AmsSlot, viewOf } from "../../src/lib/snapshot";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
@@ -149,7 +149,7 @@ export default function FilamentScreen() {
       }
       const [physical, records, waiting, latest, refillNow] = await Promise.all([
         inventorySources(selectedId),
-        inventorySpools(),
+        everySpool((offset, limit) => inventorySpools("", offset, undefined, limit)),
         // Older bridges have no accounting page; the slots still show.
         inventoryAccounting(0, "review").catch(() => ({ attempts: [] })),
         inventoryAccounting(0, undefined, 10).catch(() => ({ attempts: [] })),
@@ -403,7 +403,7 @@ export default function FilamentScreen() {
         const slot = opts.slot;
         return (
           <View style={{ marginLeft: SWATCH + space.md, marginTop: space.sm, gap: space.xs }}>
-            <Text style={[type.small, { color: c.text }]}>{`#${gone.id} came out of this slot`}</Text>
+            <Text style={[type.small, { color: c.text }]}>{`${spoolLabel(gone)} came out of this slot`}</Text>
             <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
               <Button
                 label="Empty – archive it"

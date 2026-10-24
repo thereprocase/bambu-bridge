@@ -12,6 +12,24 @@ import type { SlotView } from "./slotInventory";
 
 const KV_SHELVED = "filament.shelved";
 
+// The route's largest page, and the bridge's own cap of 1000 spools read from Spoolman.
+const SPOOL_PAGE = 100;
+const SPOOL_PAGES = 10;
+
+/**
+ * Every unarchived spool, page by page until a short page. Off the AMS and the
+ * slot question each need the whole shelf; one page would leave spools out.
+ */
+export async function everySpool(page: (offset: number, limit: number) => Promise<InventorySpool[]>): Promise<InventorySpool[]> {
+  const all: InventorySpool[] = [];
+  for (let n = 0; n < SPOOL_PAGES; n++) {
+    const next = await page(all.length, SPOOL_PAGE);
+    all.push(...next);
+    if (next.length < SPOOL_PAGE) break;
+  }
+  return all;
+}
+
 function seatedIds(status: InventoryStatus | null): Set<number> {
   return new Set((status?.assignments ?? []).map((a) => a.spool_id));
 }
@@ -33,7 +51,7 @@ export function shelfKey(printerId: string, source: string, spoolId: number): st
  * The spool that last sat in this slot when it has gone and nobody has said
  * where: not in this slot, not in any other, not archived, and not answered
  * "Back on the shelf" here. Null otherwise. A spool missing from the list
- * (archived, or past the first page) is never asked about.
+ * (archived, or gone from Spoolman) is never asked about.
  */
 export function cameOutOf(
   view: SlotView,

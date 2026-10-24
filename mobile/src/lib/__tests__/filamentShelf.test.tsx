@@ -104,6 +104,16 @@ describe("Off the AMS", () => {
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/spool", params: { id: "8" } });
   });
 
+  it("reads every page, so a spool past the first hundred is listed too", async () => {
+    const first = Array.from({ length: 100 }, (_, i) => spool(100 + i));
+    mocked.inventoryStatus.mockResolvedValue(status(...first.map((s) => assigned(`ams:x:tray:${s.id}`, s.id))));
+    mocked.inventorySpools.mockImplementation(async (_q, offset = 0) => (offset === 0 ? first : [spool(8)]));
+    await mount();
+    expect(mocked.inventorySpools).toHaveBeenCalledWith("", 0, undefined, 100);
+    expect(mocked.inventorySpools).toHaveBeenCalledWith("", 100, undefined, 100);
+    expect(shelfRows().map((n) => n.props.accessibilityLabel)).toEqual(["#8 · Bambu PETG Colour 8, 128 g left, weigh or archive"]);
+  });
+
   it("is hidden when every unarchived spool sits in a slot", async () => {
     mocked.inventorySpools.mockResolvedValue([spool(1), spool(4, { archived: true })]);
     await mount();
@@ -119,7 +129,7 @@ describe("a spool that came out of a slot", () => {
 
   it("asks on that slot, with both answers", async () => {
     await mount();
-    expect(texts()).toContain("#8 came out of this slot");
+    expect(texts()).toContain("#8 · Bambu PETG Colour 8 came out of this slot");
     expect(buttons()).toEqual(expect.arrayContaining(["Empty – archive it", "Back on the shelf"]));
   });
 
@@ -128,18 +138,18 @@ describe("a spool that came out of a slot", () => {
     mocked.inventorySpools.mockResolvedValue([spool(1), spool(3)]);
     await press(button("Empty – archive it"));
     expect(mocked.archiveSpool).toHaveBeenCalledWith(8);
-    expect(texts()).not.toContain("#8 came out of this slot");
+    expect(texts()).not.toContain("#8 · Bambu PETG Colour 8 came out of this slot");
   });
 
   it("keeps the question answered on this device after Back on the shelf", async () => {
     await mount();
     await press(button("Back on the shelf"));
     expect(mocked.archiveSpool).not.toHaveBeenCalled();
-    expect(texts()).not.toContain("#8 came out of this slot");
+    expect(texts()).not.toContain("#8 · Bambu PETG Colour 8 came out of this slot");
     expect(JSON.parse(mockStore["filament.shelved"])).toEqual(["P1|ams:abc:tray:1|8"]);
     await act(async () => { tree.unmount(); });
     await mount();
-    expect(texts()).not.toContain("#8 came out of this slot");
+    expect(texts()).not.toContain("#8 · Bambu PETG Colour 8 came out of this slot");
     expect(shelfRows().map((n) => n.props.accessibilityLabel)).toContain("#8 · Bambu PETG Colour 8, 128 g left, weigh or archive");
   });
 
@@ -151,12 +161,12 @@ describe("a spool that came out of a slot", () => {
     mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1)));
     await act(async () => { tree.unmount(); });
     await mount();
-    expect(texts()).toContain("#8 came out of this slot");
+    expect(texts()).toContain("#8 · Bambu PETG Colour 8 came out of this slot");
   });
 
   it("says nothing while the spool sits in another slot", async () => {
     mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1), assigned("ams:abc:tray:3", 8)));
     await mount();
-    expect(texts()).not.toContain("#8 came out of this slot");
+    expect(texts()).not.toContain("#8 · Bambu PETG Colour 8 came out of this slot");
   });
 });

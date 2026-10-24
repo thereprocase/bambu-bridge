@@ -1,5 +1,5 @@
 import type { InventorySource, InventorySpool, InventoryStatus } from "../../api/inventory";
-import { cameOutOf, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../shelf";
+import { cameOutOf, everySpool, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../shelf";
 import type { SlotView } from "../slotInventory";
 
 const mockStore: Record<string, string> = {};
@@ -91,4 +91,12 @@ describe("shelved answers", () => {
 it("spoolColor reads Spoolman's hex as #RRGGBB, or null", () => {
   expect(spoolColor(spool(1))).toBe("#1A2B3C");
   expect(spoolColor(spool(1, { filament: { ...spool(1).filament, color_hex: null } }))).toBeNull();
+});
+
+it("everySpool pages by 100 until a short page, and stops at the bridge's 1000", async () => {
+  const page = jest.fn(async (offset: number) => (offset < 200 ? Array.from({ length: 100 }, (_, i) => spool(offset + i)) : [spool(999)]));
+  expect((await everySpool(page)).length).toBe(201);
+  expect(page.mock.calls).toEqual([[0, 100], [100, 100], [200, 100]]);
+  const endless = jest.fn(async (offset: number) => Array.from({ length: 100 }, (_, i) => spool(offset + i)));
+  expect((await everySpool(endless)).length).toBe(1000);
 });
