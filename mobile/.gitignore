@@ -32,3 +32,4 @@ android/local.properties
 docs/captures/
 *.aab
 *.zip
+expo-env.d.ts

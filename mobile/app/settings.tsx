@@ -21,7 +21,7 @@
 import { Link } from "expo-router";
 import * as Network from "expo-network";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Alert, Pressable, ScrollView, Text, View } from "react-native";
 
 import { request, requestExact } from "../src/api/client";
 import { prefixOf, resetEndpointCache, resolveEndpoint } from "../src/api/endpoint";
@@ -30,6 +30,7 @@ import { Button } from "../src/components/Button";
 import { Field } from "../src/components/Field";
 import { StatusDot } from "../src/components/StatusDot";
 import { Surface } from "../src/components/Surface";
+import { SpoolmanSettings } from "../src/components/SpoolmanSettings";
 import { useToastStore } from "../src/components/Toast";
 import { useBridgeStore } from "../src/store/bridge";
 import { useTheme } from "../src/theme/ThemeProvider";
@@ -50,7 +51,7 @@ export default function SettingsScreen() {
   const savedNetworks = useBridgeStore((s) => s.savedNetworks);
   const bearer = useBridgeStore((s) => s.bearer);
   const pairing = useBridgeStore((s) => s.pairing);
-  const [manual, setManual] = useState(!!baseUrl);
+  const [manual, setManual] = useState(!!baseUrl || Platform.OS === "web");
   const [remoteInput, setRemoteInput] = useState(pairing?.remoteUrl ?? "");
   const health = useBridgeStore((s) => s.health);
   const setBaseUrl = useBridgeStore((s) => s.setBaseUrl);
@@ -237,7 +238,7 @@ export default function SettingsScreen() {
       contentContainerStyle={{ padding: space.lg, gap: space.lg }}
     >
       {baseUrl && bearer && <>
-        <Link href="/(tabs)/status" replace asChild><Button label="Open dashboard" onPress={() => {}} fullWidth /></Link>
+        <Link href="/(tabs)/status" dismissTo asChild><Button label="Open dashboard" onPress={() => {}} fullWidth /></Link>
         <Link href="/native-recovery" asChild><Button label="Bridge queue and recovery" variant="secondary" onPress={() => {}} fullWidth /></Link>
         <ViewingSettings />
       </>}
@@ -246,10 +247,10 @@ export default function SettingsScreen() {
         <Text style={[type.h1, { color: c.text }]}>{pairing ? "Securely paired" : "Connect your bridge"}</Text>
         <Text style={[type.body, { color: c.muted }]}>
           {pairing ? `This phone is paired as ${pairing.name}. Local connections are encrypted and verify your bridge's identity.`
-            : "Scan the code from your bridge installer to connect securely over home Wi-Fi."}
+            : Platform.OS === "web" ? "Enter your bridge address and API key for this browser session." : "Scan the code from your bridge installer to connect securely over home Wi-Fi."}
         </Text>
         {!pairing && <>
-          <Link href="/pair" asChild><Button label="Pair with QR code" onPress={() => {}} fullWidth /></Link>
+          {Platform.OS !== "web" && <Link href="/pair" asChild><Button label="Pair with QR code" onPress={() => {}} fullWidth /></Link>}
           <Button label={manual ? "Hide manual setup" : "Manual setup / compatibility"} variant="secondary"
             onPress={() => setManual(!manual)} fullWidth />
         </>}
@@ -333,6 +334,7 @@ export default function SettingsScreen() {
           <Button label="Probe LAN URL" variant="secondary" onPress={probeLan} loading={probing} fullWidth />
         )}
 
+        {Platform.OS === "web" && <Text style={[type.small, { color: c.muted }]}>The browser keeps this key for this tab session only. Re-enter it after reloading. Pending inventory requests remain saved separately.</Text>}
         <Field
           label="API key (bearer)"
           value={keyInput}
@@ -433,11 +435,14 @@ export default function SettingsScreen() {
           <Button label="Add a printer" onPress={() => {}} fullWidth />
         </Link>
         {baseUrl && bearer && (
-          <Link href="/(tabs)/status" asChild>
+          <Link href="/(tabs)/status" dismissTo asChild>
             <Button label="Open dashboard" variant="secondary" onPress={() => {}} fullWidth />
           </Link>
         )}
       </Surface>
+
+      {/* Spoolman --------------------------------------------------------- */}
+      {baseUrl && bearer && <SpoolmanSettings />}
 
       {/* Appearance ------------------------------------------------------- */}
       <Surface padded style={{ gap: space.md }}>

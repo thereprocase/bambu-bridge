@@ -99,6 +99,9 @@ export interface PrinterSnapshot {
     e: number | null;
   };
   ams: {
+    /** Bridge-observed handoffs for this print; persists when HMS clears. */
+    refill_history?: { from_slot: number; to_slot: number | null;
+      status: "switching" | "completed" | "interrupted"; observed_at: string }[];
     // Contract §6.1.1: AMS hardware attached? Independent of `slots`, which
     // transiently empties to [] during an RFID re-scan. `present && slots == []`
     // ⇒ re-scan in progress (hold the previous slot view), `!present` ⇒ no AMS.
@@ -253,15 +256,6 @@ export interface QueueItem {
   created_at: string;
 }
 
-export interface Spool {
-  id: string;
-  name: string;
-  material: string;
-  color_hex?: string;
-  remaining_g?: number;
-  percent?: number;
-}
-
 /** Contract §8.4 — one pre-rendered row of the flat per-printer event feed.
  * `title`/`detail`/`context` are bridge-formatted; the APK renders verbatim. */
 export interface EventRow {
@@ -274,4 +268,20 @@ export interface EventRow {
   context: string;
   job_id?: string | null;
   dismissed: boolean;
+}
+
+export interface FaultHistoryRow {
+  id: string; code: string; text: string; severity: string; channel: string;
+  first_seen: string; last_seen: string; cleared_at?: string;
+  count: number; active: boolean; stale?: boolean;
+}
+export interface RefillHistoryRow {
+  from_slot: number; to_slot: number | null;
+  status: "switching" | "completed" | "interrupted";
+  observed_at: string; started_at?: string | null; completed_at?: string | null;
+  interrupted_at?: string | null;
+}
+export interface DiagnosticHistoryWire {
+  durable: boolean; faults: FaultHistoryRow[]; current_refills: RefillHistoryRow[];
+  archived_refills: { print?: Record<string, string>; refills: RefillHistoryRow[] }[];
 }

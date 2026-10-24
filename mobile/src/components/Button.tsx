@@ -18,6 +18,8 @@ interface Props {
   disabled?: boolean;
   loading?: boolean;
   fullWidth?: boolean;
+  /** "small" for actions stacked inside a drawer: tighter padding, smaller type. */
+  size?: "regular" | "small";
   style?: ViewStyle;
 }
 
@@ -28,8 +30,10 @@ export function Button({
   disabled,
   loading,
   fullWidth,
+  size = "regular",
   style,
 }: Props) {
+  const small = size === "small";
   const { c, radius, space, type } = useTheme();
 
   const palette =
@@ -54,14 +58,14 @@ export function Button({
           borderColor: disabled ? c.borderSoft : palette.border,
           borderWidth: 1,
           borderRadius: radius.md,
-          paddingVertical: space.md,
-          paddingHorizontal: space.lg,
+          paddingVertical: small ? space.sm : space.md,
+          paddingHorizontal: small ? space.md : space.lg,
           alignItems: "center",
           justifyContent: "center",
           flexDirection: "row",
           gap: space.sm,
           opacity: pressed ? 0.85 : 1,
-          minHeight: 44,
+          minHeight: small ? 36 : 44,
           alignSelf: fullWidth ? "stretch" : "flex-start",
         },
         style,
@@ -71,7 +75,7 @@ export function Button({
       <Text
         style={[
           type.h2,
-          { color: disabled ? c.muted : palette.fg, fontSize: 15 },
+          { color: disabled ? c.muted : palette.fg, fontSize: small ? 13 : 15 },
         ]}
       >
         {label}

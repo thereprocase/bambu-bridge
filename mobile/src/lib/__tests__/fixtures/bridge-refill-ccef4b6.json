@@ -1,0 +1,1478 @@
+{
+ "_about": "Real responses from the bridge against a loopback mock P1S. Slots: 1 PLA, 2 RFID Bambu PETG, 3 #8 Elegoo white GFG99 230-260, 4 #7 Galaxy Black GFG02 220-270.",
+ "bridge_commit": "ccef4b6",
+ "preview_2_3": {
+  "status": 200,
+  "body": {
+   "steps": [
+    {
+     "wire": 2,
+     "anchor": true,
+     "tagged": false,
+     "writes": false,
+     "changes": [],
+     "before": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "target": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     }
+    },
+    {
+     "wire": 3,
+     "anchor": false,
+     "tagged": false,
+     "writes": true,
+     "changes": [
+      {
+       "field": "tray_info_idx",
+       "before": "GFG02",
+       "after": "GFG99"
+      },
+      {
+       "field": "nozzle_temp_min",
+       "before": 220,
+       "after": 230
+      },
+      {
+       "field": "nozzle_temp_max",
+       "before": 270,
+       "after": 260
+      },
+      {
+       "field": "tray_color",
+       "before": "161616FF",
+       "after": "FFFFFFFF"
+      }
+     ],
+     "before": {
+      "tray_info_idx": "GFG02",
+      "tray_color": "161616FF",
+      "nozzle_temp_min": 220,
+      "nozzle_temp_max": 270,
+      "tray_type": "PETG"
+     },
+     "target": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     }
+    }
+   ],
+   "restored_on_disable": true,
+   "preview_digest": "652d368a69f468a482a49c92853dd7235e03bf526e80f5a7fd1014aede3a806c"
+  }
+ },
+ "preview_tagged_backup": {
+  "status": 200,
+  "body": {
+   "steps": [
+    {
+     "wire": 2,
+     "anchor": false,
+     "tagged": false,
+     "writes": true,
+     "changes": [
+      {
+       "field": "tray_info_idx",
+       "before": "GFG99",
+       "after": "GFG01"
+      },
+      {
+       "field": "tray_color",
+       "before": "FFFFFFFF",
+       "after": "8B5A2BFF"
+      }
+     ],
+     "before": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "target": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     }
+    },
+    {
+     "wire": 1,
+     "anchor": true,
+     "tagged": true,
+     "writes": false,
+     "changes": [],
+     "before": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "target": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     }
+    }
+   ],
+   "restored_on_disable": true,
+   "preview_digest": "88e64151a121e90890a4f1860f9eddc67099d52038dfcda6be01399a6b45f48a"
+  }
+ },
+ "preview_material_refused": {
+  "status": 422,
+  "body": {
+   "error": "invalid_input",
+   "message": "Slot 1 is PLA and slot 3 is PETG; a backup needs the same material. Load a matching spool or set the slot's material first."
+  }
+ },
+ "put_stale_digest": {
+  "status": 409,
+  "body": {
+   "error": "conflict",
+   "message": "Physical refill sources changed; review a new preview"
+  }
+ },
+ "put_backup": {
+  "status": 200,
+  "body": {
+   "enabled": true,
+   "revision": 5,
+   "state": "pending",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "apply",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": null,
+   "last_confirmed_age_seconds": null,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [
+    {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "pending",
+     "message": null,
+     "stale": false,
+     "confirmed_at": null,
+     "last_confirmed_age_seconds": null
+    }
+   ],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 0.006677075056359172,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.008831286104395986
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 0.008843716001138091
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.008852676022797823
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.008861524984240532
+    }
+   ]
+  }
+ },
+ "refill_after_put": {
+  "status": 200,
+  "body": {
+   "enabled": true,
+   "revision": 5,
+   "state": "pending",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "apply",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": null,
+   "last_confirmed_age_seconds": null,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [
+    {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "pending",
+     "message": null,
+     "stale": false,
+     "confirmed_at": null,
+     "last_confirmed_age_seconds": null
+    }
+   ],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 1.013548473129049,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 1.0146390099544078
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 1.0146503150463104
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 1.0146579639986157
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 1.0146650250535458
+    }
+   ]
+  }
+ },
+ "refill_confirmed": {
+  "status": 200,
+  "body": {
+   "enabled": true,
+   "revision": 5,
+   "state": "active",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "apply",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": 1792844424.582449,
+   "last_confirmed_age_seconds": 4.291534423828125e-06,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [
+    12
+   ],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [
+    {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "active",
+     "message": null,
+     "stale": false,
+     "confirmed_at": 1792844424.582449,
+     "last_confirmed_age_seconds": 4.291534423828125e-06
+    }
+   ],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 0.654993963195011,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.655745622003451
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 0.6557548001874238
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.6557600491214544
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.6557644042186439
+    }
+   ]
+  }
+ },
+ "refill_quiet": {
+  "status": 200,
+  "body": {
+   "enabled": true,
+   "revision": 5,
+   "state": "pending",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "apply",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": true,
+   "confirmed_at": 1792844424.582449,
+   "last_confirmed_age_seconds": 36.052279472351074,
+   "writes_qualified": true,
+   "printer_auto_refill": null,
+   "reported_backup_masks": [
+    12
+   ],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [
+    {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "pending",
+     "message": null,
+     "stale": true,
+     "confirmed_at": 1792844424.582449,
+     "last_confirmed_age_seconds": 36.052279472351074
+    }
+   ],
+   "eligibility_fresh": false,
+   "eligibility_age_seconds": 36.70794506301172,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": []
+  }
+ },
+ "refill_back": {
+  "status": 200,
+  "body": {
+   "enabled": true,
+   "revision": 5,
+   "state": "active",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "apply",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": 1792844465.6525962,
+   "last_confirmed_age_seconds": 5.0067901611328125e-06,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [
+    12
+   ],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [
+    {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "active",
+     "message": null,
+     "stale": false,
+     "confirmed_at": 1792844465.6525962,
+     "last_confirmed_age_seconds": 5.0067901611328125e-06
+    }
+   ],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 2.6463557509705424,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 2.647513962117955
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 2.647567322012037
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 2.64757765410468
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 2.6475858550984412
+    }
+   ]
+  }
+ },
+ "refill_after_override": {
+  "status": 200,
+  "body": {
+   "enabled": true,
+   "revision": 5,
+   "state": "active",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "apply",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "owned",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": 1792844469.7248037,
+   "last_confirmed_age_seconds": 5.4836273193359375e-06,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [
+    12
+   ],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [
+    {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "active",
+     "message": null,
+     "stale": false,
+     "confirmed_at": 1792844469.7248037,
+     "last_confirmed_age_seconds": 5.4836273193359375e-06
+    }
+   ],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 0.7171312989667058,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.7195735010318458
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 0.7195968281012028
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.7196099539287388
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.719619408948347
+    }
+   ]
+  }
+ },
+ "delete_backup": {
+  "status": 200,
+  "body": {
+   "enabled": false,
+   "revision": 10,
+   "state": "disabled",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "restored",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "restore",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "restored",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": null,
+   "last_confirmed_age_seconds": null,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [
+    12
+   ],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 0.010641968809068203,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.012325774878263474
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 0.01233820989727974
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.012347156880423427
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG02",
+      "tray_color": "161616FF",
+      "nozzle_temp_min": 220,
+      "nozzle_temp_max": 270,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 0.012356046820059419
+    }
+   ]
+  }
+ },
+ "refill_after_delete": {
+  "status": 200,
+  "body": {
+   "enabled": false,
+   "revision": 10,
+   "state": "disabled",
+   "steps": [
+    {
+     "anchor": true,
+     "before": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "changes": [],
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "state": "restored",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 2,
+     "writes": false
+    },
+    {
+     "anchor": false,
+     "before": {
+      "nozzle_temp_max": 270,
+      "nozzle_temp_min": 220,
+      "tray_color": "161616FF",
+      "tray_info_idx": "GFG02",
+      "tray_type": "PETG"
+     },
+     "changes": [
+      {
+       "after": "GFG99",
+       "before": "GFG02",
+       "field": "tray_info_idx"
+      },
+      {
+       "after": 230,
+       "before": 220,
+       "field": "nozzle_temp_min"
+      },
+      {
+       "after": 260,
+       "before": 270,
+       "field": "nozzle_temp_max"
+      },
+      {
+       "after": "FFFFFFFF",
+       "before": "161616FF",
+       "field": "tray_color"
+      }
+     ],
+     "direction": "restore",
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "state": "restored",
+     "tagged": false,
+     "target": {
+      "nozzle_temp_max": 260,
+      "nozzle_temp_min": 230,
+      "tray_color": "FFFFFFFF",
+      "tray_info_idx": "GFG99",
+      "tray_type": "PETG"
+     },
+     "wire": 3,
+     "writes": true
+    }
+   ],
+   "stale": false,
+   "confirmed_at": null,
+   "last_confirmed_age_seconds": null,
+   "writes_qualified": true,
+   "printer_auto_refill": true,
+   "reported_backup_masks": [],
+   "provider_id": "234ce3c1-019a-4530-b55d-9b319ba6a6c7",
+   "last_reported_auto_refill": true,
+   "printer_connected": true,
+   "backups": [],
+   "eligibility_fresh": true,
+   "eligibility_age_seconds": 1.7588384428527206,
+   "qualification_issue": null,
+   "execution_qualified": true,
+   "slots": [
+    {
+     "wire_slot": 0,
+     "declaration": {
+      "tray_info_idx": "GFL99",
+      "tray_color": "FF0000FF",
+      "nozzle_temp_min": 190,
+      "nozzle_temp_max": 240,
+      "tray_type": "PLA"
+     },
+     "source_generation": "cac6fdac539947898d2f03348278e95f",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 1.7600872179027647
+    },
+    {
+     "wire_slot": 1,
+     "declaration": {
+      "tray_info_idx": "GFG01",
+      "tray_color": "8B5A2BFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "c7e05cc7e0684c3686d24dbeec01a330",
+     "editable": false,
+     "tagged": true,
+     "available": true,
+     "age_seconds": 1.760099833831191
+    },
+    {
+     "wire_slot": 2,
+     "declaration": {
+      "tray_info_idx": "GFG99",
+      "tray_color": "FFFFFFFF",
+      "nozzle_temp_min": 230,
+      "nozzle_temp_max": 260,
+      "tray_type": "PETG"
+     },
+     "source_generation": "d787b649f40b4f9eb3b9e401cdaa003d",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 1.760122227948159
+    },
+    {
+     "wire_slot": 3,
+     "declaration": {
+      "tray_info_idx": "GFG02",
+      "tray_color": "161616FF",
+      "nozzle_temp_min": 220,
+      "nozzle_temp_max": 270,
+      "tray_type": "PETG"
+     },
+     "source_generation": "65b44ef8ff4f48d2835fe2486fdd2f52",
+     "editable": true,
+     "tagged": false,
+     "available": true,
+     "age_seconds": 1.7601320559624583
+    }
+   ]
+  }
+ },
+ "raw_refused_same_material": {
+  "status": 409,
+  "body": {
+   "error": "slot_in_use",
+   "message": "Slot 3 holds spool #8 and is part of the slot 3 \u2192 slot 4 backup.",
+   "likely_cause": "slot_assigned_and_in_refill",
+   "remediation_hint": "Remove the backup first; it puts both slots back. Writing now makes the backup need you.",
+   "context": {
+    "printer_id": "00M00A000000000",
+    "wire_slot": 2,
+    "spool_id": 8,
+    "refill": {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "active"
+    },
+    "assignment_kept": true,
+    "override_field": "override"
+   }
+  }
+ },
+ "raw_refused_new_material": {
+  "status": 409,
+  "body": {
+   "error": "slot_in_use",
+   "message": "Slot 3 holds spool #8 and is part of the slot 3 \u2192 slot 4 backup.",
+   "likely_cause": "slot_assigned_and_in_refill",
+   "remediation_hint": "Remove the backup first; it puts both slots back. Writing now makes the backup need you.",
+   "context": {
+    "printer_id": "00M00A000000000",
+    "wire_slot": 2,
+    "spool_id": 8,
+    "refill": {
+     "from_wire": 2,
+     "to_wire": 3,
+     "state": "active"
+    },
+    "assignment_kept": false,
+    "override_field": "override"
+   }
+  }
+ },
+ "raw_unassigned_slot": {
+  "status": 200,
+  "body": {
+   "sent": {
+    "print": {
+     "command": "ams_filament_setting",
+     "sequence_id": "be4e060026e04a538d0dd9babc734e1b",
+     "ams_id": 0,
+     "tray_id": 0,
+     "tray_info_idx": "GFL99",
+     "tray_color": "FF0000FF",
+     "nozzle_temp_min": 190,
+     "nozzle_temp_max": 240,
+     "tray_type": "PLA"
+    }
+   },
+   "confirmation": "pending"
+  }
+ },
+ "raw_override": {
+  "status": 200,
+  "body": {
+   "sent": {
+    "print": {
+     "command": "ams_filament_setting",
+     "sequence_id": "3d0c07eba4dd435194ed35841d70cbd5",
+     "ams_id": 0,
+     "tray_id": 2,
+     "tray_info_idx": "GFG99",
+     "tray_color": "FFFFFFFF",
+     "nozzle_temp_min": 230,
+     "nozzle_temp_max": 260,
+     "tray_type": "PETG"
+    }
+   },
+   "confirmation": "pending",
+   "guard": {
+    "overridden": true,
+    "assignment_kept": true,
+    "refill_state_expected": "needs_attention"
+   }
+  }
+ }
+}

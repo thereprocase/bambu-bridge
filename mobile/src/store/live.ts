@@ -13,6 +13,7 @@
  */
 
 import { create } from "zustand";
+import { autoRefillNotices, type AutoRefillNotice } from "../lib/autoRefill";
 
 import { qaLog } from "../lib/qalog";
 import { applyDelta, LiveConnection, LiveMessage, LiveStatus } from "../ws/live";
@@ -31,6 +32,7 @@ export interface LiveEvent {
 }
 
 interface PrinterLive {
+  refills: AutoRefillNotice[];
   snapshot: Record<string, unknown> | null;
   status: LiveStatus;
   statusDetail?: string;
@@ -47,6 +49,7 @@ interface LiveStore {
 }
 
 const empty = (): PrinterLive => ({
+  refills: [],
   snapshot: null,
   status: "closed",
   lastEvent: null,
@@ -148,7 +151,8 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
           return {
             printers: {
               ...s.printers,
-              [printerId]: { ...prev, snapshot, lastEvent, eventLog },
+              [printerId]: { ...prev, snapshot, lastEvent, eventLog,
+                refills: autoRefillNotices(snapshot, prev.refills, prev.snapshot) },
             },
           };
         });

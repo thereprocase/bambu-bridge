@@ -19,6 +19,7 @@
  * proxy logs that record the request path.
  */
 
+import { recordClockSample } from "../lib/clockSync";
 import { qaLog } from "../lib/qalog";
 import { PairedSocket } from "../pairing/native";
 import { notifyRequestFailed, notifyRequestSucceeded, resolveBaseUrl, sameOrigin } from "../api/endpoint";
@@ -30,6 +31,7 @@ export type LiveMessage =
   | { type: "delta"; data: Record<string, unknown> }
   | { type: "event"; event: string; data: Record<string, unknown> }
   | { type: "hello"; protocol_version: number; printer_id: string }
+  | { type: "clock"; t0: number; t1: number; t2?: number }
   | { type: "ping" };
 
 export type LiveStatus =
@@ -52,6 +54,7 @@ export class LiveConnection {
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   private incomingTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private probeTimers: ReturnType<typeof setTimeout>[] = [];
 
   constructor(private printerId: string, private opts: LiveOpts) {}
 
@@ -66,6 +69,8 @@ export class LiveConnection {
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
     if (this.incomingTimer) clearTimeout(this.incomingTimer);
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    this.probeTimers.forEach(clearTimeout);
+    this.probeTimers = [];
     this.reconnectTimer = this.snapshotTimer = this.incomingTimer = this.keepaliveTimer = null;
   }
 
@@ -129,9 +134,18 @@ export class LiveConnection {
       if (this.incomingTimer) clearTimeout(this.incomingTimer);
       this.incomingTimer = setTimeout(() => expire("incoming_timeout"), 65_000);
     };
+    // NTP-style clock probe (see lib/clockSync): the bridge echoes t0 with its
+    // own time. Older bridges ignore the frame; the app then keeps judging
+    // freshness by receipt time.
+    const probeClock = () => {
+      if (current() && socket.readyState === WebSocket.OPEN) {
+        try { socket.send(JSON.stringify({ type: "clock", t0: Date.now() })); } catch { /* close drives retry */ }
+      }
+    };
     const pong = () => {
       if (current() && socket.readyState === WebSocket.OPEN) {
         try { socket.send(JSON.stringify({ type: "pong" })); } catch { /* close drives retry */ }
+        probeClock();
       }
     };
     this.snapshotTimer = setTimeout(() => {
@@ -153,6 +167,13 @@ export class LiveConnection {
       try { msg = JSON.parse(String(ev.data)); } catch { return; }
       if (!msg || typeof msg !== "object" || Array.isArray(msg)) return;
       if (msg.type === "ping") { pong(); armIncomingWatchdog(); return; }
+      if (msg.type === "clock") {
+        if (typeof msg.t0 === "number" && typeof msg.t1 === "number") {
+          recordClockSample(this.printerId, msg.t0, msg.t1, Date.now(),
+            typeof msg.t2 === "number" ? msg.t2 : msg.t1);
+        }
+        return;
+      }
       if (msg.type === "hello") {
         if (msg.protocol_version !== 1) {
           this.stop();
@@ -164,6 +185,10 @@ export class LiveConnection {
         if (!msg.data || typeof msg.data !== "object" || Array.isArray(msg.data)) return;
         if (msg.type === "delta" && !gotSnapshot) return;
         if (msg.type === "snapshot") {
+          if (!gotSnapshot) {
+            // A short burst gives a tight estimate quickly; pongs refresh it.
+            this.probeTimers = [0, 1_000, 2_500].map((ms) => setTimeout(probeClock, ms));
+          }
           gotSnapshot = true;
           this.attempt = 0;
           if (this.snapshotTimer) clearTimeout(this.snapshotTimer);

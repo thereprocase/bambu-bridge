@@ -13,12 +13,14 @@ import { Link, Redirect, Tabs } from "expo-router";
 import { useEffect } from "react";
 import { Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { inventoryStatus } from "../../src/api/inventory";
 import { ConnectionStrip } from "../../src/components/ConnectionStrip";
 
 import { ReachabilityBanner } from "../../src/components/ReachabilityBanner";
 import { useBridgeStore } from "../../src/store/bridge";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
+import { useReviewStore } from "../../src/store/review";
 import { useTheme } from "../../src/theme/ThemeProvider";
 
 export default function TabsLayout() {
@@ -41,6 +43,23 @@ export default function TabsLayout() {
     ensure(selectedId);
     return () => close(selectedId);
   }, [selectedId, baseUrl, baseUrlLan, bearer, ensure, close]);
+
+  // Prints waiting for the owner show as a badge on the Filament tab, read
+  // once a minute so the count is there before the tab is ever opened.
+  const reviewCount = useReviewStore((s) => s.count);
+  const setReviewCount = useReviewStore((s) => s.setCount);
+  useEffect(() => {
+    if (!baseUrl || !bearer) return;
+    let active = true;
+    const read = () => {
+      void inventoryStatus()
+        .then((s) => { if (active) setReviewCount(s.review_count ?? 0); })
+        .catch(() => undefined);
+    };
+    read();
+    const timer = setInterval(read, 60_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [baseUrl, bearer, setReviewCount]);
 
   if (!baseUrl || !bearer) return <Redirect href="/settings" />;
 
@@ -104,6 +123,7 @@ export default function TabsLayout() {
         name="filament"
         options={{
           title: "Filament",
+          tabBarBadge: reviewCount > 0 ? reviewCount : undefined,
           tabBarIcon: ({ color }) => <Ionicons name="layers-outline" color={color} size={22} />,
         }}
       />

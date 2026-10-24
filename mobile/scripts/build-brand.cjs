@@ -1,5 +1,6 @@
 // Deterministic raster exports from repository-owned vectors.
 // Requires rsvg-convert and ImageMagick. Runtime identifiers and signing stay unchanged.
+/* global __dirname */
 const fs = require('fs');
 const path = require('path');
 const {execFileSync} = require('child_process');

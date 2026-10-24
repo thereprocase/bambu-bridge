@@ -4,7 +4,7 @@
  * Risk tiers follow the server's P1S-CONTROL-MATRIX:
  *   GREEN  — XCam toggles, get_version, RFID re-read
  *   YELLOW — print_option flags, AMS filament/drying/user settings,
- *            skip_objects, set_accessories (nozzle type/diameter),
+ *            set_accessories (nozzle type/diameter),
  *            calibration (P1S-confirmed bits only)
  *   RED    — extrude/retract, steppers-off   → always confirm dialog
  *   BLACK  — raw G-code console             → visible but gated (403 path)
@@ -15,7 +15,7 @@
  *                    nozzle_blob, sound
  *   3. AMS ops     — filament setting (color/material/temps for untagged),
  *                    RFID re-read, drying, user settings
- *   4. Skip obj    — integer list entry + send
+ *   (Skip objects lives on the Status tab, as Orca's device panel has it.)
  *   5. Calibration — P1S-confirmed options (1/2/4/7 bitmask)
  *   6. Nozzle      — set_accessories nozzle type + diameter
  *   7. Firmware    — get_version info card (reads from live snapshot)
@@ -27,7 +27,7 @@
 import { CapabilityCard, CapabilityList } from "../../src/components/CapabilityCard";
 import { printerCapabilities } from "../../src/lib/capabilities";
 import { Alert, ScrollView, Text, TextInput, View } from "react-native";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   amsDrying,
@@ -40,11 +40,14 @@ import {
   setNozzle,
   setPrintOption,
   setXcam,
-  skipObjects,
   steppersOff,
   sendRawGcode,
+  type AmsFilamentSettingBody,
 } from "../../src/api/control";
 import { BridgeError } from "../../src/api/errors";
+import { slotGuard, slotWriteDone, type SlotGuard } from "../../src/lib/slotGuard";
+import { KEEP_PROFILE, KNOWN_PROFILES, NO_PROFILE, profileLabel, profileNote, profileToSend, reportedDeclaration } from "../../src/lib/slotDeclaration";
+import { ChoiceTiles } from "../../src/components/ChoiceTiles";
 import { Button } from "../../src/components/Button";
 import { Field } from "../../src/components/Field";
 import { Surface } from "../../src/components/Surface";
@@ -95,6 +98,31 @@ export default function AdvancedScreen() {
   const [fsMaterial, setFsMaterial] = useState("PLA");
   const [fsTempMin, setFsTempMin] = useState("190");
   const [fsTempMax, setFsTempMax] = useState("240");
+  const [fsProfile, setFsProfile] = useState(KEEP_PROFILE);
+  // What the chosen slot declares now. The form starts from it once per slot,
+  // so a live update never overwrites what the owner is typing.
+  const fsCurrent = reportedDeclaration(live?.snapshot, Number(fsAmsId), Number(fsTrayId));
+  const fsPrefilled = useRef<string | null>(null);
+  const fsSlotKey = `${selectedId}:${fsAmsId}:${fsTrayId}`;
+  // A new slot starts at "keep"; a report arriving later does not undo a pick.
+  useEffect(() => { setFsProfile(KEEP_PROFILE); }, [fsSlotKey]);
+  useEffect(() => {
+    if (fsPrefilled.current === fsSlotKey || !fsCurrent) return;
+    fsPrefilled.current = fsSlotKey;
+    setFsColor(fsCurrent.tray_color);
+    setFsMaterial(fsCurrent.tray_type);
+    setFsTempMin(String(fsCurrent.nozzle_temp_min));
+    setFsTempMax(String(fsCurrent.nozzle_temp_max));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fsSlotKey, !!fsCurrent]);
+  const fsProfileCode = profileToSend(fsProfile, fsCurrent);
+  // The bridge's refusal for a slot in use, kept on screen with the write it refused.
+  const [fsGuard, setFsGuard] = useState<{ guard: SlotGuard; body: AmsFilamentSettingBody } | null>(null);
+  const [fsBusy, setFsBusy] = useState(false);
+  const fsSending = useRef(false);
+  // "Write anyway" sends exactly what was refused; an edit after the refusal
+  // starts over, so it can never send values the owner has not seen refused.
+  useEffect(() => { setFsGuard(null); }, [fsAmsId, fsTrayId, fsColor, fsMaterial, fsTempMin, fsTempMax, fsProfile, selectedId]);
 
   // ── AMS RFID ──────────────────────────────────────────────────────────────
   const [rfidAmsId, setRfidAmsId] = useState("0");
@@ -109,9 +137,6 @@ export default function AdvancedScreen() {
 
   // ── AMS user setting ──────────────────────────────────────────────────────
   const [usAmsId, setUsAmsId] = useState("0");
-
-  // ── Skip objects ──────────────────────────────────────────────────────────
-  const [skipInput, setSkipInput] = useState("");
 
   // ── Calibration ───────────────────────────────────────────────────────────
 
@@ -140,10 +165,14 @@ export default function AdvancedScreen() {
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
+  /**
+   * Send, then toast `okMsg`. The bridge answers once the command is out
+   * ("confirmation": "pending"), so each message says "sent", never done.
+   */
   function safeCall(fn: () => Promise<unknown>, okMsg: string, after?: () => void) {
     fn()
       .then(() => {
-        showToast("Command sent", { severity: "success" });
+        showToast(okMsg, { severity: "success" });
         after?.();
       })
       .catch((e) => {
@@ -156,6 +185,36 @@ export default function AdvancedScreen() {
           showToast(String(e), { severity: "danger" });
         }
       });
+  }
+
+  /**
+   * The raw slot write. A slot holding a spool or a backup comes back 409;
+   * the reason stays under the button with "Write anyway" rather than in a
+   * toast that is gone before it is read.
+   */
+  async function writeFilament(body: AmsFilamentSettingBody) {
+    // A ref, not fsBusy: two taps inside one render both see fsBusy false.
+    if (!selectedId || fsSending.current) return;
+    fsSending.current = true;
+    setFsBusy(true);
+    try {
+      const result = await amsFilamentSetting(selectedId, body);
+      setFsGuard(null);
+      showToast(slotWriteDone(result.guard), { severity: result.guard?.overridden ? "warn" : "success" });
+    } catch (e) {
+      const guard = e instanceof BridgeError && e.status === 409 ? slotGuard(e.envelope, body) : null;
+      if (guard && !body.override) {
+        setFsGuard({ guard, body });
+      } else if (e instanceof BridgeError) {
+        const hint = e.envelope.remediation_hint ? `\n${e.envelope.remediation_hint}` : "";
+        showToast(`${e.envelope.message}${hint}`, { severity: "danger", ttlMs: 6000 });
+      } else {
+        showToast(String(e), { severity: "danger" });
+      }
+    } finally {
+      fsSending.current = false;
+      setFsBusy(false);
+    }
   }
 
   /** Confirm dialog for RED-tier actions. */
@@ -204,7 +263,7 @@ export default function AdvancedScreen() {
               variant="secondary"
               onPress={() => safeCall(
                 () => setXcam(selectedId, name, true, xcamHalt),
-                `${label} enabled`,
+                `${label}: enable sent`,
               )}
             />
             <Button
@@ -212,7 +271,7 @@ export default function AdvancedScreen() {
               variant="secondary"
               onPress={() => safeCall(
                 () => setXcam(selectedId, name, false, false),
-                `${label} disabled`,
+                `${label}: disable sent`,
               )}
             />
           </View>
@@ -243,7 +302,8 @@ export default function AdvancedScreen() {
         <Text style={[type.h2, { color: c.text }]}>AMS — filament setting</Text>
         <Text style={[type.small, { color: c.muted }]}>
           Override the filament profile for an untagged spool. ams_id and
-          tray_id are 0-based. Color is 8-char RRGGBBAA hex.
+          tray_id are 0-based. Color is 8-char RRGGBBAA hex. The fields start
+          from what the slot declares now; the printer replaces all of them.
         </Text>
         <View style={{ flexDirection: "row", gap: space.sm }}>
           <View style={{ flex: 1 }}>
@@ -263,21 +323,55 @@ export default function AdvancedScreen() {
             <Field label="Nozzle temp max" value={fsTempMax} onChangeText={setFsTempMax} keyboardType="number-pad" />
           </View>
         </View>
+        <View style={{ gap: space.xs }}>
+          <Text style={[type.small, { color: c.muted }]}>Filament profile (tray_info_idx)</Text>
+          <ChoiceTiles
+            label="Filament profile"
+            value={fsProfile}
+            onSelect={setFsProfile}
+            options={[
+              { id: KEEP_PROFILE, topLabel: "Keep", label: fsCurrent?.tray_info_idx || (fsCurrent?.tray_info_idx === "" ? "none" : "?"),
+                accessibilityLabel: profileLabel(KEEP_PROFILE, fsCurrent) },
+              ...KNOWN_PROFILES.map((p) => ({ id: p.code, topLabel: p.label.replace("Generic ", ""), label: p.code, accessibilityLabel: profileLabel(p.code, fsCurrent) })),
+              { id: NO_PROFILE, topLabel: "None", label: "manual", accessibilityLabel: profileLabel(NO_PROFILE, fsCurrent) },
+            ]}
+          />
+          <Text style={[type.small, { color: fsProfileCode == null ? c.danger : c.muted }]}>
+            {profileNote(fsProfile, fsCurrent)}
+          </Text>
+        </View>
         <Button
           label="Set filament"
-          onPress={() => safeCall(
-            () => amsFilamentSetting(selectedId, {
-              ams_id: Number(fsAmsId),
-              tray_id: Number(fsTrayId),
-              tray_info_idx: "",
-              tray_color: fsColor,
-              nozzle_temp_min: Number(fsTempMin),
-              nozzle_temp_max: Number(fsTempMax),
-              tray_type: fsMaterial,
-            }),
-            "Filament setting sent",
-          )}
+          disabled={fsBusy || fsProfileCode == null}
+          loading={fsBusy && !fsGuard}
+          onPress={() => void writeFilament({
+            ams_id: Number(fsAmsId),
+            tray_id: Number(fsTrayId),
+            tray_info_idx: fsProfileCode ?? "",
+            tray_color: fsColor,
+            nozzle_temp_min: Number(fsTempMin),
+            nozzle_temp_max: Number(fsTempMax),
+            tray_type: fsMaterial,
+          })}
         />
+        {fsGuard && (
+          <View accessibilityRole="alert" style={{ gap: space.sm }}>
+            <Text style={[type.h2, { color: c.text }]}>{fsGuard.guard.title}</Text>
+            {fsGuard.guard.lines.map((line) => (
+              <Text key={line} style={[type.body, { color: c.text }]}>{line}</Text>
+            ))}
+            <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
+              <Button
+                label={fsGuard.guard.overrideLabel}
+                variant="danger"
+                disabled={fsBusy}
+                loading={fsBusy}
+                onPress={() => void writeFilament({ ...fsGuard.body, override: true })}
+              />
+              <Button label="Cancel" variant="secondary" disabled={fsBusy} onPress={() => setFsGuard(null)} />
+            </View>
+          </View>
+        )}
 
       </Surface>
       </CapabilityCard>
@@ -300,7 +394,7 @@ export default function AdvancedScreen() {
           label="Re-read RFID"
           onPress={() => safeCall(
             () => amsRfidRead(selectedId, Number(rfidAmsId), Number(rfidSlotId)),
-            "RFID re-read triggered",
+            "RFID re-read sent",
           )}
         />
 
@@ -340,7 +434,7 @@ export default function AdvancedScreen() {
               duration: Number(dryDuration),
               humidity: Number(dryHumidity),
             }),
-            "Drying started",
+            "Drying start sent",
           )}
         />
 
@@ -369,41 +463,6 @@ export default function AdvancedScreen() {
       </Surface>
       </CapabilityCard>
 
-      {/* 4. Skip objects ---------------------------------------------------- */}
-      <CapabilityCard title="Skip objects" availability={capabilities.get("skipObjects")}>
-      <Surface padded style={{ gap: space.md }}>
-        <Text style={[type.h2, { color: c.text }]}>Skip objects</Text>
-        <Text style={[type.small, { color: c.muted }]}>
-          Cancel specific objects mid-print without stopping the job. Enter
-          comma-separated Bambu object IDs from the slice (integers).
-        </Text>
-        <Field
-          label="Object IDs (comma-separated)"
-          value={skipInput}
-          onChangeText={setSkipInput}
-          keyboardType="number-pad"
-          placeholder="0,1,3"
-        />
-        <Button
-          label="Skip objects"
-          disabled={!skipInput.trim()}
-          onPress={() => {
-            const tokens = skipInput.split(",").map((s) => s.trim());
-            const ids = tokens.map(Number);
-            if (!tokens.every((s) => /^\d+$/.test(s)) || !ids.every(Number.isSafeInteger)) {
-              showToast("Enter at least one valid integer ID", { severity: "warn" });
-              return;
-            }
-            safeCall(
-              () => skipObjects(selectedId, ids),
-              `Skipping ${ids.length} object(s)`,
-              () => setSkipInput(""),
-            );
-          }}
-        />
-      </Surface>
-      </CapabilityCard>
-
       {/* 5. Calibration ----------------------------------------------------- */}
       <CapabilityCard title="Calibration" availability={capabilities.get("calibration")}>
       <Surface padded style={{ gap: space.md }}>
@@ -426,7 +485,7 @@ export default function AdvancedScreen() {
                 onPress={() => {
                   safeCall(
                     () => calibrate(selectedId, opt),
-                    `Calibration ${labels[opt]} started`,
+                    `Calibration ${labels[opt]} sent`,
                   );
                 }}
               />
@@ -441,8 +500,8 @@ export default function AdvancedScreen() {
       <Surface padded style={{ gap: space.md }}>
         <Text style={[type.h2, { color: c.text }]}>Nozzle type & diameter</Text>
         <Text style={[type.small, { color: c.muted }]}>
-          Tell the bridge which nozzle is installed. Hardened steel unlocks
-          the 300 °C temperature clamp; stainless is clamped at 280 °C.
+          Tell the printer which nozzle is installed. The nozzle limit stays
+          300 °C (or the range the printer reports), as in OrcaSlicer.
         </Text>
 
         <Text style={[type.small, { color: c.muted }]}>Nozzle type</Text>
@@ -475,7 +534,7 @@ export default function AdvancedScreen() {
           label={`Set: ${nozzleType === "hardened_steel" ? "Hardened" : "Stainless"} ${nozzleDiam} mm`}
           onPress={() => safeCall(
             () => setNozzle(selectedId, nozzleType, nozzleDiam),
-            `Nozzle set: ${nozzleType} ${nozzleDiam} mm`,
+            `Nozzle setting sent: ${nozzleType} ${nozzleDiam} mm`,
           )}
         />
       </Surface>
@@ -546,7 +605,7 @@ export default function AdvancedScreen() {
                   `Extrude ${d} mm at ${feedrate} mm/min. The nozzle must be hot (≥170 °C) and the printer idle or paused.`,
                   `Extrude ${d} mm`,
                   () => extrude(selectedId, d, feedrate),
-                  `Extruded ${d} mm`,
+                  `Extrude ${d} mm sent`,
                 )
               }
             />
@@ -562,7 +621,7 @@ export default function AdvancedScreen() {
                   `Retract ${d} mm at ${feedrate} mm/min.`,
                   `Retract ${d} mm`,
                   () => extrude(selectedId, -d, feedrate),
-                  `Retracted ${d} mm`,
+                  `Retract ${d} mm sent`,
                 )
               }
             />
@@ -589,7 +648,7 @@ export default function AdvancedScreen() {
               "All motors will de-energise. The toolhead and bed will move freely until you home again.",
               "Disable",
               () => steppersOff(selectedId),
-              "Steppers disabled",
+              "Steppers off sent",
             )
           }
         />

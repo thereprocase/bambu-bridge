@@ -7,20 +7,25 @@ import { printerCapabilities } from "../../src/lib/capabilities";
  *   - POST /jobs — submit
  *
  * AMS slot picker is shown only when the printer has loaded slots; pick
- * one or "auto" (no `ams_mapping` → printer uses currently-loaded).
+ * one or External (no `ams_mapping` → external spool). The pick is sent as
+ * Orca's ams_mapping, a 0-based tray per project filament, so this tab
+ * covers single-filament projects; "Slot N" is only the label.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 
 import { BridgeError } from "../../src/api/errors";
 import { listFiles, type RemoteFile } from "../../src/api/files";
 import { qaLog } from "../../src/lib/qalog";
+import { inventorySources, inventoryStatus, type InventorySource, type InventoryStatus } from "../../src/api/inventory";
 import { canStartStoredPrint, submitPrint } from "../../src/api/jobs";
 import { Button } from "../../src/components/Button";
 import { ChoiceTiles } from "../../src/components/ChoiceTiles";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
+import { EXTERNAL_WIRE, slotViews, unassignedPick } from "../../src/lib/slotInventory";
 import { viewOf } from "../../src/lib/snapshot";
 import { printerStateLabels } from "../../src/lib/printerState";
 import type { PrinterSnapshot } from "../../src/api/types";
@@ -57,6 +62,32 @@ export default function PrintScreen() {
   const submissionActive = useRef(false);
   const canPrint = facts.live && canStartStoredPrint(live?.snapshot ?? null, true);
   const [pickedSlot, setPickedSlot] = useState<number | null>(null);
+  const router = useRouter();
+
+  // Which spool each slot carries, so a print from a slot with no spool is
+  // flagged before it starts instead of becoming a card afterwards.
+  const [inventory, setInventory] = useState<{ status: InventoryStatus; sources: InventorySource[] } | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      if (!selectedId) return;
+      void (async () => {
+        try {
+          const status = await inventoryStatus();
+          if (!(status.configured && status.api_version === 2)) { if (active) setInventory(null); return; }
+          const sources = await inventorySources(selectedId);
+          if (active) setInventory({ status, sources });
+        } catch {
+          if (active) setInventory(null); // the tiles still work; the warning just stays away
+        }
+      })();
+      return () => { active = false; };
+    }, [selectedId]),
+  );
+  const warning =
+    inventory && selectedId
+      ? unassignedPick(pickedSlot == null ? EXTERNAL_WIRE : pickedSlot - 1, slotViews(selectedId, inventory.sources, inventory.status, []))
+      : null;
 
   async function refresh() {
     if (!selectedId) return;
@@ -101,7 +132,7 @@ export default function PrintScreen() {
       const res = await submitPrint({
         printer_id: selectedId,
         filename: f.name,
-        ams_mapping: pickedSlot != null ? [pickedSlot] : undefined,
+        ams_mapping: pickedSlot != null ? [pickedSlot - 1] : undefined, // physical slot N = tray N-1
       });
       showToast(`Job ${res.job_id} submitted`, { severity: "success" });
     } catch (e) {
@@ -145,6 +176,16 @@ export default function PrintScreen() {
                 topLabel: "AMS", color: slot.color ?? undefined, disabled: slot.empty || slot.physicalSlot > 4,
                 accessibilityLabel: `AMS slot ${slot.physicalSlot}${slot.empty ? ", empty" : ""}` })),
             ]} />
+          {warning && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexWrap: "wrap" }}>
+              <Text style={[type.small, { color: c.warn, flex: 1 }]}>{warning.text}</Text>
+              <Button
+                label="Assign"
+                variant="secondary"
+                onPress={() => router.push({ pathname: "/assign-spool", params: { printer: selectedId, source: warning.source.source } })}
+              />
+            </View>
+          )}
         </Surface>
       )}
 

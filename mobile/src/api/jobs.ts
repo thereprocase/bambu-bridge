@@ -1,5 +1,5 @@
 import { request } from "./client";
-import { Job, QueueItem, Spool } from "./types";
+import { Job, QueueItem } from "./types";
 
 export function listJobs(params?: { printer_id?: string; limit?: number }) {
   return request<Job[]>("/jobs", { query: params });
@@ -9,7 +9,9 @@ export function listJobs(params?: { printer_id?: string; limit?: number }) {
 export async function submitPrint(body: {
   printer_id: string;
   filename: string;
-  ams_mapping?: number[]; // Physical slots 1–4; the bridge converts to protocol indices.
+  // Orca's ams_mapping, forwarded unchanged: one 0-based AMS tray (0 = slot 1)
+  // or -1 (unused) per project filament.
+  ams_mapping?: number[];
 }) {
   const item = await request<QueueItem>(`/printers/${encodeURIComponent(body.printer_id)}/queue`, {
     method: "POST",
@@ -44,12 +46,12 @@ export function listQueue(printerId: string) {
 
 export function enqueue(
   printerId: string,
-  body: { filename: string; physical_slot?: number },
+  body: { filename: string; tray?: number }, // 0-based AMS tray, single-filament file
 ) {
   return request<QueueItem>(`/printers/${printerId}/queue`, {
     method: "POST",
     body: { file_path: `/${body.filename}`, file_name: body.filename,
-      ams_mapping: body.physical_slot == null ? undefined : [body.physical_slot] },
+      ams_mapping: body.tray == null ? undefined : [body.tray] },
   });
 }
 
@@ -57,18 +59,4 @@ export function dequeue(_printerId: string, queueItemId: string) {
   return request<void>(`/queue/${encodeURIComponent(queueItemId)}`, {
     method: "DELETE",
   });
-}
-
-// Spools ----------------------------------------------------------------------
-
-export function listSpools() {
-  return request<Spool[]>("/spools");
-}
-
-export function createSpool(body: Omit<Spool, "id">) {
-  return request<Spool>("/spools", { method: "POST", body });
-}
-
-export function deleteSpool(id: string) {
-  return request<void>(`/spools/${id}`, { method: "DELETE" });
 }

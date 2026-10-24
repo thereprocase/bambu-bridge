@@ -150,3 +150,39 @@ addressed by IP as well as private DNS names. The Android configuration does
 not enforce private IP ranges. Use HTTPS or a trusted VPN across an untrusted
 network. HTTPS uses the system CA store; certificate checks are not disabled.
 See [Android's network security configuration](https://developer.android.com/privacy-and-security/security-config).
+
+## Beta APK staging checks
+
+Use `scripts/stage-beta.py` to stage the phone artifact after building with the
+existing release signer. Supply its public certificate SHA-256 digest, the
+installed baseline version code and the intended beta version. For example:
+
+```sh
+python -B scripts/stage-beta.py \
+  --apk android/app/build/outputs/apk/release/app-release.apk \
+  --build-tools "$ANDROID_HOME/build-tools/36.0.0" \
+  --expected-signer-sha256 "$EXPECTED_RELEASE_CERT_SHA256" \
+  --version 0.21.0-beta.1 \
+  --baseline-version-code 50 \
+  --out /path/to/new-staging-directory
+```
+
+The script verifies the APK signature, existing package identity, exact signer,
+ARM64 architecture and a version code above the installed baseline. All source
+version files must match the artifact, and the source checkout must be clean.
+It creates a new directory exclusively, copies and re-verifies the APK, and
+writes `manifest.json` and `SHA256SUMS`. An interrupted stage retains an
+`.incomplete` marker. Existing staged directories are preserved.
+
+The manifest records the repository HEAD at staging. Build provenance and the
+feature acceptance gates require their separate build/runtime evidence; this
+script does not establish those. It neither publishes nor installs an APK.
+Run the metadata checks with:
+
+```sh
+python -B -m unittest discover -s scripts/tests -p 'test_release_metadata.py'
+```
+
+Keep emulator runtime artifacts separate. An emulator build can use bundled
+release-mode JavaScript with a test-only debug signing override, but that APK
+is a runtime fixture and cannot be staged as the phone beta by this guard.

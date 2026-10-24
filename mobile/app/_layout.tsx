@@ -81,15 +81,16 @@ function Bootstrap() {
         <Stack.Screen name="settings" options={{ title: "Settings", presentation: "modal" }} />
         <Stack.Screen name="add-printer" options={{ title: "Add printer", presentation: "modal" }} />
         <Stack.Screen name="config" options={{ title: "Config", presentation: "modal" }} />
-        <Stack.Screen
-          name="filament-memory"
-          options={{ title: "Slot label", presentation: "modal" }}
-        />
+        <Stack.Screen name="assign-spool" options={{ title: "Assign spool", presentation: "modal" }} />
+        <Stack.Screen name="spool" options={{ title: "Spool", presentation: "modal" }} />
+        <Stack.Screen name="backup" options={{ title: "Backup spool", presentation: "modal" }} />
+        <Stack.Screen name="wrong-spool" options={{ title: "Wrong spool?", presentation: "modal" }} />
         {/* Full-screen (not modal) — the WebGL viewer wants the whole screen
             and the stack back-arrow, matching settings/add-printer chrome.
             Title/header colors are overridden in-screen for the dark canvas. */}
         <Stack.Screen name="viewer" options={{ title: "3D · Live" }} />
         <Stack.Screen name="camera" options={{ title: "Camera" }} />
+        <Stack.Screen name="skip-objects" options={{ title: "Skip Objects" }} />
         <Stack.Screen name="connection" options={{ title: "Check connection" }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       </Stack>
