@@ -1,0 +1,20 @@
+{
+  "upstream_tag": "v2.4.2",
+  "build": "8500fcdc",
+  "appimage_sha256": "d12fb8c8eac1aecd2dfb6377acd48f994f8fa439ed5292fa532dd82880f029fd",
+  "profiles": [
+    {
+      "profile": "profiles/BBL/filament/Polymaker/PolyLite ASA @base.json",
+      "name": "PolyLite ASA @base",
+      "filament_id": "GFB61",
+      "sha256": "494f78ebd7cfd66f65a8ea4f82d22e17d28cd15b7bafe7b8a30d5839a1fa7477"
+    },
+    {
+      "profile": "profiles/BBL/filament/Generic ASA @base.json",
+      "name": "Generic ASA @base",
+      "filament_id": "GFB98",
+      "sha256": "cc46d346741480e549e877bb9d13b92553b570289f9440df4410d33d3a7ebb6b"
+    }
+  ],
+  "note": "Source IDs verified from the unmodified release resources; certificate trust added only for loopback simulator."
+}

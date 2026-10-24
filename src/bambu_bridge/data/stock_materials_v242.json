@@ -1,0 +1,1448 @@
+{
+  "upstream_tag": "v2.4.2",
+  "upstream_build": "8500fcdc",
+  "appimage_sha256": "d12fb8c8eac1aecd2dfb6377acd48f994f8fa439ed5292fa532dd82880f029fd",
+  "verification_scope": "Stock resource identities and inheritance only; client runtime qualification is separate.",
+  "profiles": [
+    {
+      "key": "BETA/BETA ABS @base.json",
+      "name": "BETA ABS",
+      "material_id": "BABB00",
+      "material": "ABS",
+      "resource_sha256": "ab52e1201e8c85e69be64c32fa65e7dca657a161ad7d20fb9df4a459f9c7b7bf",
+      "inheritance_sha256": "ece8ccc3e4177dce79b48e603cc1a895835e869dbc69f150b4e5d9f0dbf7ed89"
+    },
+    {
+      "key": "BETA/BETA ASA @base.json",
+      "name": "BETA ASA",
+      "material_id": "BASB00",
+      "material": "ASA",
+      "resource_sha256": "43835272d79875f7f8e3a06cf5fda5b052260cca8b0ef2660d94eb2e31c35914",
+      "inheritance_sha256": "323343268fac3034a428349f4e6472243a9d2ecb76d491c2035f0f25b69eb613"
+    },
+    {
+      "key": "BETA/BETA HIPS @base.json",
+      "name": "BETA HIPS",
+      "material_id": "BHIB00",
+      "material": "HIPS",
+      "resource_sha256": "69617272272605fe4d2e29edd6fe6ae2de5f07f94a56093ddb002d79d35770c0",
+      "inheritance_sha256": "896b6eda279373198735f6781970a6c998d6b92904a407a2cbaa3317b44f5565"
+    },
+    {
+      "key": "BETA/BETA PAHT-CF @base.json",
+      "name": "BETA PAHT-CF",
+      "material_id": "BPAB00",
+      "material": "PA-CF",
+      "resource_sha256": "080ec806f479bc74c5e66351336bc87c59b24e67c2040c7c91d5ec8eb54c98e4",
+      "inheritance_sha256": "b530c00ac9c0972a00e68fe1e65c0e4ebe9e45ac5a52ab1b0334df3f45c11553"
+    },
+    {
+      "key": "BETA/BETA PEBA 90A @base.json",
+      "name": "BETA PEBA 90A",
+      "material_id": "BPBB00",
+      "material": "TPU",
+      "resource_sha256": "3371476c0d5dc9e1e5c2782e435aef1172c4539e0e45b85ab99317026179ac1e",
+      "inheritance_sha256": "9eb33713d5dd7f9d665d72633d400c7416fb024da369a03b490e1509018256ce"
+    },
+    {
+      "key": "BETA/BETA PETG @base.json",
+      "name": "BETA PETG",
+      "material_id": "BPGB00",
+      "material": "PETG",
+      "resource_sha256": "e0bfd6564adbd806f46040656ea629fc77d8825d36952e39766ba893403e3753",
+      "inheritance_sha256": "781ce49e1c079462f35c49186601a56e540c64778a115661e9bf5d1a190a81ea"
+    },
+    {
+      "key": "BETA/BETA PETG Fluorescence @base.json",
+      "name": "BETA PETG Fluorescence",
+      "material_id": "BPGB02",
+      "material": "PETG",
+      "resource_sha256": "9e4414430fbdfac58633d8f2a9376f516fb0a868778d51764254e16f1d59748b",
+      "inheritance_sha256": "06451a172347ee25e2172c3bb2d0611506759f0c69233c234fe936933c405ef3"
+    },
+    {
+      "key": "BETA/BETA PETG Glitter @base.json",
+      "name": "BETA PETG Glitter",
+      "material_id": "BPGB03",
+      "material": "PETG",
+      "resource_sha256": "0bf9d8df8ad08d21bfa72d1dd6c853fec787b801a1b60f177ddf7be598e29f7e",
+      "inheritance_sha256": "053b7f27e4e8d36adca08ca6124bfa476e0b36f4d951fc4a14065a1815456710"
+    },
+    {
+      "key": "BETA/BETA PETG Glow @base.json",
+      "name": "BETA PETG Glow",
+      "material_id": "BPGB04",
+      "material": "PETG",
+      "resource_sha256": "3b0a0154199439f424141602263f6a40f37e3674fdd4ce387476329ced754704",
+      "inheritance_sha256": "67c7a77391ceda418d3205b810133f6ab0780e610358e64b6a49fe55752ffa9c"
+    },
+    {
+      "key": "BETA/BETA PETG Gradient @base.json",
+      "name": "BETA PETG Gradient",
+      "material_id": "BPGB05",
+      "material": "PETG",
+      "resource_sha256": "5f3cfb08921052162f5857677f33efcc768d9747c16979c59f68b5bcda76a54d",
+      "inheritance_sha256": "c12eb3abb94dab72d6b129a33d9f525742d5c55d967654d2285d97a0ec700b47"
+    },
+    {
+      "key": "BETA/BETA PETG HF @base.json",
+      "name": "BETA PETG HF",
+      "material_id": "BPGB06",
+      "material": "PETG",
+      "resource_sha256": "2b16b3f0889349c515bed11db9f2d19c0d1d67836bc0e1090653c79e312c39d8",
+      "inheritance_sha256": "b01bf89f3e712f527c3119d652afc2d2102239854e7097a8f241515544c2cb1a"
+    },
+    {
+      "key": "BETA/BETA PETG Heat Color Change @base.json",
+      "name": "BETA PETG Heat Color Change",
+      "material_id": "BPGB01",
+      "material": "PETG",
+      "resource_sha256": "fc6e631cfe100fdc8ded466193b5dc5d446d40c0042234f505a9f0f39c49cba5",
+      "inheritance_sha256": "a97e45ae0aacd077fd81715a37915db40dd1ff31a97ef94c7870f48056d943b3"
+    },
+    {
+      "key": "BETA/BETA PETG Marble @base.json",
+      "name": "BETA PETG Marble",
+      "material_id": "BPGB07",
+      "material": "PETG",
+      "resource_sha256": "beb99f4711769a060695b06f62df71e84fb21066a0c86e6cab27345a84b1d61c",
+      "inheritance_sha256": "05481ad11d36ce0e9428c4b1b53c03af8a807d3616e984a38e0806fcc492f35b"
+    },
+    {
+      "key": "BETA/BETA PETG Matte @base.json",
+      "name": "BETA PETG Matte",
+      "material_id": "BPGB08",
+      "material": "PETG",
+      "resource_sha256": "8fcdd95d50d79e068cc2b8d0929d44e152600600e663eee58ca19532934a345e",
+      "inheritance_sha256": "e596aeb1542d0240774f7362175f80bc4528b28ee06f182d8f3a6bae383dd9f9"
+    },
+    {
+      "key": "BETA/BETA PETG Metallic @base.json",
+      "name": "BETA PETG Metallic",
+      "material_id": "BPGB09",
+      "material": "PETG",
+      "resource_sha256": "00dda191966516d1dc058bd90975fb4043e165e8643cb8b70d39290f275eba10",
+      "inheritance_sha256": "eb11f76acca10488c09d34d15c799589615d0f827749e1d70c8349b370e52747"
+    },
+    {
+      "key": "BETA/BETA PETG Transparent @base.json",
+      "name": "BETA PETG Transparent",
+      "material_id": "BPGB10",
+      "material": "PETG",
+      "resource_sha256": "76e1cf8f941dac5bb6ba45aaca4b94485feae477b81dc5093530b69f2bb7079c",
+      "inheritance_sha256": "8d4cd2bce3b34b7aab7f2649238fa1ffd0d271c70d4adaea15bf5058e50689f6"
+    },
+    {
+      "key": "BETA/BETA PETG UV Color Change @base.json",
+      "name": "BETA PETG UV Color Change",
+      "material_id": "BPGB11",
+      "material": "PETG",
+      "resource_sha256": "79da0532e3d877197711fc0a9a40b1748ad306530c31ce201f03c8ed1dcd6b2d",
+      "inheritance_sha256": "97e1310b75351f7b9952b492bda2978ccd9b8e82e045b1fcb12d5a850dababb4"
+    },
+    {
+      "key": "BETA/BETA PETG-CF @base.json",
+      "name": "BETA PETG-CF",
+      "material_id": "BPGB12",
+      "material": "PETG-CF",
+      "resource_sha256": "e251a2851d7115888f43420f1ccd9ed51e56c2f9ea20cab82e8a345904edb529",
+      "inheritance_sha256": "f51cc2ae747bbcde347175f5ab1814da4258ea39ad768a05763911b344f9a73c"
+    },
+    {
+      "key": "BETA/BETA PETG-GF @base.json",
+      "name": "BETA PETG-GF",
+      "material_id": "BPGB13",
+      "material": "PETG-CF",
+      "resource_sha256": "201628b1dd6e4d7b86dc40ca5089619ca9cbd3a25c7190f87a2a178a2bae40f3",
+      "inheritance_sha256": "55f7d40f4c5feb4c9f06760ab74d73687789f96b308181ad91c4a9a4a53c9267"
+    },
+    {
+      "key": "BETA/BETA PLA Basic @base.json",
+      "name": "BETA PLA Basic",
+      "material_id": "BPLB00",
+      "material": "PLA",
+      "resource_sha256": "6899a3c272fbea9bc00652105526da084a4d4a1a2e1efa40bbab4d8cbf7f32a8",
+      "inheritance_sha256": "b2e098bbf5507fe745722e59c4f87fe357f7843c3e65a85879222f1151e2d5be"
+    },
+    {
+      "key": "BETA/BETA PLA Chameleon @base.json",
+      "name": "BETA PLA Chameleon",
+      "material_id": "BPLB02",
+      "material": "PLA",
+      "resource_sha256": "bdb09b9006066d2e3b44ad9d7b5fcb93a1f2a9cb9019fb8add76d7ba1f4f31c9",
+      "inheritance_sha256": "10a0e3e12ba1bd1232751d5b514ec10822b7ddacd0db300f8da6217f16c4644d"
+    },
+    {
+      "key": "BETA/BETA PLA Fluorescence @base.json",
+      "name": "BETA PLA Fluorescence",
+      "material_id": "BPLB04",
+      "material": "PLA",
+      "resource_sha256": "7ff50308e2ec82ac38fa3d959c3346088d6fa58b608649ed7a7229caf012b607",
+      "inheritance_sha256": "49cddb00024e6ce99749b5661f6058e13d018ca9c4985c738e87f221d6b6b6d0"
+    },
+    {
+      "key": "BETA/BETA PLA Glitter @base.json",
+      "name": "BETA PLA Glitter",
+      "material_id": "BPLB05",
+      "material": "PLA",
+      "resource_sha256": "cb2e3d2fd1e07263e0598c7a17075969ba1ce838e3f0b85b264d6d13545879c2",
+      "inheritance_sha256": "2ac29e2f856f31fb6ea86cf17011a41ee6c555f50166dc0488ab9564305d0aec"
+    },
+    {
+      "key": "BETA/BETA PLA Glow @base.json",
+      "name": "BETA PLA Glow",
+      "material_id": "BPLB06",
+      "material": "PLA",
+      "resource_sha256": "8ff27ea4890c0f1b80d93a7ea2356c518d95814f55b5a23aaa4a7d449a06f385",
+      "inheritance_sha256": "2042c6f625a1b9864aaee743dd125cb9e8c21abdbe26ae467b459353e501a220"
+    },
+    {
+      "key": "BETA/BETA PLA Gradient @base.json",
+      "name": "BETA PLA Gradient",
+      "material_id": "BPLB07",
+      "material": "PLA",
+      "resource_sha256": "2bc571a526b40a3ee023490f30411a9bcc4287b59da75f05ec9e4dce878c3018",
+      "inheritance_sha256": "8470fd513e37e56de2610fc2bbeea027bba39e6cbe66573590532917d8ee3946"
+    },
+    {
+      "key": "BETA/BETA PLA Heat Color Change @base.json",
+      "name": "BETA PLA Heat Color Change",
+      "material_id": "BPLB03",
+      "material": "PLA",
+      "resource_sha256": "5149003033a8c1b990c03eafa360ee4c4682cbb23858454c877170a8c0aab1b8",
+      "inheritance_sha256": "f341eb11fef3e16146e7c071086da5809f3b7541f18b75f87a767884cc7f2faf"
+    },
+    {
+      "key": "BETA/BETA PLA High Speed @base.json",
+      "name": "BETA PLA High Speed",
+      "material_id": "BPLB20",
+      "material": "PLA",
+      "resource_sha256": "b645de740b171bc7256e050372b43958eff1f7494c6bc137f05a3c8fedab547c",
+      "inheritance_sha256": "4958c8e56e6492753d976a42e3e9168316ae6c4b994a414f9b1364ebf40f49cf"
+    },
+    {
+      "key": "BETA/BETA PLA High Temp @base.json",
+      "name": "BETA PLA High Temp",
+      "material_id": "BPLB18",
+      "material": "PLA",
+      "resource_sha256": "848a52d56ccc31241abcacd24c57fc69bd747a84b509bf4a76ede2a2c30d4b7b",
+      "inheritance_sha256": "270fd2ee208ad96c529c59a62e72635b3110b0b2c6384659ca1813b5d962092e"
+    },
+    {
+      "key": "BETA/BETA PLA Marble @base.json",
+      "name": "BETA PLA Marble",
+      "material_id": "BPLB08",
+      "material": "PLA",
+      "resource_sha256": "c312a6713fa5ec176b4add4056194b2c0845250e888b0c679acb714da29bc0d2",
+      "inheritance_sha256": "b20697fcbe4d5d694e326b06f36327b2438bfa5b677b63b19ff76756c3769e55"
+    },
+    {
+      "key": "BETA/BETA PLA Matte @base.json",
+      "name": "BETA PLA Matte",
+      "material_id": "BPLB09",
+      "material": "PLA",
+      "resource_sha256": "33c6d4ef9415beb77a162028cf3774e22acf9d7f9933fb6f201e88aad7176b05",
+      "inheritance_sha256": "6ca8ad1b729e3aa505084f1474e378406f7935f6a9246183b56278e3ed7276b3"
+    },
+    {
+      "key": "BETA/BETA PLA Metal @base.json",
+      "name": "BETA PLA Metal",
+      "material_id": "BPLB10",
+      "material": "PLA",
+      "resource_sha256": "c675dd47c813249c5472ff247dca9e026072f511e4a9cc929e8df11c58858640",
+      "inheritance_sha256": "cc6ebe03e66d6ba1fdcbac3b39889ab950174b913d1f465a79f8d8e9dae79848"
+    },
+    {
+      "key": "BETA/BETA PLA Metallic @base.json",
+      "name": "BETA PLA Metallic",
+      "material_id": "BPLB11",
+      "material": "PLA",
+      "resource_sha256": "fec128f669873fd10be272902528ae62a4348fc343a28bb1515db2998899989a",
+      "inheritance_sha256": "65362a9dfa757dcca911f01240f8e3543e1e2576022c6a08cf338ac52bed1973"
+    },
+    {
+      "key": "BETA/BETA PLA PRO @base.json",
+      "name": "BETA PLA PRO",
+      "material_id": "BPLB12",
+      "material": "PLA",
+      "resource_sha256": "3fc311cfe27dcdb73d83b305cfd7714c200291266f70ccb1e274ec6fe4c338a7",
+      "inheritance_sha256": "81b2e3afcb223d57530a78efd3d90193cc111ff2ec706aa12ee1a3a5ce028a77"
+    },
+    {
+      "key": "BETA/BETA PLA Silk @base.json",
+      "name": "BETA PLA Silk",
+      "material_id": "BPLB13",
+      "material": "PLA",
+      "resource_sha256": "7a4611e253d327d5737dddea59ec258ed2adea6a5d07b06d10834c16de50c587",
+      "inheritance_sha256": "243ca8de39d007e8ff28e70afcf90b000df11e5e9fd21c72e2d38fcd34d6b4d9"
+    },
+    {
+      "key": "BETA/BETA PLA Silk+ @base.json",
+      "name": "BETA PLA Silk+",
+      "material_id": "BPLB01",
+      "material": "PLA",
+      "resource_sha256": "95f604dbed85a53e9ee3c3271c4ea81a8cbd71e1fcdb59d3e4b73578d574ed12",
+      "inheritance_sha256": "650e2e5de479c86b396953de72af1ee6bfb6f8dfb84b90f421a6c785ad310e44"
+    },
+    {
+      "key": "BETA/BETA PLA Transparent @base.json",
+      "name": "BETA PLA Transparent",
+      "material_id": "BPLB14",
+      "material": "PLA",
+      "resource_sha256": "570233f11392f886abde66cf950b7feef72f05edaac544f34a39aac0c89bba46",
+      "inheritance_sha256": "1bae812850f27bd86713fcd22ef4d1fcc2d627243e4840b7bfab23db6ef25e2a"
+    },
+    {
+      "key": "BETA/BETA PLA UV Color Change @base.json",
+      "name": "BETA PLA UV Color Change",
+      "material_id": "BPLB15",
+      "material": "PLA",
+      "resource_sha256": "1a6ef83ba5531447a83663b1900ad7600cef0a7b5e0692f9edc83233a059dc8e",
+      "inheritance_sha256": "97773bdf2a365ba49b8ed23ca2c2533b8541f10f31938e7ffd5b16e3b0d7feb8"
+    },
+    {
+      "key": "BETA/BETA PLA Wood @base.json",
+      "name": "BETA PLA Wood",
+      "material_id": "BPLB19",
+      "material": "PLA",
+      "resource_sha256": "1e794011a1118cce371ca51b89660842cd33f5d9853b73c879cfe356df4f7dd5",
+      "inheritance_sha256": "62ffc8ec168c936bcabe6c5ab7ede7c2d8d40e9523de22a4065f0e3461bf159f"
+    },
+    {
+      "key": "BETA/BETA PLA Youth @base.json",
+      "name": "BETA PLA Youth",
+      "material_id": "BPLB16",
+      "material": "PLA",
+      "resource_sha256": "68b873a6fab2974918844b885652e286d4cc90c8384ed8314b8631ddcc40f6d8",
+      "inheritance_sha256": "c6d6fd79e6c98e46407ad332d3aad7e4875a16ae69c3553a909fd4f9743468ac"
+    },
+    {
+      "key": "BETA/BETA PLA-CF @base.json",
+      "name": "BETA PLA-CF",
+      "material_id": "BPLB17",
+      "material": "PLA-CF",
+      "resource_sha256": "4dca08722f18f90e05f6f546fb2c91ca7666927f78a6a9079c51a82dd77b4803",
+      "inheritance_sha256": "61928b06f5410c03c2be04b21ee0fbbb35bed6bb970d9a1599370227e0716a97"
+    },
+    {
+      "key": "BETA/BETA TPU 90A @base.json",
+      "name": "BETA TPU 90A",
+      "material_id": "BTUB00",
+      "material": "TPU",
+      "resource_sha256": "30119449e599a0b79377e108f4500faf5610ddabb10f09c2c0c6e0dd74b16f09",
+      "inheritance_sha256": "b262b1ab48e034267acbe2d04a5711ce9637f49c215ea50b8a6c843185568148"
+    },
+    {
+      "key": "BETA/BETA TPU 95A @base.json",
+      "name": "BETA TPU 95A",
+      "material_id": "BTUB02",
+      "material": "TPU",
+      "resource_sha256": "c76447fa34f52a3f63046d0fd18593e89ea31e53494e1bd6d4b0adc4363126f2",
+      "inheritance_sha256": "f31bac01dd117945a0a4a1614e274a08bba80c507cc9b391ddfa664c9762cb2d"
+    },
+    {
+      "key": "BETA/BETA TPU 98A @base.json",
+      "name": "BETA TPU 98A",
+      "material_id": "BTUB03",
+      "material": "TPU",
+      "resource_sha256": "2fbb0e1658f81c7449623c8b98ee920ccc2fab9d4f8731937f24953dd88690eb",
+      "inheritance_sha256": "f1ed22faf4eaaa324ef1ffa4101ac2d82a52b34c5015830eacfc09ced5fdd8ad"
+    },
+    {
+      "key": "BETA/BETA TPU Matte @base.json",
+      "name": "BETA TPU Matte",
+      "material_id": "BTUB01",
+      "material": "TPU",
+      "resource_sha256": "12fabf5f0c9712b1e0b8a4ae80dd41830f49ca9b7dcb2634e6094aafb3e71a53",
+      "inheritance_sha256": "4e9256f2ddb28725804b468c513f8add8d2a3eebbe85f8b0f233acb08fa12d89"
+    },
+    {
+      "key": "Bambu ABS @base.json",
+      "name": "Bambu ABS",
+      "material_id": "GFB00",
+      "material": "ABS",
+      "resource_sha256": "c9953c0cd9004dcd1ca180745fc2be60ba110a47f76153347439773ea4a8e053",
+      "inheritance_sha256": "8313f52787eafd4c68590c744f8441177d7c1c10931bc1a0c993fbcb26ba97bf"
+    },
+    {
+      "key": "Bambu ABS-GF @base.json",
+      "name": "Bambu ABS-GF",
+      "material_id": "GFB50",
+      "material": "ABS-GF",
+      "resource_sha256": "80c2b5cb7775149daac5e6cfb31fbdb1fdd0d95c09cb73e16888c2fe2bd6c02c",
+      "inheritance_sha256": "57ca652de459fe890cc5388f9f62c84dee0c2ca64ae182ec9d15d8c6902d1b9c"
+    },
+    {
+      "key": "Bambu ASA @base.json",
+      "name": "Bambu ASA",
+      "material_id": "GFB01",
+      "material": "ASA",
+      "resource_sha256": "97cdd2c096156251c27ac6476003debbce02bb989220a9c992360a9b04dd10e0",
+      "inheritance_sha256": "ca41cd653226f370af842e6e5aedee595d21226bb5635af1117c3462a2ea043d"
+    },
+    {
+      "key": "Bambu ASA-Aero @base.json",
+      "name": "Bambu ASA-Aero",
+      "material_id": "GFB02",
+      "material": "ASA-AERO",
+      "resource_sha256": "0f00707ce246dfa6ff5d56b9824f0439110f502fd85e2727e4625b160beca351",
+      "inheritance_sha256": "8aa983043b38fea1d22f8d9c2d39f4c5d3953e3470f59f79cab59e14004f30f0"
+    },
+    {
+      "key": "Bambu ASA-CF @base.json",
+      "name": "Bambu ASA-CF",
+      "material_id": "GFB51",
+      "material": "ASA-CF",
+      "resource_sha256": "8e606fc6830b0f53a39b06cf66e9d94b423eb36128601dba9dcb707cfe5a5b26",
+      "inheritance_sha256": "d31d1d591c445f800f0a77a375e7b9521ee0377d86d039e7b21d98b276c667ed"
+    },
+    {
+      "key": "Bambu PA-CF @base.json",
+      "name": "Bambu PA-CF",
+      "material_id": "GFN03",
+      "material": "PA-CF",
+      "resource_sha256": "3f1eac92353a1d4ded26a3e8d5f08f41bae0236fdd45bf381869caa653dfcb91",
+      "inheritance_sha256": "882498dd687ebd4652a1f104dbec5fe1a57c9cbcb8e5b1f425305bc3a9ef76d9"
+    },
+    {
+      "key": "Bambu PA6-CF @base.json",
+      "name": "Bambu PA6-CF",
+      "material_id": "GFN05",
+      "material": "PA6-CF",
+      "resource_sha256": "97ec9be51a07a1f5748da5b5800ae9c6e11b7b2da4be5b3070c76e8fc75d01e3",
+      "inheritance_sha256": "58061fe357217952e6c4b9d251d7ae76ec1c03e5e54053655c5064dcf94ed405"
+    },
+    {
+      "key": "Bambu PA6-GF @base.json",
+      "name": "Bambu PA6-GF",
+      "material_id": "GFN08",
+      "material": "PA-GF",
+      "resource_sha256": "644ce4db072a8dc868e32d4c1c26ec52806a4d34db7c0ee94f7bea67258bf892",
+      "inheritance_sha256": "d4e6f4ec097e3003c3c3fbb54c5639d49d9f5f33377928ff75b845c10afb2679"
+    },
+    {
+      "key": "Bambu PAHT-CF @base.json",
+      "name": "Bambu PAHT-CF",
+      "material_id": "GFN04",
+      "material": "PA-CF",
+      "resource_sha256": "473eaf5bfb1fd88c81aa944fb2724e7663cf6c91d840cedf9e82c86aecf198ef",
+      "inheritance_sha256": "26a5d71a98c00af978d4f06193af1d95239b542b2a0cd9189232b498738b359e"
+    },
+    {
+      "key": "Bambu PC @base.json",
+      "name": "Bambu PC",
+      "material_id": "GFC00",
+      "material": "PC",
+      "resource_sha256": "387cc67fb34efdab20162a7087c0ed2e8ff8a25474f7876bd72f2cb1154849b6",
+      "inheritance_sha256": "3e75ac2efdf6e5dc41018e62b62e4e2a1f79469240035eedd99b50187a8f05f7"
+    },
+    {
+      "key": "Bambu PC FR @base.json",
+      "name": "Bambu PC FR",
+      "material_id": "GFC01",
+      "material": "PC",
+      "resource_sha256": "ddd65edc66c1c783184d0a403601cce6a5f9b9ee1e5f212126dedce177687e99",
+      "inheritance_sha256": "d33e52bb53f9a50571739d9c1f653d8dd587a0d63a5631c04e042216068bb4a9"
+    },
+    {
+      "key": "Bambu PET-CF @base.json",
+      "name": "Bambu PET-CF",
+      "material_id": "GFT01",
+      "material": "PET-CF",
+      "resource_sha256": "bfd9a985666af12da9cc45ead7f56930f46b61b39a32aac61c02fbd88315523c",
+      "inheritance_sha256": "3a62f69da49d7a1137f6b8b656a76ff46cfc8f230412162946ea2b6820e430a1"
+    },
+    {
+      "key": "Bambu PETG Basic @base.json",
+      "name": "Bambu PETG Basic",
+      "material_id": "GFG00",
+      "material": "PETG",
+      "resource_sha256": "2a6a0319c679a75be8e66080c9bc5e4953b1d64fbd5debe4ba8b01d2023ce848",
+      "inheritance_sha256": "dbf1289ac9074ef71dac8255564b4d90f87777e5a4eca8bd8d2e676ec765da8c"
+    },
+    {
+      "key": "Bambu PETG HF @base.json",
+      "name": "Bambu PETG HF",
+      "material_id": "GFG02",
+      "material": "PETG",
+      "resource_sha256": "f52496cf7347aea0717ebe02136d0db3e1172fedf61a662873a7c6addfb09948",
+      "inheritance_sha256": "ee49a8244333d0bade3cefce24bbf846b1aba7281d1efaec0df9149142aaaa43"
+    },
+    {
+      "key": "Bambu PETG Translucent @base.json",
+      "name": "Bambu PETG Translucent",
+      "material_id": "GFG01",
+      "material": "PETG",
+      "resource_sha256": "7d969eb92a9722a8fcfd355771e0c72cd6a05ff6ce2f17f5b2b179d4cdca2ad1",
+      "inheritance_sha256": "e5a60f61f02b51ee411bf96858b37e16c39da3d284e7b04cda36928f918ef61c"
+    },
+    {
+      "key": "Bambu PETG-CF @base.json",
+      "name": "Bambu PETG-CF",
+      "material_id": "GFG50",
+      "material": "PETG-CF",
+      "resource_sha256": "e8916ba5b20efb26ddcc1e3f8fafbb982e5b8f69c46041cf024ebec681c87002",
+      "inheritance_sha256": "9b895c2e699b9e4f059e2d82c78fab2c2590c948d85f1cdf542957811ee41776"
+    },
+    {
+      "key": "Bambu PLA Aero @base.json",
+      "name": "Bambu PLA Aero",
+      "material_id": "GFA11",
+      "material": "PLA-AERO",
+      "resource_sha256": "5ec1420ac50a11a8ac2f1da5222a685a5809c140c2587e67b631b76239edd14e",
+      "inheritance_sha256": "abfd4cad72a51e6290c7dcce1c6c4f4fef8ce2a900cd7bfbf1a7818ee6a8c234"
+    },
+    {
+      "key": "Bambu PLA Basic @base.json",
+      "name": "Bambu PLA Basic",
+      "material_id": "GFA00",
+      "material": "PLA",
+      "resource_sha256": "72e18fd4eb000013153bd93721634c3b650bc1fcfa85d1c1458e89dbae1b1fa5",
+      "inheritance_sha256": "2cf54e27071d0b1578c6c1139bfffdacfe76aa20608faae0b1c00c91311dabb5"
+    },
+    {
+      "key": "Bambu PLA Dynamic @base.json",
+      "name": "Bambu PLA Dynamic",
+      "material_id": "GFA13",
+      "material": "PLA",
+      "resource_sha256": "9ab2bca2d33cf8c14b4b06a5bd1cf80e60f2258840e549992b398d9cfa90469c",
+      "inheritance_sha256": "e4a57981c18832f6e0eca9fc05b3b69fe8e5b8ee19f2a225b847626e33762d6a"
+    },
+    {
+      "key": "Bambu PLA Galaxy @base.json",
+      "name": "Bambu PLA Galaxy",
+      "material_id": "GFA15",
+      "material": "PLA",
+      "resource_sha256": "4d1dc81fa8842ddf0da2ad7914df180234745084cb9ce952437ceeab07995bde",
+      "inheritance_sha256": "f0cf70b43c8de7fa1d7d594e358ea76e070a8515a046da8962404709cbb9f249"
+    },
+    {
+      "key": "Bambu PLA Glow @base.json",
+      "name": "Bambu PLA Glow",
+      "material_id": "GFA12",
+      "material": "PLA",
+      "resource_sha256": "cd1f9d93480f332e27ab51e3562b8c11148ae986ba5f37979881992d25b28c68",
+      "inheritance_sha256": "3d77a282e0ba6218724bd442f732ec0e60d7d84b583e832a3022ff3ec73aef3f"
+    },
+    {
+      "key": "Bambu PLA Lite @base.json",
+      "name": "Bambu PLA Lite",
+      "material_id": "GFA18",
+      "material": "PLA",
+      "resource_sha256": "7ac48824af93dd5aa1ece0eaf2533cb07df70e8d13aeaf6cf82c65dfe33a1a1c",
+      "inheritance_sha256": "99045b98a646d634a5234c8313866d5376752b6a00a78380847c2aee910d76eb"
+    },
+    {
+      "key": "Bambu PLA Marble @base.json",
+      "name": "Bambu PLA Marble",
+      "material_id": "GFA07",
+      "material": "PLA",
+      "resource_sha256": "159f315db26b2149e4b6e8f6dcf37b93a7b495e5617fb862771eb3c78f007dc7",
+      "inheritance_sha256": "0b191dcc6c7becf8a62439d4484914b5393b63249dd2841512135593612c7989"
+    },
+    {
+      "key": "Bambu PLA Matte @base.json",
+      "name": "Bambu PLA Matte",
+      "material_id": "GFA01",
+      "material": "PLA",
+      "resource_sha256": "b71687f514a8fcd6510a45c699baa329fedb422731d3a442753d853f9ba8e43e",
+      "inheritance_sha256": "3d03462e6b354163d30f06601c20d935c85df0313d3908cb5c3b46f040a596bd"
+    },
+    {
+      "key": "Bambu PLA Metal @base.json",
+      "name": "Bambu PLA Metal",
+      "material_id": "GFA02",
+      "material": "PLA",
+      "resource_sha256": "4e54dfe8aa903e14b6c99af354e682db9fbb0eda4e21c52786a23feb7d83406b",
+      "inheritance_sha256": "93f6598338f31ed7298c34470fe604650336b7604dca93348c4cfb0bf0b0d212"
+    },
+    {
+      "key": "Bambu PLA Silk @base.json",
+      "name": "Bambu PLA Silk",
+      "material_id": "GFA05",
+      "material": "PLA",
+      "resource_sha256": "3bbb7fc5abf92554dabdfdb1fc68aa39bb4c1d1e9b8c706b1877e1e2f0cfbe10",
+      "inheritance_sha256": "dfa8827b5582d645bb073b8ac4b0a41ce65d59d12806d074e5baab8d9e13fa8a"
+    },
+    {
+      "key": "Bambu PLA Silk+ @base.json",
+      "name": "Bambu PLA Silk+",
+      "material_id": "GFA06",
+      "material": "PLA",
+      "resource_sha256": "067724d3a4a4091b4581038d8cecb749ec0bde353f63b4dc6662c7f9ad9a7db2",
+      "inheritance_sha256": "e3298215a376c41f0806187e3c7aad9f88f6be321841efbdacd0282023809704"
+    },
+    {
+      "key": "Bambu PLA Sparkle @base.json",
+      "name": "Bambu PLA Sparkle",
+      "material_id": "GFA08",
+      "material": "PLA",
+      "resource_sha256": "e0208b22e2c87ed64b16569008002237a501f5807812761a70b5bc48413c0aec",
+      "inheritance_sha256": "dce0c7dffd19e97a2bf20121fda7f46864524ede339b2409f7ceecba9a20050f"
+    },
+    {
+      "key": "Bambu PLA Tough @base.json",
+      "name": "Bambu PLA Tough",
+      "material_id": "GFA09",
+      "material": "PLA",
+      "resource_sha256": "f5cc54d268fc1ec581ab7b0bbfe88447b1e9499e4dab32a2146bfdbf5b7253a0",
+      "inheritance_sha256": "dc939220393e04ec8bb31ffe6562e3c63a5d01fecff92875226f90bbb31f5504"
+    },
+    {
+      "key": "Bambu PLA Tough+ @base.json",
+      "name": "Bambu PLA Tough+",
+      "material_id": "GFA10",
+      "material": "PLA",
+      "resource_sha256": "7c489810c4204eaef6ab7bb7df49df0721fe667c549c9b19c6a3b22cdb34d205",
+      "inheritance_sha256": "82edd761a188f60adce29fae391abde3eb4b6c45b1753dc8cf9935b7da203963"
+    },
+    {
+      "key": "Bambu PLA Translucent @base.json",
+      "name": "Bambu PLA Translucent",
+      "material_id": "GFA17",
+      "material": "PLA",
+      "resource_sha256": "4061830cda3f43e311d77477f30b0128ffbaa0ff29be26aac9b19387dbea56d0",
+      "inheritance_sha256": "7300bebba8c0edfc617d6b189a98e9f131e513c9f81d959d40155e20f1dfb325"
+    },
+    {
+      "key": "Bambu PLA Wood @base.json",
+      "name": "Bambu PLA Wood",
+      "material_id": "GFA16",
+      "material": "PLA",
+      "resource_sha256": "2c76e8b153ce6c2fa5a11d79ef4d13c70ed2a00b3cfe2d21e54399576febc4fb",
+      "inheritance_sha256": "574712ff0c75fe7ea0671dcd769bd26b3c29e6f00c5d10748bed2c47c1833a51"
+    },
+    {
+      "key": "Bambu PLA-CF @base.json",
+      "name": "Bambu PLA-CF",
+      "material_id": "GFA50",
+      "material": "PLA-CF",
+      "resource_sha256": "515cd9be2cf537cad39967727f7aab1562b98d55adffea719b4b0b7a17e49e02",
+      "inheritance_sha256": "6e949cccf5449bc02db4f664ac5a621966e766d3710d1b8317a82304c78f75a9"
+    },
+    {
+      "key": "Bambu PPA-CF @base.json",
+      "name": "Bambu PPA-CF",
+      "material_id": "GFN06",
+      "material": "PPA-CF",
+      "resource_sha256": "b3d4af888265aecc4db8403c93c4e157af3e0234d99ef138d318db4a1f83263e",
+      "inheritance_sha256": "379a2747a3b46d7180fdfe3788d1fa9791b587923ad70814bd91374e606c4bcd"
+    },
+    {
+      "key": "Bambu PPS-CF @base.json",
+      "name": "Bambu PPS-CF",
+      "material_id": "GFT02",
+      "material": "PPS-CF",
+      "resource_sha256": "387385572ba9b0fde0c1e6aa8ab21af9857fc29527a61b7396e59b83a54de630",
+      "inheritance_sha256": "f269648b4675d79c3df08ec58ab3406c8230c7305408cfbb4e26aa6b6d495361"
+    },
+    {
+      "key": "Bambu PVA @base.json",
+      "name": "Bambu PVA",
+      "material_id": "GFS04",
+      "material": "PVA",
+      "resource_sha256": "25f32c3163a27af953ec9154f8ec5c72731cd3c4e53771b2e5b99a9a0cc9c8af",
+      "inheritance_sha256": "f21b64dcef7eb9606a26cbe8e4bd3cbbd6eccc97cf774a2d043198076ccd916b"
+    },
+    {
+      "key": "Bambu Support For PA PET @base.json",
+      "name": "Bambu Support For PA/PET",
+      "material_id": "GFS03",
+      "material": "PA",
+      "resource_sha256": "9e614af19fd03c3e14be3e5a0fe0434a8b13369cef3be97e9759c414820f7ee4",
+      "inheritance_sha256": "621279e4526ddc0c07a434e342e3614e3065582adb155bab65ca5af2ba1d34aa"
+    },
+    {
+      "key": "Bambu Support For PLA @base.json",
+      "name": "Bambu Support For PLA",
+      "material_id": "GFS02",
+      "material": "PLA",
+      "resource_sha256": "f68a9d1d863fcc23cf8e3e61afe6907b61b89669b86c5af1e4af59dee35dd2bf",
+      "inheritance_sha256": "11e37d9b48d713bb3fc45482b2d64268748176441ddf6e42475665d2e5359122"
+    },
+    {
+      "key": "Bambu Support For PLA-PETG @base.json",
+      "name": "Bambu Support For PLA/PETG",
+      "material_id": "GFS05",
+      "material": "PLA",
+      "resource_sha256": "99dfcef89d1145bb9b32dc3868538bfb258a48ec246309d6049be11981085fed",
+      "inheritance_sha256": "f2b57e4f23b154e19285af6e9c842dc49e5aa09397be274a729a50a6f98903ca"
+    },
+    {
+      "key": "Bambu Support G @base.json",
+      "name": "Bambu Support G",
+      "material_id": "GFS01",
+      "material": "PA",
+      "resource_sha256": "e688a2a35776a2c3c1ea8d669b17590a71e53618cdcfe115a636064de01a4820",
+      "inheritance_sha256": "7948b1753087290ebc394156133e07b8f5ebdf48027f08f48f85b547dd42361b"
+    },
+    {
+      "key": "Bambu Support W @base.json",
+      "name": "Bambu Support W",
+      "material_id": "GFS00",
+      "material": "PLA",
+      "resource_sha256": "ceafc9a3f524f2bbf5414f0d8d8c8d545d477692805562168df1cd9365447657",
+      "inheritance_sha256": "7f60d36f017db6ca299649ae669798ec93ec5b05c962afe59a1a90dd85dfd54b"
+    },
+    {
+      "key": "Bambu Support for ABS @base.json",
+      "name": "Bambu Support for ABS",
+      "material_id": "GFS06",
+      "material": "ABS",
+      "resource_sha256": "c6b1e0b602f4e51d20233feb47b26f9d006a5dcd32ced2a7efc626f91a69dd04",
+      "inheritance_sha256": "c794a5e4ee1e43f4f9924ef3a334635dc8aad945f0cb1df31e831a19ecddd31e"
+    },
+    {
+      "key": "Bambu TPU 85A @base.json",
+      "name": "Bambu TPU 85A",
+      "material_id": "GFU04",
+      "material": "TPU",
+      "resource_sha256": "872b008b5450aefdc45d6fc356af8e3d13475ea98f43b22971aa57ce97fc3df7",
+      "inheritance_sha256": "8b76ab83714c109502fb073c68acf470fa6935f6e263842e3211d454c1c9b4ea"
+    },
+    {
+      "key": "Bambu TPU 90A @base.json",
+      "name": "Bambu TPU 90A",
+      "material_id": "GFU03",
+      "material": "TPU",
+      "resource_sha256": "b9f187cc69fe47ee08b625dc63ff04a1c0bb14b57181489128591d942d629da7",
+      "inheritance_sha256": "32bbde048d84abba797e4996826aa3afa870ab30a7f6ca076e1b513f284d3dcf"
+    },
+    {
+      "key": "Bambu TPU 95A @base.json",
+      "name": "Bambu TPU 95A",
+      "material_id": "GFU01",
+      "material": "TPU",
+      "resource_sha256": "022987ce2d90deb6ffe6650096b67deb9fd5510c0c6f41eb2046113c0781c1ee",
+      "inheritance_sha256": "bd0772b5d237f25b6dc314787f01d94505e0e3dcf30938a71234ffb419d7682c"
+    },
+    {
+      "key": "Bambu TPU 95A HF @base.json",
+      "name": "Bambu TPU 95A HF",
+      "material_id": "GFU00",
+      "material": "TPU",
+      "resource_sha256": "82671d8c327e1b648ba4abcb8b1ebb406b60b9afff3ef7b351c215ab646b9278",
+      "inheritance_sha256": "8181f2d91cfeba1cb8c57ea01eacf113a600005529175be2378d260c01da58b5"
+    },
+    {
+      "key": "Bambu TPU for AMS @base.json",
+      "name": "Bambu TPU for AMS",
+      "material_id": "GFU02",
+      "material": "TPU-AMS",
+      "resource_sha256": "58bd402a9ecbfa54012da7969a5d40670d4a511b01b1fa49b2d5f5c103509b38",
+      "inheritance_sha256": "d5352ed9419a11f953ca9efc2238cf8a3416e5474c0c665f7966ae15f8fa9075"
+    },
+    {
+      "key": "FusRock/FusRock ABS-GF @base.json",
+      "name": "FusRock ABS-GF",
+      "material_id": "GFR00",
+      "material": "ABS-GF",
+      "resource_sha256": "76986ea84264c636d10a87110eabe1bf31542d02bd78ef8bc0c7418350149b61",
+      "inheritance_sha256": "5344ffa34cff4da054d2a1f93df39a92ae62bc18f621b85d9cbcc866c3716c65"
+    },
+    {
+      "key": "Generic ABS @base.json",
+      "name": "Generic ABS",
+      "material_id": "GFB99",
+      "material": "ABS",
+      "resource_sha256": "4a49666461182e6115ffdfcd1cdd146d6a721954dc97878e857af6467cb632d1",
+      "inheritance_sha256": "a0bbb74dbb060aa8759fa84dcb3e5e0835b2956547ae56c7a563bac877edae5b"
+    },
+    {
+      "key": "Generic ASA @base.json",
+      "name": "Generic ASA",
+      "material_id": "GFB98",
+      "material": "ASA",
+      "resource_sha256": "cc46d346741480e549e877bb9d13b92553b570289f9440df4410d33d3a7ebb6b",
+      "inheritance_sha256": "f45f3fe2449a1d6fe9fc04134a8da8617fabd5ffab5880dda1a0436a26503600"
+    },
+    {
+      "key": "Generic BVOH @base.json",
+      "name": "Generic BVOH",
+      "material_id": "GFS97",
+      "material": "BVOH",
+      "resource_sha256": "05c681abb85e18f5c179f583f5b840baea7dc40ae1d4cef1e8b7943829cd63be",
+      "inheritance_sha256": "660b66f16ef2225bb3066c80e38131e09f0b34402f1a90aa78ca9dd9256bf15b"
+    },
+    {
+      "key": "Generic EVA @base.json",
+      "name": "Generic EVA",
+      "material_id": "GFR99",
+      "material": "EVA",
+      "resource_sha256": "3edf40499a672b31c51fbcdb7df02c6b55ae9213a99f88bf17a4f62653c01c5a",
+      "inheritance_sha256": "0da254945cc4b510fc525be38a4137d8b894f764c31075e3676549c4bf1a2196"
+    },
+    {
+      "key": "Generic HIPS @base.json",
+      "name": "Generic HIPS",
+      "material_id": "GFS98",
+      "material": "HIPS",
+      "resource_sha256": "f8e1aab9af00fe4738422aa1f559db2ec4735fce921114fc8bf8b681934ddff4",
+      "inheritance_sha256": "89d53ae280e5be64ea11cadbb40aabc15724616ad8fd5ec88da52dd0a735820d"
+    },
+    {
+      "key": "Generic PA @base.json",
+      "name": "Generic PA",
+      "material_id": "GFN99",
+      "material": "PA",
+      "resource_sha256": "aea78671351a27d966b73065d69f6fd332db381c98079a6b204690e7d89b7bc0",
+      "inheritance_sha256": "dd4e934eaec6bb9cdcadcdcf9aa768508002eb6ae48cfbbeb4d890aee0f6d47e"
+    },
+    {
+      "key": "Generic PA-CF @base.json",
+      "name": "Generic PA-CF",
+      "material_id": "GFN98",
+      "material": "PA-CF",
+      "resource_sha256": "f18e5af3a2a41db34e72f1a32e41b2d87e6d440740ad4d0a23b74ea2fbb40f63",
+      "inheritance_sha256": "56c01a36413ffcdb7c622754d0c38c419c3a1cc28f7ae791dd5fd3a77f5bfdd6"
+    },
+    {
+      "key": "Generic PC @base.json",
+      "name": "Generic PC",
+      "material_id": "GFC99",
+      "material": "PC",
+      "resource_sha256": "79d50b3b3312ac5feb930b612731eb0665470326ec708b262067ed3dbd6ffb43",
+      "inheritance_sha256": "37c4e3086dba72a586e04ee19b55d42d50aff8a6f5da316a0fa94998f9008998"
+    },
+    {
+      "key": "Generic PCTG @base.json",
+      "name": "Generic PCTG",
+      "material_id": "GFG97",
+      "material": "PCTG",
+      "resource_sha256": "a5008a7c4fc8db10763195e8d9b4e79bf10f1f4d71cd08fbe678979bd365acc7",
+      "inheritance_sha256": "39736858da386a13816a682871b1222c3f7a2e62a593168cf2d9e5a03591b4cb"
+    },
+    {
+      "key": "Generic PE @base.json",
+      "name": "Generic PE",
+      "material_id": "GFP99",
+      "material": "PE",
+      "resource_sha256": "ac4348a09c0fc9b4ffa21e702136c7a6476c6368743c03778a25226fd525a95d",
+      "inheritance_sha256": "de66a6271305a3479da2906c65d032f78ee5bcceaefec225880cffdd716f0058"
+    },
+    {
+      "key": "Generic PE-CF @base.json",
+      "name": "Generic PE-CF",
+      "material_id": "GFP98",
+      "material": "PE-CF",
+      "resource_sha256": "4b3852dfc7489a86d67e9178a301ea9b24f94c19d56ebdce8cf53faf1ad24b82",
+      "inheritance_sha256": "d5e3988c42fcba7c980f4e8f78e8c63c66cf4015cab9dc6aa30d29d0133e71f0"
+    },
+    {
+      "key": "Generic PETG @base.json",
+      "name": "Generic PETG",
+      "material_id": "GFG99",
+      "material": "PETG",
+      "resource_sha256": "a8742f2dc6f1d73f8affe69eb12fefe3e16f0da5e7054c09cea400c145398708",
+      "inheritance_sha256": "f81cb252bf557a12c320656aebce322beb3fd2bad61c91ac8c242e0b3f806f84"
+    },
+    {
+      "key": "Generic PETG HF @base.json",
+      "name": "Generic PETG HF",
+      "material_id": "GFG96",
+      "material": "PETG",
+      "resource_sha256": "8f9403b5f1eddc330c627c1bf2ba84e90dfa31288de182f70ca1c2a07eaaa863",
+      "inheritance_sha256": "17f12ff41ac4bc627b05c7af768321246ae321ba2ef579d1a24a9c9b3d910dc4"
+    },
+    {
+      "key": "Generic PETG-CF @base.json",
+      "name": "Generic PETG-CF",
+      "material_id": "GFG98",
+      "material": "PETG-CF",
+      "resource_sha256": "ed1e55fefc741d76987912b6ec08fbfb9daedc36e4e259117b5c48c32ea20c3d",
+      "inheritance_sha256": "eb4149b2b0d1dad5b3726621d7ab6eef5d6d5775b63e1131ae0f6849f18f3e02"
+    },
+    {
+      "key": "Generic PHA @base.json",
+      "name": "Generic PHA",
+      "material_id": "GFR98",
+      "material": "PHA",
+      "resource_sha256": "ffc85c32eafccbdc4f9f7bc9c750ce562a265f64c646184a8f0e476ac3ab8323",
+      "inheritance_sha256": "22c64b2d1cd7356aba3ee5a1805abe88689589eaa2c252d03ae7c1309cba0662"
+    },
+    {
+      "key": "Generic PLA @base.json",
+      "name": "Generic PLA",
+      "material_id": "GFL99",
+      "material": "PLA",
+      "resource_sha256": "85ebc04bd25c236322547d6d95f5a074ce4cab53cf975392e1f6b2c1fb74d406",
+      "inheritance_sha256": "147fb966edf94031949edc862597a0dcfb86f9c667e8ea885cecbb5bda1cf9f9"
+    },
+    {
+      "key": "Generic PLA High Speed @base.json",
+      "name": "Generic PLA High Speed",
+      "material_id": "GFL95",
+      "material": "PLA",
+      "resource_sha256": "332c277fbd6126215f2d8bc7079ec811d86ed6b1fac1fd906221b0aeca88c6ea",
+      "inheritance_sha256": "5db3f2e012ea2062bf7da3e474404b250767349680d44f3951f2dbdc7c56abbe"
+    },
+    {
+      "key": "Generic PLA Silk @base.json",
+      "name": "Generic PLA Silk",
+      "material_id": "GFL96",
+      "material": "PLA",
+      "resource_sha256": "74142a97e9ffa19228cb01203e6d54dd9ae173b63a9afa880bb809e8903156d3",
+      "inheritance_sha256": "00109da02130c866f5353e2f0e49ff92a1d19e465bd656daf583f9620185359c"
+    },
+    {
+      "key": "Generic PLA-CF @base.json",
+      "name": "Generic PLA-CF",
+      "material_id": "GFL98",
+      "material": "PLA-CF",
+      "resource_sha256": "9487b371c3643e28b45bc1c56ca7e88e78116ef1782c865f8435c58495217fe6",
+      "inheritance_sha256": "c2c57b5f3f37da84dbf9e03409884c5c3323d34fb008ec259f2a9b5a7c74bfc1"
+    },
+    {
+      "key": "Generic PP @base.json",
+      "name": "Generic PP",
+      "material_id": "GFP97",
+      "material": "PP",
+      "resource_sha256": "534a93681fc6d953466865722911bfd94ecce751e047d42a49587c61742670cd",
+      "inheritance_sha256": "0560ada839ba9a471d7361c347854a7db6be7890ca14bf123d2f2f25812b73f5"
+    },
+    {
+      "key": "Generic PP-CF @base.json",
+      "name": "Generic PP-CF",
+      "material_id": "GFP96",
+      "material": "PP-CF",
+      "resource_sha256": "b5693fbc86278a114da6582d19e0dec97a07ed8074c299f4b76af0ee79d97471",
+      "inheritance_sha256": "907d6039780edd9fa452ae4c8e6ca4694b97cb1abba91d8db8d2b7129e12c1e9"
+    },
+    {
+      "key": "Generic PP-GF @base.json",
+      "name": "Generic PP-GF",
+      "material_id": "GFP95",
+      "material": "PP-GF",
+      "resource_sha256": "1d83fcbb4ebd69ab85482fce526bc252f0b618859cf68233d6a755971de86fbf",
+      "inheritance_sha256": "6cc3f29354869ccd2a0969b9d2514df9110a588bb9dfecaf183c0fb69e002e4b"
+    },
+    {
+      "key": "Generic PPA-CF @base.json",
+      "name": "Generic PPA-CF",
+      "material_id": "GFN97",
+      "material": "PPA-CF",
+      "resource_sha256": "f04644ae9a92c03fbbd14dc84bfcd49106c4ff4d4773c02f1b8d0259d8aabd79",
+      "inheritance_sha256": "98ce1497f4187e0be47d528d256366f5389ac640e1ac89681dc75d86150b1451"
+    },
+    {
+      "key": "Generic PPA-GF @base.json",
+      "name": "Generic PPA-GF",
+      "material_id": "GFN96",
+      "material": "PPA-GF",
+      "resource_sha256": "60553fa78917ee03d78f8f7ec3bab950647af8a2ff84cc8899946f4bccb47244",
+      "inheritance_sha256": "7036b92be725be8230c49790ba0756027134bf70b72cee209d2f76a5543e6409"
+    },
+    {
+      "key": "Generic PPS @base.json",
+      "name": "Generic PPS",
+      "material_id": "GFT97",
+      "material": "PPS",
+      "resource_sha256": "e0438eb82c9c0d720f5a50851b900bc9aa14c56c7a48ac41e960bdaa5b45e180",
+      "inheritance_sha256": "c6a008d9aeb4cf047c014268b4586fadb15c55ce56da2191299083c4c09d3f10"
+    },
+    {
+      "key": "Generic PPS-CF @base.json",
+      "name": "Generic PPS-CF",
+      "material_id": "GFT98",
+      "material": "PPS-CF",
+      "resource_sha256": "7dfd444289d9664f60c86ceb6861cee32a152f27ba85030c14759e017b6298d1",
+      "inheritance_sha256": "fda8be08c5f0621ecb66ac1b82dd6531d2c5e1886dbb6d958a88fd48baa13ab0"
+    },
+    {
+      "key": "Generic PVA @base.json",
+      "name": "Generic PVA",
+      "material_id": "GFS99",
+      "material": "PVA",
+      "resource_sha256": "2fd7cabb1fd2b005c75b4e04b5f46d0f3240a74d758701fb6bdbc68b6db11957",
+      "inheritance_sha256": "d087853765f56c98920a58a5a357834cd958a2cd6f5181c6235474c285626399"
+    },
+    {
+      "key": "Generic SBS @base.json",
+      "name": "Generic SBS",
+      "material_id": "GFLSBS99",
+      "material": "SBS",
+      "resource_sha256": "7198fdd33647672762d5b101a4429482f2f2ad936c201b004df1d4a163b12aee",
+      "inheritance_sha256": "f601f59be98e557377425152c1b6587ec7922775664ee6aa4ac5e51566248e13"
+    },
+    {
+      "key": "Generic TPU @base.json",
+      "name": "Generic TPU",
+      "material_id": "GFU99",
+      "material": "TPU",
+      "resource_sha256": "4edc327fc602f6a30f408838b2ec7275cee5abeb4052bb96d8658db07c3c24a8",
+      "inheritance_sha256": "e4aedc7e1de4a95ea1146084ef0ec610ed24f8ac90eaab9a87616a12f6ea5338"
+    },
+    {
+      "key": "Generic TPU for AMS @base.json",
+      "name": "Generic TPU for AMS",
+      "material_id": "GFU98",
+      "material": "TPU-AMS",
+      "resource_sha256": "3afcef35e8f30d28bc38bbb86fd28a3968a045a7fdf3f127a35266c6cb1ec876",
+      "inheritance_sha256": "932cc78ea0d2c486db65ff82e3aa219ac16adf22ee1b4861dfaf0319c7a5cc4b"
+    },
+    {
+      "key": "Numakers/Numakers PLA+ @base.json",
+      "name": "Numakers PLA+",
+      "material_id": "GFNMK00",
+      "material": "PLA",
+      "resource_sha256": "cdef32fd096f43a509de2a72ed2f3eea2823eea0fb22987bef838f438db39c4d",
+      "inheritance_sha256": "de67d98d9190cadb2a07cff7b0ff5c87fbc67d45b8e503e40c87719fc50580bb"
+    },
+    {
+      "key": "Overture/Overture Matte PLA @base.json",
+      "name": "Overture Matte PLA",
+      "material_id": "GFL05",
+      "material": "PLA",
+      "resource_sha256": "7c33a0fae92ed7d7fea97b029510f1a1a1ba6a1f52aee712d50a36842da87607",
+      "inheritance_sha256": "390c2150e4b0dcf44568ef3a38710e49a3bba646ed06629a6d4eb6729b30eba7"
+    },
+    {
+      "key": "Overture/Overture PLA @base.json",
+      "name": "Overture PLA",
+      "material_id": "GFL04",
+      "material": "PLA",
+      "resource_sha256": "1e71064b76df726e388528ea4042b33b5e1092307231ff295285cf27a1a8f10e",
+      "inheritance_sha256": "85f362eb74fa3f57cb017198e89808a0412bd441f33d7f4b935ab56c725a39e4"
+    },
+    {
+      "key": "Overture/Overture PLA Pro @base.json",
+      "name": "Overture PLA Pro",
+      "material_id": "GFOT001",
+      "material": "PLA",
+      "resource_sha256": "278b381277b80ad5a1f9cb27e771c7d1ba0f19e7c0e716f32570b3335b902810",
+      "inheritance_sha256": "4b6a5c20504f53f2939de4c92c5f506f47531f11f6a5c909245556992eadd4b1"
+    },
+    {
+      "key": "Polymaker/Fiberon PA12-CF @base.json",
+      "name": "Fiberon PA12-CF",
+      "material_id": "GFL52",
+      "material": "PA-CF",
+      "resource_sha256": "c10edc943ff551b14a95a98278ac17e69b0aa7f15a53f98394776953ae9896c9",
+      "inheritance_sha256": "5e37cb0401041b2c59ff4e428ce980a9e3f1be042d3ce603da517c200123ba8e"
+    },
+    {
+      "key": "Polymaker/Fiberon PA12-CF10 @base.json",
+      "name": "Fiberon PA12-CF10",
+      "material_id": "GFL56",
+      "material": "PA-CF",
+      "resource_sha256": "cbdffeef0e0187a3d7ee0c954cd7c5b1f5b1963e8e38221728ab301d1392a055",
+      "inheritance_sha256": "66d410b08d1df4a1bbc55af36241c1ba113cecc27b89d6f2d388d319415ba517"
+    },
+    {
+      "key": "Polymaker/Fiberon PA6-CF @base.json",
+      "name": "Fiberon PA6-CF",
+      "material_id": "GFL50",
+      "material": "PA6-CF",
+      "resource_sha256": "fc821d9bbc491a53ea615cb34353721d5a5be034c0288c041cb63af1a21af249",
+      "inheritance_sha256": "36716535ac5f272f68eaed2fda15e64b907615c8b85825edec8a32ce1761dfd6"
+    },
+    {
+      "key": "Polymaker/Fiberon PA6-CF20 @base.json",
+      "name": "Fiberon PA6-CF20",
+      "material_id": "GFL57",
+      "material": "PA6-CF",
+      "resource_sha256": "df293ce1279c86587ca1c7ff4f30ba6a201b8a2371fd77f573148b4a590e9031",
+      "inheritance_sha256": "9b74c1c28ce2b342fbc8393431d2b909f501f027831a5e0e78a8b698d4da808f"
+    },
+    {
+      "key": "Polymaker/Fiberon PA6-GF @base.json",
+      "name": "Fiberon PA6-GF",
+      "material_id": "GFL51",
+      "material": "PA-GF",
+      "resource_sha256": "c79bfda561e4308c5b437009238f6eba506392de3ed7c9ab3ac3edb871b2124f",
+      "inheritance_sha256": "1fd58f7c454997af2325a98ba2e7c6c5aad44181efe5d22eddd6d016ea01bd6d"
+    },
+    {
+      "key": "Polymaker/Fiberon PA6-GF25 @base.json",
+      "name": "Fiberon PA6-GF25",
+      "material_id": "GFL58",
+      "material": "PA-GF",
+      "resource_sha256": "6d27f0aee4b5d7d84a81b46a5c58678294bd6a65dddc5eae433bb051c40065d2",
+      "inheritance_sha256": "ab1d9c175f24f4c3af28a4c61ba80c3fd9332559466f8aec0c8c4ff28a217198"
+    },
+    {
+      "key": "Polymaker/Fiberon PA612-CF @base.json",
+      "name": "Fiberon PA612-CF",
+      "material_id": "GFL53",
+      "material": "PA",
+      "resource_sha256": "a6ec590e93cf54c50f7ff23aeeaa9f87c929df45906e213be5312a0d0a050f30",
+      "inheritance_sha256": "697f67f1290bbea2b74c7a4f693bc8b84784d1f0d2bc236c6f6913161c7e34d4"
+    },
+    {
+      "key": "Polymaker/Fiberon PA612-CF15 @base.json",
+      "name": "Fiberon PA612-CF15",
+      "material_id": "GFL59",
+      "material": "PA-CF",
+      "resource_sha256": "fb77daf1eda30c0192ac873742acf70ed3249fb5ae12d27ac15b9f76af9a6db9",
+      "inheritance_sha256": "227a199c575603ec35c29498734cbb3623f62fde5ec78265bb10ffc82c8669f7"
+    },
+    {
+      "key": "Polymaker/Fiberon PET-CF @base.json",
+      "name": "Fiberon PET-CF",
+      "material_id": "GFL54",
+      "material": "PET-CF",
+      "resource_sha256": "2a2bedde33387e5d6fdbd525562b59a86748ff268f9ca39e1efbed0744bd4836",
+      "inheritance_sha256": "1209a23a74cb14d510aa43b2faa4982c9fb362fdd717ac26795bc76c4502b5a8"
+    },
+    {
+      "key": "Polymaker/Fiberon PET-CF17 @base.json",
+      "name": "Fiberon PET-CF17",
+      "material_id": "GFL60",
+      "material": "PET-CF",
+      "resource_sha256": "9a030d21ab218982c9cfac49e8e74315fd6a35fcb271e5c9e811150a013e172f",
+      "inheritance_sha256": "82a9890404a59a4683dfc4672f695c7035e71f1795ea1dfb19e0b1d42fa4f835"
+    },
+    {
+      "key": "Polymaker/Fiberon PETG-ESD @base.json",
+      "name": "Fiberon PETG-ESD",
+      "material_id": "GFL06",
+      "material": "PETG",
+      "resource_sha256": "d789e14ba6bac1222b7de87425bd8e6242e534637743aae713eb5e1af14b08cc",
+      "inheritance_sha256": "b8201853f0308dbd562d28a996f3f33179dee54bfa950610cfba10762b1d4694"
+    },
+    {
+      "key": "Polymaker/Fiberon PETG-rCF @base.json",
+      "name": "Fiberon PETG-rCF",
+      "material_id": "GFL55",
+      "material": "PETG-CF",
+      "resource_sha256": "74d6d2d942b69cea3012a8ad091c252651291faf2457ed687fa9ef68dc9d10b6",
+      "inheritance_sha256": "c24e905b4f8b00e18e3a8c9595fa867aa1d2d5e3e2cfd0183a3ff9c3e3b56767"
+    },
+    {
+      "key": "Polymaker/Fiberon PETG-rCF08 @base.json",
+      "name": "Fiberon PETG-rCF08",
+      "material_id": "GFL61",
+      "material": "PETG-CF",
+      "resource_sha256": "e55d597e63bee565f3a8eb9601b198d79f7031e255590bd62140441efcaa2c27",
+      "inheritance_sha256": "45251bf3e442a8f00aba169bbb63356c2c0b51763e6b11b483bdd12882a37a23"
+    },
+    {
+      "key": "Polymaker/Panchroma CoPE @base.json",
+      "name": "Panchroma CoPE",
+      "material_id": "GFPM016",
+      "material": "PLA",
+      "resource_sha256": "f7cc54e60e10845efb7e4203f470986981ea530e597e2eaca32a05fba6048e7b",
+      "inheritance_sha256": "04dee47c0980b24a964811f88309dfae57100684306ac85604a2eb49fd57d7c4"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA @base.json",
+      "name": "Panchroma PLA",
+      "material_id": "GFPM001",
+      "material": "PLA",
+      "resource_sha256": "83a67726ec3487b708ca6d7c1ddd449871e627ec197741707fd178bd4fcf71cf",
+      "inheritance_sha256": "e9bec6a7aee65cc060d9690de523d7ec5ff527f383cb73a1d0943b9505daa032"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Celestial @base.json",
+      "name": "Panchroma PLA Celestial",
+      "material_id": "GFPM008",
+      "material": "PLA",
+      "resource_sha256": "22c3c4f031f18aa6a90c669a28aae844e09666d0aa656e5bbe5190d2cbdf35fe",
+      "inheritance_sha256": "7496559a248a19acc1257acae507713c5ff0ddd4236dc9001aae077bcb131455"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Galaxy @base.json",
+      "name": "Panchroma PLA Galaxy",
+      "material_id": "GFPM007",
+      "material": "PLA",
+      "resource_sha256": "0be1ae2c82e06ea0d6fb96d85c05faa16345fea3062df68573d882394d721603",
+      "inheritance_sha256": "b41d228f9e96f5d384d4078c87fe91fd1a0e09231b7837d7757b06e235390ba1"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Glow @base.json",
+      "name": "Panchroma PLA Glow",
+      "material_id": "GFPM010",
+      "material": "PLA",
+      "resource_sha256": "b20ed12fdc93be2a205bbf04159385dfa4193c115ffc41d16c22cda2edec1543",
+      "inheritance_sha256": "a18e573159e4472825d42ac5cf3a135aeaccf1b91099386e55b1edcf85f85d36"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Luminous @base.json",
+      "name": "Panchroma PLA Luminous",
+      "material_id": "GFPM011",
+      "material": "PLA",
+      "resource_sha256": "805c558ca909bc3c92fe170b868739f769cd05e6d86fd9c95b7909371748bec3",
+      "inheritance_sha256": "905b78cff8e065a5c219c3398cfa9f6a356469f95e6ff98c2d50e7a75bc8320e"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Marble @base.json",
+      "name": "Panchroma PLA Marble",
+      "material_id": "GFPM003",
+      "material": "PLA",
+      "resource_sha256": "ecfca86b36c153d654a8789ab6cdf8c4e23b5e7e2186e987f994dbb9856dbae2",
+      "inheritance_sha256": "198b9ca0cabf3613ecef31f86c189e58056de9a2544719f9a0fe0ed3e520bedf"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Matte @base.json",
+      "name": "Panchroma PLA Matte",
+      "material_id": "GFPM002",
+      "material": "PLA",
+      "resource_sha256": "b59a413bc9c48a35b43beb3581be0f3558765dd4353d33f706315a720c804e99",
+      "inheritance_sha256": "9a61d083bd90228e83b6a56fdcb6abd025f3b8914b66579c9720598831857d6b"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Metallic @base.json",
+      "name": "Panchroma PLA Metallic",
+      "material_id": "GFPM012",
+      "material": "PLA",
+      "resource_sha256": "c633418292b6ac41e9206cb42dd48ac0b7910faf3bbda36eaa98b0cf0131f6b1",
+      "inheritance_sha256": "11454cd7a66fb7770142b161a192fec21ed51c74d29a7259ed8cef2c07f5f1b6"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Neon @base.json",
+      "name": "Panchroma PLA Neon",
+      "material_id": "GFPM013",
+      "material": "PLA",
+      "resource_sha256": "81fba249717595229ffe93210addf4adfce4e7bb9d8419b9894255e7b4344a82",
+      "inheritance_sha256": "4bb735be4739d62597c3466ca331b0b15a88255bcf5034cd842594533fe7fbab"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Satin @base.json",
+      "name": "Panchroma PLA Satin",
+      "material_id": "GFPM005",
+      "material": "PLA",
+      "resource_sha256": "facd44e55fa1b966a1ff6c32abc7eb37f37b99b01d97b54fc609e9632be6765a",
+      "inheritance_sha256": "ccde27235fa920c4f656fb959aa9e06b100e6c84c8cb8e331e4317b89465f17d"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Silk @base.json",
+      "name": "Panchroma PLA Silk",
+      "material_id": "GFPM004",
+      "material": "PLA",
+      "resource_sha256": "f2e885df957c033c5929603644199e8a8b8abd48d67180545f414d6f12318592",
+      "inheritance_sha256": "4f06472a7d0fc80f249346abf931137add0321d580172eee115812285e96a2b2"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Starlight @base.json",
+      "name": "Panchroma PLA Starlight",
+      "material_id": "GFPM009",
+      "material": "PLA",
+      "resource_sha256": "5ecfbb376e1d02ba49faf34006b6e84d37988500bf9a231f5ea0c98ffc57426e",
+      "inheritance_sha256": "f3dbe0498be378d24bc59bdf4a9016f7439ba3fd8bc31bfc279e70e9788a3c52"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Temp Shift @base.json",
+      "name": "Panchroma PLA Temp Shift",
+      "material_id": "GFPM015",
+      "material": "PLA",
+      "resource_sha256": "f897ed8ade2df1239f0a8aac5109f519b4388b5aa643fb3616525ef0d258ed3b",
+      "inheritance_sha256": "41a63b26444083491fc90a594efbd107bb5ed1fdde946d61c682493972fe4d17"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA Translucent @base.json",
+      "name": "Panchroma PLA Translucent",
+      "material_id": "GFPM006",
+      "material": "PLA",
+      "resource_sha256": "28d860863364fac40e68718d70a860b4ce9974c28e285444b857aadac66344c3",
+      "inheritance_sha256": "e3eaf8204b531a9e47165485c7e4952b33b2f72919bcedd27a660cd76d0b78a0"
+    },
+    {
+      "key": "Polymaker/Panchroma PLA UV Shift @base.json",
+      "name": "Panchroma PLA UV Shift",
+      "material_id": "GFPM014",
+      "material": "PLA",
+      "resource_sha256": "68e74131c363d87098a3124e253215683002bbf2c9fe6025a62172fb9daad635",
+      "inheritance_sha256": "cfa21b7f6ddc954cabebdddb2e8e0acfd78a05e3c5a0027b7d8e061105bf6e55"
+    },
+    {
+      "key": "Polymaker/PolyLite ABS @base.json",
+      "name": "PolyLite ABS",
+      "material_id": "GFB60",
+      "material": "ABS",
+      "resource_sha256": "6a1e0df893b0355fc27124697510bf7881025d61b459da5f7b50260931f2b1cb",
+      "inheritance_sha256": "69b61defdba8d50d4cfaa2ca1813cf010090a9dcb176fe4177c126a1737bdca6"
+    },
+    {
+      "key": "Polymaker/PolyLite ASA @base.json",
+      "name": "PolyLite ASA",
+      "material_id": "GFB61",
+      "material": "ASA",
+      "resource_sha256": "494f78ebd7cfd66f65a8ea4f82d22e17d28cd15b7bafe7b8a30d5839a1fa7477",
+      "inheritance_sha256": "6b72fefe94e398aec77296ce90a9bafb91a0205d46000792bbf06245e2d5867e"
+    },
+    {
+      "key": "Polymaker/PolyLite CosPLA @base.json",
+      "name": "PolyLite CosPLA",
+      "material_id": "GFL62",
+      "material": "PLA",
+      "resource_sha256": "60144443e3ea5cc5ece959bd9f8bed6059cfde2d262dceadf48bdd5814d8c230",
+      "inheritance_sha256": "c8cd9ae5dd8175fc4e485e7b6097b69bfdd0f86a541b82d7931b6fd23fc69a5d"
+    },
+    {
+      "key": "Polymaker/PolyLite PETG @base.json",
+      "name": "PolyLite PETG",
+      "material_id": "GFG60",
+      "material": "PETG",
+      "resource_sha256": "b7595698aa0b238d12b7cf9a77f53faf001704228a09fb38fdf49c1625f78ce9",
+      "inheritance_sha256": "0ae8d7727b44776f8b4a4c6ad259789a2b68cd28feaf77b36ca6dea9628a1664"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA @base.json",
+      "name": "PolyLite PLA",
+      "material_id": "GFL00",
+      "material": "PLA",
+      "resource_sha256": "ea2300d603ce86685d44e669388b035191eb770b5be4b6e13da43b88ca792882",
+      "inheritance_sha256": "ac444053125228f83764eb65e6e217ebef6c0affce09755a6f780ed525d0cd40"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Galaxy @base.json",
+      "name": "PolyLite PLA Galaxy",
+      "material_id": "GFL63",
+      "material": "PLA",
+      "resource_sha256": "391d06de955a99a133a4e5d41e8d1f18148fc4bbc030b42b5953a1b712abd1b3",
+      "inheritance_sha256": "5d3524aaa5e0a5d58e0809be78356cb126778bc199e4b93de998d9efb537b03c"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Glow @base.json",
+      "name": "PolyLite PLA Glow",
+      "material_id": "GFL64",
+      "material": "PLA",
+      "resource_sha256": "eecebdf73db8ff96f305a608d587f417e67d8df2d64f838ccaf133f808b28d0d",
+      "inheritance_sha256": "30c371d8f5e67c56445245441e9e94e88edfcbb2eca549862a4676d99565e3b6"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Luminous @base.json",
+      "name": "PolyLite PLA Luminous",
+      "material_id": "GFL65",
+      "material": "PLA",
+      "resource_sha256": "8c71586b01b4be45972c8a130d660b7c9f7d21d1798791b428b709fec99fcde2",
+      "inheritance_sha256": "4555ac1c654662ba2adbaaa5f76b7bd29e7e6c3d8c92769ccdec8efcf4a0fb14"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Neon @base.json",
+      "name": "PolyLite PLA Neon",
+      "material_id": "GFL66",
+      "material": "PLA",
+      "resource_sha256": "f08c3d6204157f4eb906abaf18c22dafc2bf2c2bae1880fc50fc6971dd63682e",
+      "inheritance_sha256": "9ed12c4c5b2d401253741122b17b60e8a01cda3c38eb10c033713160735754fa"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Pro @base.json",
+      "name": "PolyLite PLA Pro",
+      "material_id": "GFPM019",
+      "material": "PLA",
+      "resource_sha256": "494278e9c890b08cb68980444a732eac56a93124e094b238e9d60385685f8846",
+      "inheritance_sha256": "adc1eb6f8ce5dd81af5e1d6d64aeb40302aaaf41cf0706d13520f384e285c9c4"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Starlight @base.json",
+      "name": "PolyLite PLA Starlight",
+      "material_id": "GFL67",
+      "material": "PLA",
+      "resource_sha256": "2e7658e823d123a0ad43b2dcce044c1da3136af5eb65edb4f61395b37c2fdd82",
+      "inheritance_sha256": "cc5d772958de19e0ddbfaec815d0bc02e9ebfb97972d2ee03396f0652b033c84"
+    },
+    {
+      "key": "Polymaker/PolyLite PLA Translucent @base.json",
+      "name": "PolyLite PLA Translucent",
+      "material_id": "GFL68",
+      "material": "PLA",
+      "resource_sha256": "e1fda6904b0e3afdd857c4b9e6d6b4705196c5eed897a46345ef2f540a52638e",
+      "inheritance_sha256": "57fb1b4ad46f139dc3c8f897b2de424629abe6a81164a155d84d93066a79432f"
+    },
+    {
+      "key": "Polymaker/PolyTerra PLA @base.json",
+      "name": "PolyTerra PLA",
+      "material_id": "GFL01",
+      "material": "PLA",
+      "resource_sha256": "d1c87e042aa75f1cc57538feafafb7c0255df8c43085fe487bda905a1983572e",
+      "inheritance_sha256": "2b76afdd15a02f16416a6b26fd9a63a3c12a43030d4817d8db1201453224e17b"
+    },
+    {
+      "key": "Polymaker/PolyTerra PLA Marble @base.json",
+      "name": "PolyTerra PLA Marble",
+      "material_id": "GFL69",
+      "material": "PLA",
+      "resource_sha256": "007606af36614acb2985098682c5f79a1becf3d2e683e9a68e6533da1c6b8588",
+      "inheritance_sha256": "f66f0eb99026559cc974c4314c73df843f57dd479c7228919ce745cd3dc9ce05"
+    },
+    {
+      "key": "Polymaker/PolyTerra PLA+ @base.json",
+      "name": "PolyTerra PLA+",
+      "material_id": "GFL70",
+      "material": "PLA",
+      "resource_sha256": "586d5d5097de006c43d43c9bd4997f00d4c340ad6e6f82d0bff710c8ae8193fd",
+      "inheritance_sha256": "63b84f54050d3bed3f4171bdb73659d1781f995bfa6a4ee6e7265c7bf7fbe268"
+    },
+    {
+      "key": "Polymaker/Polymaker HT-PLA @base.json",
+      "name": "Polymaker HT-PLA",
+      "material_id": "GFPM017",
+      "material": "PLA",
+      "resource_sha256": "fbee13095f2373e496d4287fc8017d516462f2d625b5eae9eff85b12f8f43778",
+      "inheritance_sha256": "6569c80e1052be252bfdcca70b958096ae34d1e6ca1490eeee3db1010e963198"
+    },
+    {
+      "key": "Polymaker/Polymaker HT-PLA-GF @base.json",
+      "name": "Polymaker HT-PLA-GF",
+      "material_id": "GFPM018",
+      "material": "PLA",
+      "resource_sha256": "c8a8e907194a02c152bc7fc4ad971e7bf59a073f03da6df44a4bc195ad942027",
+      "inheritance_sha256": "c6c1cc198cfd66958764175e402b0d610888311d23e0961646a983197ddb3d46"
+    },
+    {
+      "key": "SUNLU/SUNLU Marble PLA @base.json",
+      "name": "SUNLU PLA Marble",
+      "material_id": "GFSNL06",
+      "material": "PLA",
+      "resource_sha256": "1326ba8fe9aa451269eaffc86ec79a4b2b5c232bdda1ed14866f913ed166d759",
+      "inheritance_sha256": "0481c4ec9fd1dd90fbaaf29674943641ea15f5ba8169461042e9110731527e20"
+    },
+    {
+      "key": "SUNLU/SUNLU PETG @base.json",
+      "name": "SUNLU PETG",
+      "material_id": "GFSNL08",
+      "material": "PETG",
+      "resource_sha256": "0591f747f1e6e8cfb761c1dbc9ceae6f25d89c6c8a778230f640a5cf799a438e",
+      "inheritance_sha256": "b543b4e1a73d4c98675ca0e0b026d5a171ce6a7fa6b227d4d7f4f5c555f2344b"
+    },
+    {
+      "key": "SUNLU/SUNLU PLA Matte @base.json",
+      "name": "SUNLU PLA Matte",
+      "material_id": "GFSNL02",
+      "material": "PLA",
+      "resource_sha256": "2b7509563c6719b9547597bdaadcf2e9a6346e0e0fb01e6228d7db8a7046b3e9",
+      "inheritance_sha256": "81998a142682fb3a08aeb822175174b8e1243c55b5b843f77e6a683a81b6671e"
+    },
+    {
+      "key": "SUNLU/SUNLU PLA+ 2.0 @base.json",
+      "name": "SUNLU PLA+ 2.0",
+      "material_id": "GFSNL04",
+      "material": "PLA",
+      "resource_sha256": "615f395761829ceb44acf7ab6722d298556269d69cb36f1a07920b37836a2f29",
+      "inheritance_sha256": "6ce75825914da83f1873547d111ea4b1297f799808e68f36655e0250bfadb81e"
+    },
+    {
+      "key": "SUNLU/SUNLU PLA+ @base.json",
+      "name": "SUNLU PLA+",
+      "material_id": "GFSNL03",
+      "material": "PLA",
+      "resource_sha256": "ac8297ded9da80944971397b41288b4c1a029f14620e6b016743a91522693863",
+      "inheritance_sha256": "d9b808eeb17ae6dab35baf2d3be63d071c9032de6092a5894a32722d07af36bb"
+    },
+    {
+      "key": "SUNLU/SUNLU Silk PLA+ @base.json",
+      "name": "SUNLU Silk PLA+",
+      "material_id": "GFSNL05",
+      "material": "PLA",
+      "resource_sha256": "8f413837cdf1183c000656d511971ba7c57086a6c2392f95f755f72c2c8c0123",
+      "inheritance_sha256": "9e3225a50f1be04b4d83c46140ec9270c9722ebb6435f3f1bdc72bf4a9888856"
+    },
+    {
+      "key": "SUNLU/SUNLU Wood PLA @base.json",
+      "name": "SUNLU Wood PLA",
+      "material_id": "GFSNL07",
+      "material": "PLA",
+      "resource_sha256": "aaf5a0d3655e81096d211451cf2619bde66176473e31889dfbdbf1dabd420318",
+      "inheritance_sha256": "3d750b0a487d092c943f82c28695108a149993111566263e2258355d31022303"
+    },
+    {
+      "key": "eSUN/eSUN PLA+ @base.json",
+      "name": "eSUN PLA+",
+      "material_id": "GFL03",
+      "material": "PLA",
+      "resource_sha256": "91d1a9f9ca5625b189e376766659020f1c89619ecd07d91f4bc42ded43611a75",
+      "inheritance_sha256": "5e995148a8ca4889bd1f100611ac5f82013a5c8f7f85f5ab2f34af699edcd5d8"
+    }
+  ]
+}
