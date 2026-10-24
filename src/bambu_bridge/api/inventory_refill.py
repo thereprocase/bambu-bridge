@@ -393,6 +393,9 @@ async def set_backup(
     printer, controller = physical(request, service, printer_id)
     wires = [body.from_wire, body.to_wire]
     await seat_first(service, printer, printer_id, wires)
+    # A quiet idle printer's last report ages out; Try again settles a slot
+    # only from a fresh one. Asked outside the write lock: it awaits the printer.
+    await refresh_source_frame(printer)
     async with service.writes:
         report = printer.refill_reports.snapshot(connected=printer.connected)
         if not report.idle:
@@ -434,6 +437,8 @@ async def remove_backup(
     restoration worker puts the slots back once it is idle.
     """
     printer, controller = physical(request, service, printer_id)
+    # As in set_backup: without a fresh report a restored slot stays uncertain.
+    await refresh_source_frame(printer)
     async with service.writes:
         report = printer.refill_reports.snapshot(connected=printer.connected)
         group = controller.store.get(printer_id)

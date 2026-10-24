@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -420,6 +421,73 @@ async def test_the_automatic_restore_never_resends_an_unconfirmed_write(tmp_path
         await asyncio.sleep(0.3)
         task.cancel()
         assert printer.send_raw.await_count == sent
+
+
+def gone_quiet(printer, declared):
+    """The printer, after a minute of saying nothing, as an idle P1S does.
+
+    Asked for a full report, it reports what its slots declare now.
+    """
+    import time
+
+    tracker = printer.refill_reports
+    tracker.slots = {
+        wire: replace(slot, reported_at=slot.reported_at - 60)
+        for wire, slot in tracker.slots.items()
+    }
+    tracker.hardware = (tracker.hardware[0], tracker.hardware[1] - 60)
+    for name in ("presence_at", "unit_at", "state_at", "auto_at", "backups_at"):
+        setattr(tracker, name, getattr(tracker, name) - 60)
+    printer.material_inventory.snapshot.return_value = {"ams_at": time.time() - 60}
+
+    async def full_report():
+        observe(printer, declared[0], declared[1])
+        printer.material_inventory.snapshot.return_value = {"ams_at": time.time()}
+        printer.raw_bus.publish(Event("snapshot", {}))
+
+    printer.request_full_report = AsyncMock(side_effect=full_report)
+
+
+def test_removing_a_backup_from_a_quiet_idle_printer_asks_for_a_fresh_report(tmp_path, monkeypatch):
+    # The restore had landed, yet the slot stayed uncertain until a sources
+    # request happened to ask the printer for a report.
+    with inventory_app(tmp_path) as (client, _):
+        printer, controller, declared = backup_fixture(client, monkeypatch)
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        assert declared == {0: "FF0000FF", 1: "FF0000FF"}
+
+        async def lands_without_readback(command):
+            body = command["print"]
+            declared[body["tray_id"]] = body["tray_color"]
+
+        printer.send_raw.side_effect = lands_without_readback
+        [chain] = client.delete(BACKUP + "/0", headers=AUTH).json()["backups"]
+        assert chain["state"] == "needs_attention"
+        assert declared == {0: "FF0000FF", 1: "0000FFFF"}
+        sent = printer.send_raw.await_count
+
+        gone_quiet(printer, declared)
+        removed = client.delete(BACKUP + "/0", headers=AUTH)
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["backups"] == []
+        assert [s["state"] for s in controller.store.get("fixture")["steps"]] == [
+            "restored",
+            "restored",
+        ]
+        assert printer.send_raw.await_count == sent  # adopted from the readback, not resent
+        printer.request_full_report.assert_awaited_once()
+
+
+def test_try_again_on_a_quiet_idle_printer_asks_for_a_fresh_report(tmp_path, monkeypatch):
+    with inventory_app(tmp_path) as (client, _):
+        printer, _ = unconfirmed(client, monkeypatch)
+        declared = {0: "FF0000FF", 1: "FF0000FF"}  # the write did land
+        gone_quiet(printer, declared)
+        again = client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        assert again.status_code == 200, again.text
+        assert again.json()["backups"][0]["state"] in ("active", "pending")
+        assert printer.send_raw.await_count == 1  # adopted, not resent
+        printer.request_full_report.assert_awaited_once()
 
 
 def declaration_fixture(client, monkeypatch):
