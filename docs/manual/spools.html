@@ -46,13 +46,25 @@
 <li>Tap <strong>Save weight</strong>. The toast and the row show the new grams.</li>
 </ol>
 
+<h2>Spools off the AMS</h2>
+<p>Under the slots, <strong>Off the AMS</strong> lists every spool Spoolman holds that sits in no slot on any printer and isn't archived: its number, product and colour, and the grams left ("#9 · Elegoo Rapid PETG White", "159 g left"). The section appears only when it has a spool to show. Tap a spool to open its sheet and weigh or archive it there; opened from this list, the sheet leaves every slot as it is.</p>
+
 <h2>Archiving an empty spool</h2>
 <ol class="steps">
-<li>Tap the spool's slot, then <strong>Weigh or archive #10</strong>, then <strong>Archive in Spoolman</strong>. Opened from its slot, the sheet takes the spool out of the slot for you when it archives.</li>
+<li>For a spool still in its slot: tap the slot, then <strong>Weigh or archive #10</strong>, then <strong>Archive in Spoolman</strong>. Opened from its slot, the sheet takes the spool out of the slot for you when it archives.</li>
+<li>For a spool already out of the AMS: tap it under <strong>Off the AMS</strong>, then <strong>Archive in Spoolman</strong>.</li>
 <li>Optionally weigh the bare spool and type it into <strong>Empty spool on the scale · g</strong>, then <strong>Archive</strong>. Spoolman keeps that weight on the spool. If it differs from the vendor's figure, the app asks once whether every spool of that vendor should use it; "Use it" updates the vendor in Spoolman.</li>
 </ol>
 <figure><img src="img/archive-offer.png" alt="After archiving with a measured 143 g: Polymaker spools weigh 143 g empty? Spoolman has 140 g for Polymaker. Keep as is or Use it"><figcaption>The vendor offer after archiving with a measured bare weight.</figcaption></figure>
 <p>Archived spools stay in Spoolman with their history; they stop appearing in the app's lists.</p>
+
+<h3>When a spool comes out of a slot</h3>
+<p>The bridge remembers which spool last sat in each slot. When that spool is in no slot any more and isn't archived, the slot row asks: "#10 came out of this slot".</p>
+<ul>
+<li><strong>Empty – archive it</strong> archives #10 in Spoolman straight away. It skips the bare-spool weight; to record one, archive from the spool's sheet instead.</li>
+<li><strong>Back on the shelf</strong> keeps #10 and stops the question for #10 in that slot. The spool stays under <strong>Off the AMS</strong>.</li>
+</ul>
+<p>The answer is kept on this device only. If #10 goes into a slot again and later comes out, the slot asks again. Once you assign the spool that is in the slot now, the slot remembers that one instead and the question goes away; #10 stays under <strong>Off the AMS</strong>.</p>
 
 <h2>Read tag</h2>
 <ol class="steps">
