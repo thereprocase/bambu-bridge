@@ -1,0 +1,51 @@
+{
+  "_source": "refill.sqlite3 refill_groups row captured live 2026-10-24, stored by the 0c416d2 build and touched by 1f3c4a4; printer serial replaced",
+  "body": {
+    "enabled": false,
+    "revision": 13,
+    "state": "needs_attention",
+    "steps": [
+      {
+        "before": {
+          "nozzle_temp_max": 260,
+          "nozzle_temp_min": 230,
+          "tray_color": "FFFFFFFF",
+          "tray_info_idx": "GFG99",
+          "tray_type": "PETG"
+        },
+        "source_generation": "70ebef67ac914a52a0911752a8480e14",
+        "state": "conflict",
+        "target": {
+          "nozzle_temp_max": 260,
+          "nozzle_temp_min": 230,
+          "tray_color": "FFFFFFFF",
+          "tray_info_idx": "GFG99",
+          "tray_type": "PETG"
+        },
+        "wire": 2
+      },
+      {
+        "before": {
+          "nozzle_temp_max": 260,
+          "nozzle_temp_min": 230,
+          "tray_color": "1A1A1AFF",
+          "tray_info_idx": "GFG99",
+          "tray_type": "PETG"
+        },
+        "direction": "apply",
+        "review_note": "Group stored by the pre-1f3c4a4 build; owner removed the backup after the print. Release so colour sync restores slot 4 to spool #7.",
+        "source_generation": "354e6b12f5864993a4759149cf0a6e7e",
+        "state": "released",
+        "target": {
+          "nozzle_temp_max": 260,
+          "nozzle_temp_min": 230,
+          "tray_color": "FFFFFFFF",
+          "tray_info_idx": "GFG99",
+          "tray_type": "PETG"
+        },
+        "wire": 3
+      }
+    ]
+  },
+  "printer": "p1"
+}

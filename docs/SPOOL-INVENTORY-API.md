@@ -117,8 +117,13 @@ physical sender or change the printer's normal Auto Refill toggle.
   `note` to the revision body and adopts a fresh matching actual target for an
   uncertain write. It cannot assert non-delivery or resend a command.
 - `POST /printers/{id}/refill/release`: the same review body explicitly keeps an
-  external declaration for a conflicted slot in a disabled group. It never
-  restores over that declaration.
+  external declaration for a conflicted (or unsettled uncertain) slot in a
+  disabled group. It never restores over that declaration. For a slot with no
+  spool, send `slot_empty: true` instead of `source_generation`: the step becomes
+  `released_empty`. Only a fresh report of a spool in that slot refuses it (409,
+  "The printer reports a spool in slot N, so it isn't empty"). Without the flag,
+  a slot the printer reports empty is 409 "Slot N is empty; confirm that to clear
+  its backup step".
 
 Stale provider/revision/source context returns 409. Two to four distinct AMS A
 slots must share chemistry (`tray_type`); every member is declared as the anchor
@@ -138,7 +143,8 @@ tag; it is then the anchor and is never written.
   While the printer is busy or offline it records the request (state `restoring`)
   and the restoration worker finishes it once idle. A never-written step (the
   anchor, a slot that already matched) needs no evidence, so an emptied tag slot
-  never blocks removal.
+  never blocks removal. A step whose slot the printer reports empty settles as
+  `released_empty`, even after the request, as soon as a fresh report shows it.
 
 ### Backup state
 

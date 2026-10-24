@@ -85,6 +85,9 @@ class RefillReport:
     eligibility_reported_at: float | None
     # Wires whose RFID the AMS is reading now: their declaration may change.
     reading: frozenset[int] = frozenset()
+    # Wires a fresh presence report shows without a spool; None when presence
+    # is not freshly known. A wire missing from `slots` alone is no evidence.
+    empty: frozenset[int] | None = None
 
 
 class RefillStore:
@@ -167,6 +170,12 @@ class RefillStore:
         if self.on_save is not None:
             self.on_save(printer, result)
         return result
+
+
+# A disabled group's step in one of these needs nothing more; when every step is,
+# the group is disabled. released_empty: the slot held no spool, so there was
+# nothing to restore.
+SETTLED = frozenset({"restored", "released", "released_empty"})
 
 
 # The order a step's changes are listed in: what the filament is, then how it looks.
@@ -346,6 +355,45 @@ class RefillController:
             return bool(slot.tagged and step.get("tag_key") and slot.tag_key == step["tag_key"])
         return slot.editable and slot.source_generation == step["source_generation"]
 
+    @staticmethod
+    def _writes(step: dict[str, Any]) -> bool:
+        """Whether the step changes its slot at all.
+
+        Rows stored before `writes` was recorded (the 0c416d2 build) carry
+        none; their before and target say it, the same way preview decides.
+        """
+        writes = step.get("writes")
+        return step["before"] != step["target"] if writes is None else bool(writes)
+
+    def _nothing_to_restore(self, step: dict[str, Any], report: RefillReport) -> str | None:
+        """How a disabled group's step settles without a send, or None if it can't.
+
+        A slot the printer reports empty holds no spool to put back, whatever
+        the step's state. A step never sent (pending, an anchor, a slot that
+        already matched) has nothing to undo and needs no slot evidence, so an
+        emptied tag slot never blocks removing the backup.
+        """
+        if report.connected and report.empty is not None and step["wire"] in report.empty:
+            return "released_empty"
+        if step["state"] == "pending" or not self._writes(step):
+            return "restored"
+        return None
+
+    @staticmethod
+    def _restoring_state(group: dict[str, Any]) -> str:
+        """A disabled group's stored state from its steps.
+
+        Uncertain waits for the owner's Try again. A conflict is left for the
+        next drive to re-read (a fresh same-source readback may settle it) and
+        the drive moves it to needs_attention if it still stands.
+        """
+        states = {s["state"] for s in group["steps"]}
+        if states <= SETTLED:
+            return "disabled"
+        if states & {"uncertain", "applying", "restoring"}:
+            return "needs_attention"
+        return "restoration_pending"
+
     def disable(self, printer: str, *, revision: int) -> dict[str, Any]:
         if self._lock.locked():
             raise ValueError("wait for the current alias readback before disabling")
@@ -436,7 +484,12 @@ class RefillController:
     def release_external_change(
         self, printer: str, wire: int, report: RefillReport, *, revision: int, note: str
     ) -> dict[str, Any]:
-        """Explicitly keep a later operator declaration; never restore over it."""
+        """Explicitly keep a later operator declaration; never restore over it.
+
+        An uncertain step qualifies too once Try again could not settle it: its
+        slot shows something else, and without release the group could never
+        be disabled.
+        """
         if self._lock.locked() or not note.strip() or len(note) > 1000:
             raise ValueError("a review note and completed readback are required")
         group = self.store.get(printer)
@@ -446,14 +499,71 @@ class RefillController:
         slot = report.slots.get(wire)
         if (
             step is None
-            or step["state"] != "conflict"
+            or step["state"] not in {"conflict", "uncertain"}
             or slot is None
             or not self._fresh(report, slot)
         ):
             raise ValueError("a fresh conflicted-slot readback is required")
         step["state"] = "released"
         step["review_note"] = note.strip()
-        group["state"] = "restoration_pending"
+        group["state"] = self._restoring_state(group)
+        return self.store.save(printer, group, revision)
+
+    def release_unrestorable(
+        self, printer: str, report: RefillReport, *, note: str
+    ) -> dict[str, Any] | None:
+        """Removal's last step, after its drive: keep what can no longer be ours.
+
+        A conflict left after the drive re-read it shows the printer's own
+        setting, as does an uncertain step whose slot has since become another
+        source. An uncertain one on the same source may still hold our alias,
+        so it waits for Try again; a slot that isn't reporting stays for the
+        app to show until it does.
+        """
+        group = self.store.get(printer)
+        if group is None or group["enabled"]:
+            return group
+        for step in list(group["steps"]):
+            slot = report.slots.get(step["wire"])
+            if slot is None or not self._fresh(report, slot):
+                continue
+            if step["state"] == "conflict" or (
+                step["state"] == "uncertain" and not self._same_source(step, slot)
+            ):
+                group = self.release_external_change(
+                    printer, step["wire"], report, revision=group["revision"], note=note
+                )
+        return group
+
+    def release_empty(
+        self, printer: str, wire: int, report: RefillReport, *, revision: int, note: str
+    ) -> dict[str, Any]:
+        """The owner confirms a slot has no spool: its step has nothing to keep or restore.
+
+        Refused only on contrary evidence, a fresh report of a spool there. With
+        the printer silent the owner's word stands, so a stale group can always
+        be cleared; the note records it.
+        """
+        if self._lock.locked() or not note.strip() or len(note) > 1000:
+            raise ValueError("a review note is required")
+        group = self.store.get(printer)
+        if group is None:
+            raise ValueError("refill group not found")
+        number = wire + 1
+        if group["enabled"]:
+            raise ValueError(f"Remove the backup before clearing slot {number}")
+        step = next((s for s in group["steps"] if s["wire"] == wire), None)
+        if step is None or step["state"] in SETTLED:
+            raise ValueError(f"Slot {number} has nothing left to clear")
+        slot = report.slots.get(wire)
+        loaded = (slot is not None and self._fresh(report, slot)) or (
+            report.connected and report.empty is not None and wire not in report.empty
+        )
+        if loaded:
+            raise ValueError(f"The printer reports a spool in slot {number}, so it isn't empty")
+        step["state"] = "released_empty"
+        step["review_note"] = note.strip()
+        group["state"] = self._restoring_state(group)
         return self.store.save(printer, group, revision)
 
     def _activity(self, group: dict[str, Any], report: RefillReport) -> tuple[str, bool, bool, str]:
@@ -507,19 +617,27 @@ class RefillController:
             )
         )
 
-    def _readopt(self, printer: str, group: dict[str, Any], report: RefillReport) -> dict[str, Any]:
+    def _readopt(self, group: dict[str, Any], report: RefillReport) -> bool:
         """Carry a group stored by an earlier bridge run over to this run's generations.
 
         A restart retires every source generation. A step whose generation is
         from another run is re-adopted when its slot's current generation is
         the first this run issued there (nothing was seen to change since) and
         the slot shows exactly what the step left it as: its target once owned,
-        its before while pending, either while uncertain. That is the evidence
-        an untagged spool's assignment stands on. Tag anchors are judged
-        by their tag and need nothing here.
+        its before while pending, either while uncertain or in conflict. That
+        is the evidence an untagged spool's assignment stands on. Tag
+        anchors are judged by their tag and need nothing here.
+
+        Rows from before run-prefixed generations (the 0c416d2 build) carry no
+        `writes`; it is filled in from before and target, as preview decides
+        it. Mutates `group`; True when anything changed.
         """
         changed = False
         for step in group["steps"]:
+            if "writes" not in step:
+                step["writes"] = self._writes(step)
+                step["changes"] = field_changes(step["before"], step["target"])
+                changed = True
             if str(step["source_generation"]).startswith(f"{RUN}-"):
                 continue
             if step.get("anchor") and step.get("tagged"):
@@ -537,21 +655,51 @@ class RefillController:
                 "owned": [step["target"]],
                 "pending": [step["before"]],
                 "uncertain": [step["before"], step["target"]],
+                # A conflict records what an earlier readback showed. A slot
+                # unchanged since this run began that shows exactly the alias
+                # or the original is ours again, so removal can restore it
+                # instead of releasing it with the alias left on.
+                "conflict": [step["before"], step["target"]],
             }.get(step["state"], [])
             if shown in wanted:
                 step["source_generation"] = slot.source_generation
                 changed = True
-        return self.store.save(printer, group, group["revision"]) if changed else group
+        return changed
+
+    def _settle(self, group: dict[str, Any], report: RefillReport) -> bool:
+        """Settle every step of a disabled group that needs no send; True if any did."""
+        if group["enabled"]:
+            return False
+        changed = False
+        for step in group["steps"]:
+            if step["state"] in SETTLED or step["state"] in {"applying", "restoring"}:
+                continue
+            if settled := self._nothing_to_restore(step, report):
+                step["state"] = settled
+                changed = True
+        return changed
 
     def note(self, printer: str, report: RefillReport) -> None:
-        """Take in a fresh report: re-adopt a stored group, then remember or clear
-        its confirmation. Called for every report the printer sends."""
+        """Take in a fresh report: re-adopt a stored group, settle what a removed
+        backup no longer needs, then remember or clear its confirmation. Called
+        for every report the printer sends.
+
+        Settling here, not only in a drive, is what clears a disabled group left
+        in needs_attention by a slot that has since gone empty: the restoration
+        worker drives only restoration_pending groups.
+        """
         if self._lock.locked():
             return  # a drive owns the group's revisions until it finishes
         group = self.store.get(printer)
         if group is None:
             return
-        self._remember(printer, self._readopt(printer, group, report), report)
+        changed = self._readopt(group, report)
+        if not group["enabled"] and (self._settle(group, report) or changed):
+            group["state"] = self._restoring_state(group)
+            changed = True
+        if changed:
+            group = self.store.save(printer, group, group["revision"])
+        self._remember(printer, group, report)
 
     def _remember(self, printer: str, group: dict[str, Any], report: RefillReport) -> None:
         if not group["enabled"] or not self.qualified:
@@ -579,9 +727,7 @@ class RefillController:
         group = self.store.get(printer)
         if group is None:
             group = {"enabled": False, "state": "disabled", "steps": [], "revision": 0}
-        elif not group["enabled"] and all(
-            s["state"] in {"restored", "released"} for s in group["steps"]
-        ):
+        elif not group["enabled"] and all(s["state"] in SETTLED for s in group["steps"]):
             group["state"] = "disabled"
         elif not self.qualified:
             group["state"] = "unsupported"
@@ -637,22 +783,23 @@ class RefillController:
                 assert group is not None
                 step = group["steps"][index]
                 applying = group["enabled"]
-                if step["state"] in {"uncertain", "conflict", "applying", "restoring"}:
+                if not applying and step["state"] in SETTLED:
+                    continue
+                if not applying and (settled := self._nothing_to_restore(step, await observe())):
+                    step["state"] = settled
+                    group = self.store.save(printer, group, group["revision"])
+                    continue
+                # A restore re-reads a conflicted slot below: a fresh same-source
+                # readback of the alias or the original settles it.
+                if step["state"] in {"uncertain", "applying", "restoring"} or (
+                    applying and step["state"] == "conflict"
+                ):
                     if step["state"] in {"applying", "restoring"}:
                         step["state"] = "uncertain"
                     group["state"] = "needs_attention"
                     group = self.store.save(printer, group, group["revision"])
                     if applying:
                         return group
-                    continue
-                if not applying and step["state"] == "released":
-                    continue
-                if not applying and (step["state"] == "pending" or step.get("writes") is False):
-                    # Never sent (a pending step, an anchor, a slot that already
-                    # matched), so nothing to undo and no slot evidence needed:
-                    # an emptied tag slot never blocks removing the backup.
-                    step["state"] = "restored"
-                    group = self.store.save(printer, group, group["revision"])
                     continue
                 report = await observe()
                 slot = report.slots.get(step["wire"])
@@ -666,7 +813,11 @@ class RefillController:
                 ):
                     step["state"] = "conflict"
                     group["state"] = "needs_attention"
-                    return self.store.save(printer, group, group["revision"])
+                    group = self.store.save(printer, group, group["revision"])
+                    # One slot's conflict never holds back restoring the others.
+                    if applying:
+                        return group
+                    continue
                 current = asdict(slot.declaration)
                 expected = (
                     step["before"] if applying and step["state"] == "pending" else step["target"]
@@ -682,7 +833,10 @@ class RefillController:
                 if current != expected or not slot.editable:
                     step["state"] = "conflict"
                     group["state"] = "needs_attention"
-                    return self.store.save(printer, group, group["revision"])
+                    group = self.store.save(printer, group, group["revision"])
+                    if applying:
+                        return group
+                    continue
                 if not report.idle:
                     group["state"] = "pending"
                     return self.store.save(printer, group, group["revision"])
@@ -750,7 +904,9 @@ def backups(status: dict[str, Any], report: RefillReport) -> list[dict[str, Any]
             s for s in steps if s["state"] in {"uncertain", "conflict", "applying", "restoring"}
         )
         slot, number = report.slots.get(step["wire"]), step["wire"] + 1
-        if slot is None:
+        if slot is None and report.empty is not None and step["wire"] in report.empty:
+            message = f"Slot {number} is empty"
+        elif slot is None:
             message = f"The printer does not report slot {number}"
         elif asdict(slot.declaration) not in (step["before"], step["target"]):
             changed = field_changes(step["target"], asdict(slot.declaration))

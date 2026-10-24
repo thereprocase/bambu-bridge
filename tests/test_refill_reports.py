@@ -260,3 +260,19 @@ def test_a_reading_bit_ends_with_its_tray_or_its_unit():
     tracker.observe({"print": {"ams": {"ams_exist_bits": "0"}}})  # the AMS is gone
     tracker.observe(raw())
     assert tracker.snapshot(connected=True).reading == frozenset()
+
+
+def test_a_p1s_naming_its_ams_after_the_first_pushall_keeps_the_first_generation():
+    """A P1S names its AMS only in the version reply, which lands after pushall."""
+    tracker = RefillReports()
+    push = raw()
+    del push["print"]["ams"]["ams"][0]["sn"]
+    tracker.observe(push)
+    tracker.observe({"info": {"module": [{"name": "ams/0", "sn": "fixture-ams"}]}})
+    tracker.observe(copy.deepcopy(push))
+    slots = tracker.snapshot(connected=True).slots
+    assert slots[0].first_of_run and slots[1].first_of_run
+    # Another AMS named later is a change of hardware.
+    tracker.observe({"info": {"module": [{"name": "ams/0", "sn": "different-ams"}]}})
+    tracker.observe(copy.deepcopy(push))
+    assert not tracker.snapshot(connected=True).slots[0].first_of_run

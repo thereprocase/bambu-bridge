@@ -40,6 +40,12 @@ class RefillReports:
         self.listener: Callable[[], None] | None = None
         self.expected: dict[int, tuple[str, dict[str, Any]]] = {}
         self.serial: str | None = None
+        # Whether this run has named the AMS yet. A P1S names it only in the
+        # version reply, which lands after the first pushall: learning the name
+        # then is not a change of hardware, so it must not retire generations
+        # (that left every slot's first_of_run false, and no stored group was
+        # ever re-adopted after a restart). A later, different name still is.
+        self.identified = False
         self.last_presence: int | None = None
         self.counter = 0  # receipts only ever grow
         self.clear()
@@ -172,10 +178,11 @@ class RefillReports:
             for wire in range(4):
                 self._invalidate(wire)
             return
-        if self.serial != serial:
+        if self.serial != serial and self.identified:
             for wire in range(4):
                 self._invalidate(wire)
         self.hardware, self.serial = (serial, now), serial
+        self.identified = True
 
     def _tray(self, wire: int, tray: dict[str, Any], now: float) -> None:
         identity = {k: tray[k] for k in ("tag_uid", "tray_uuid", "tray_sub_brands") if k in tray}
@@ -274,6 +281,19 @@ class RefillReports:
         # A tray that is not there is not being read, whatever bit was last sent.
         present = self.presence or 0
         reading = frozenset(w for w in range(4) if (self.reading & present) >> w & 1)
+        # Positive evidence of an empty slot: a fresh presence report from the
+        # identified, attached AMS with the slot's bit clear. A slot merely
+        # missing from `slots` may only be silent or mid-update.
+        empty = (
+            frozenset(w for w in range(4) if not present >> w & 1)
+            if connected
+            and hardware_fresh
+            and self.unit_present is True
+            and self.presence is not None
+            and self.presence_at is not None
+            and 0 <= now - self.presence_at <= 30
+            else None
+        )
         return RefillReport(
-            connected, idle, slots, self.auto, self.backups, eligibility_at, reading
+            connected, idle, slots, self.auto, self.backups, eligibility_at, reading, empty
         )

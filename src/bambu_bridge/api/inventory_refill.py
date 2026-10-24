@@ -247,14 +247,50 @@ async def reconcile_refill(
     return await review_refill(request, service, printer_id, body, release=False)
 
 
+class RefillRelease(RefillRevision):
+    wire: int = Field(ge=0, le=3, strict=True)
+    # The generation the owner reviewed; an empty slot has none.
+    source_generation: str | None = Field(default=None, min_length=1, max_length=128)
+    note: str = Field(min_length=1, max_length=1000)
+    # The owner confirms the slot holds no spool, so there is nothing to keep or restore.
+    slot_empty: bool = Field(default=False, strict=True)
+
+
 @router.post("/printers/{printer_id}/refill/release")
 async def release_refill(
     printer_id: str,
-    body: RefillReview,
+    body: RefillRelease,
     request: Request,
     service: Annotated[InventoryService, Depends(get_inventory)],
 ) -> dict[str, Any]:
-    return await review_refill(request, service, printer_id, body, release=True)
+    """Keep a conflicted slot's own declaration, or clear the step of an emptied slot.
+
+    An emptied slot has no source to review, so it needs `slot_empty: true`
+    instead of a source generation; only a fresh report of a spool there
+    refuses it.
+    """
+    if not body.slot_empty:
+        if body.source_generation is None:
+            raise HTTPException(422, "source_generation is required unless slot_empty is set")
+        printer, _ = physical(request, service, printer_id)
+        report = printer.refill_reports.snapshot(connected=printer.connected)
+        if body.wire not in report.slots and report.empty is not None and body.wire in report.empty:
+            raise HTTPException(
+                409, f"Slot {body.wire + 1} is empty; confirm that to clear its backup step"
+            )
+        review = RefillReview(**body.model_dump(exclude={"slot_empty"}))
+        return await review_refill(request, service, printer_id, review, release=True)
+    printer, controller = physical(request, service, printer_id)
+    async with service._writes:
+        if (await service.assignments.snapshot()).provider_id != str(body.provider_id):
+            raise HTTPException(409, "Inventory provider changed; reload refill ownership")
+        report = printer.refill_reports.snapshot(connected=printer.connected)
+        try:
+            return controller.release_empty(
+                printer_id, body.wire, report, revision=body.expected_revision, note=body.note
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
 
 
 class RefillBackup(InventoryInput):
@@ -414,16 +450,19 @@ async def remove_backup(
         try:
             if group["enabled"]:
                 group = controller.disable(printer_id, revision=group["revision"])
-            group = controller.retry(printer_id, report, revision=group["revision"])
-            for wire in [s["wire"] for s in group["steps"] if s["state"] == "conflict"]:
-                group = controller.release_external_change(
-                    printer_id,
-                    wire,
-                    report,
-                    revision=group["revision"],
-                    note="Backup removed; kept the printer's own setting",
-                )
+            controller.retry(printer_id, report, revision=group["revision"])
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
+    # Restore first: the drive settles emptied slots and restores a conflicted
+    # one whose fresh same-source readback still shows the alias. Releasing
+    # before it would keep that alias on the slot.
     await drive(printer_id, printer, controller)
+    async with service.writes:
+        report = printer.refill_reports.snapshot(connected=printer.connected)
+        try:
+            controller.release_unrestorable(
+                printer_id, report, note="Backup removed; kept the printer's own setting"
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
     return await refill_status_body(printer_id, printer, service)
