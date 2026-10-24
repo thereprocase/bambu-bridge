@@ -75,6 +75,8 @@ export interface InventorySource {
   tag_read_done?: boolean | null;
   /** What the tray's RFID tag says, for a tagged tray; null otherwise. Absent on older bridges. */
   tag?: { brand: string | null; material: string | null; color: string | null; weight_g: number | null; remain_percent: number | null } | null;
+  /** The spool that last sat behind this slot's current identity, from the bridge's assignment history. Absent on older bridges. */
+  last_spool_id?: number | null;
 }
 export const inventoryStatus = () => request<InventoryStatus>("/inventory");
 export const inventorySpool = (id: number) =>

@@ -5,6 +5,8 @@
  * bridge has Spoolman, each row also carries the assigned spool from the
  * bridge's assignment table and the spool's record, and tapping a row opens
  * the assign sheet (`/assign-spool`). Load/unload stays here as before.
+ * Under the slots, "Off the AMS" lists the unarchived spools in no slot, and a
+ * slot whose last spool left without a word asks whether it was empty.
  */
 
 import { amsEnvironmentLabel } from "../../src/lib/amsEnvironment";
@@ -23,6 +25,7 @@ import { printerStateLabels } from "../../src/lib/printerState";
 import { READ_POLL_MS, READ_TIMEOUT_MS, READING_TEXT, canRead, readOutcome, readableWires, sameReport, type Reading } from "../../src/lib/readTag";
 import { BridgeError } from "../../src/api/errors";
 import {
+  archiveSpool,
   inventoryAccounting,
   inventorySources,
   inventorySpools,
@@ -54,6 +57,7 @@ import {
   tagOriginNote,
   type SlotView,
 } from "../../src/lib/slotInventory";
+import { cameOutOf, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../../src/lib/shelf";
 import { AmsSlot, viewOf } from "../../src/lib/snapshot";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
@@ -94,6 +98,10 @@ export default function FilamentScreen() {
   const [openWire, setOpenWire] = useState<number | null>(null);
   // Manual RFID reads, by wire slot. Nothing starts on its own.
   const [readings, setReadings] = useState<Record<number, Reading | undefined>>({});
+  // "Back on the shelf" answers, kept on this device only (see src/lib/shelf).
+  const [shelved, setShelved] = useState<Set<string>>(() => readShelved());
+  // The spool whose "Empty – archive it" is in flight, so a second tap waits.
+  const [archivingId, setArchivingId] = useState<number | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -152,6 +160,11 @@ export default function FilamentScreen() {
       setRefill(refillNow);
       setSources(physical);
       setSpools(records);
+      const stored = readShelved();
+      const kept = pruneShelved(stored, state);
+      if (kept.size !== stored.size) writeShelved(kept);
+      // An answer that couldn't be saved stays in memory until a reseat clears it.
+      setShelved((held) => pruneShelved(new Set([...held, ...kept]), state));
       setNeedsYou((waiting.attempts ?? []).filter((r) => r.printer_id === selectedId));
       setRecent((latest.attempts ?? []).filter((r) => r.printer_id === selectedId));
       setInventoryError("");
@@ -244,6 +257,33 @@ export default function FilamentScreen() {
   }
   const anyReading = Object.values(readings).some((r) => r?.state === "reading");
 
+  /** "Empty – archive it": the spool sits in no slot, so Spoolman archives it as it is. */
+  async function archiveCameOut(spool: InventorySpool) {
+    if (archivingId != null) return;
+    setArchivingId(spool.id);
+    try {
+      await archiveSpool(spool.id);
+      if (!mounted.current) return;
+      setSpools((list) => list.filter((s) => s.id !== spool.id));
+      showToast(`#${spool.id} archived`, { severity: "success" });
+      void refresh();
+    } catch (e) {
+      showToast(inventoryErrorText(e), { severity: "danger" });
+    } finally {
+      if (mounted.current) setArchivingId(null);
+    }
+  }
+
+  /** "Back on the shelf": this slot stops asking about this spool. */
+  function shelve(slot: SlotView, spool: InventorySpool) {
+    const next = new Set(shelved).add(shelfKey(slot.source.printer_id, slot.source.source, spool.id));
+    writeShelved(next);
+    setShelved(next);
+  }
+
+  const offAms = inventoryOn ? offAmsSpools(spools, status) : [];
+  const cameOut = (slot: SlotView | null) => (slot && inventoryOn && !rescanning ? cameOutOf(slot, spools, status, shelved) : null);
+
   function openAssign(slot: SlotView) {
     if (!selectedId) return;
     router.push({ pathname: "/assign-spool", params: { printer: selectedId, source: slot.source.source } });
@@ -286,6 +326,8 @@ export default function FilamentScreen() {
     note?: string | null;
     /** The read's send failed; offered when the printer is idle. */
     retry?: (() => void) | null;
+    /** The spool that left this slot unannounced; the row asks what became of it. */
+    cameOut?: InventorySpool | null;
   }) {
     const { primary, secondary, chain } = lines(opts.slot, opts.liveType, opts.empty);
     const stale = opts.slot ? staleLine(opts.slot.source) : null;
@@ -356,6 +398,32 @@ export default function FilamentScreen() {
           {opts.actions}
         </View>
       )}
+      {opts.cameOut && opts.slot && (() => {
+        const gone = opts.cameOut;
+        const slot = opts.slot;
+        return (
+          <View style={{ marginLeft: SWATCH + space.md, marginTop: space.sm, gap: space.xs }}>
+            <Text style={[type.small, { color: c.text }]}>{`#${gone.id} came out of this slot`}</Text>
+            <View style={{ flexDirection: "row", gap: space.sm, flexWrap: "wrap" }}>
+              <Button
+                label="Empty – archive it"
+                variant="secondary"
+                size="small"
+                disabled={archivingId != null}
+                loading={archivingId === gone.id}
+                onPress={() => void archiveCameOut(gone)}
+              />
+              <Button
+                label="Back on the shelf"
+                variant="secondary"
+                size="small"
+                disabled={archivingId === gone.id}
+                onPress={() => shelve(slot, gone)}
+              />
+            </View>
+          </View>
+        );
+      })()}
       </View>
     );
   }
@@ -445,6 +513,7 @@ export default function FilamentScreen() {
                   first: index === 0,
                   note: readings[slot.physicalSlot - 1]?.text ?? null,
                   retry: readings[slot.physicalSlot - 1]?.failed ? () => void readTag(slot.physicalSlot - 1) : null,
+                  cameOut: cameOut(byWire.get(slot.physicalSlot - 1) ?? null),
                   actions: (() => {
                     const slotView = byWire.get(slot.physicalSlot - 1) ?? null;
                     const wire = slot.physicalSlot - 1;
@@ -523,6 +592,7 @@ export default function FilamentScreen() {
             slot: external,
             remainingPercent: percentFor(external, null),
             first: true,
+            cameOut: cameOut(external),
             actions: external.source.issues.includes("source_empty") ? undefined : (
               <>
                 <Button
@@ -542,6 +612,33 @@ export default function FilamentScreen() {
               </>
             ),
           })}
+        </Surface>
+      )}
+
+      {selectedId && offAms.length > 0 && (
+        <Surface padded style={{ gap: space.sm }}>
+          <Text style={[type.h2, { color: c.text }]}>Off the AMS</Text>
+          {offAms.map((spool, index) => (
+            <Pressable
+              key={spool.id}
+              accessibilityRole="button"
+              accessibilityLabel={`${spoolLabel(spool)}, ${gramsLeft(spool)}, weigh or archive`}
+              // Opened without a printer or source: the sheet weighs or archives and leaves every slot alone.
+              onPress={() => router.push({ pathname: "/spool", params: { id: String(spool.id) } })}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: space.sm,
+                borderTopWidth: index ? 1 : 0,
+                borderTopColor: c.borderSoft,
+                paddingTop: index ? space.sm : 0,
+              }}
+            >
+              <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: spoolColor(spool) ?? c.surface3, borderWidth: 1, borderColor: c.border }} />
+              <Text style={[type.body, { color: c.text, flex: 1 }]} numberOfLines={1}>{spoolLabel(spool)}</Text>
+              <Text style={[type.small, { color: c.muted }]}>{gramsLeft(spool)}</Text>
+            </Pressable>
+          ))}
         </Surface>
       )}
 
