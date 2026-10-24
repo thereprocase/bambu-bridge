@@ -206,6 +206,14 @@ cd ~/bambu-bridge
 systemctl --user restart bambu-bridge      # or: sudo systemctl restart bambu-bridge
 ```
 
+Pre-check for builds from the 2026-10-24 refill sprint onward: no stored refill
+group may have a tagged anchor step without a `tag_key` (only a build between
+e1b1e58 and a3fc92c could write one; this bridge would never re-activate it). Check
+with `sqlite3 "$BRIDGE_INVENTORY_DIR/refill/refill.sqlite3" "SELECT printer FROM
+refill_groups WHERE EXISTS (SELECT 1 FROM json_each(body, '$.steps') WHERE
+json_extract(value, '$.tagged') AND json_extract(value, '$.tag_key') IS NULL)"`;
+it must print nothing. Otherwise remove that backup before updating.
+
 **An update only takes effect after you restart the service** — the bridge reads
 its code and environment at startup. Registered printers and the job database
 live under `~/.local/share/bambu-bridge/` and survive the update.
