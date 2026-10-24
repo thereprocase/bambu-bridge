@@ -57,7 +57,21 @@ import {
   tagOriginNote,
   type SlotView,
 } from "../../src/lib/slotInventory";
-import { cameOutOf, everySpool, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../../src/lib/shelf";
+import {
+  answered,
+  cameOutOf,
+  everySpool,
+  offAmsSpools,
+  pruneShelved,
+  readMemory,
+  readShelved,
+  remember,
+  shelfKey,
+  spoolColor,
+  writeMemory,
+  writeShelved,
+  type SlotMemory,
+} from "../../src/lib/shelf";
 import { AmsSlot, viewOf } from "../../src/lib/snapshot";
 import { useLiveStore } from "../../src/store/live";
 import { usePrintersStore } from "../../src/store/printers";
@@ -100,6 +114,8 @@ export default function FilamentScreen() {
   const [readings, setReadings] = useState<Record<number, Reading | undefined>>({});
   // "Back on the shelf" answers, kept on this device only (see src/lib/shelf).
   const [shelved, setShelved] = useState<Set<string>>(() => readShelved());
+  // The spool each slot was last seen holding, and the one that left it (see src/lib/shelf).
+  const [memory, setMemory] = useState<SlotMemory>(() => readMemory());
   // The spool whose "Empty – archive it" is in flight, so a second tap waits.
   const [archivingId, setArchivingId] = useState<number | null>(null);
   const mounted = useRef(true);
@@ -160,6 +176,11 @@ export default function FilamentScreen() {
       setRefill(refillNow);
       setSources(physical);
       setSpools(records);
+      // Compared with what was saved before it is replaced, so a swap made while
+      // the app was closed still asks about the spool that left.
+      const recalled = remember(readMemory(), selectedId, state, records);
+      writeMemory(recalled);
+      setMemory(recalled);
       const stored = readShelved();
       const kept = pruneShelved(stored, state);
       if (kept.size !== stored.size) writeShelved(kept);
@@ -258,13 +279,14 @@ export default function FilamentScreen() {
   const anyReading = Object.values(readings).some((r) => r?.state === "reading");
 
   /** "Empty – archive it": the spool sits in no slot, so Spoolman archives it as it is. */
-  async function archiveCameOut(spool: InventorySpool) {
+  async function archiveCameOut(slot: SlotView, spool: InventorySpool) {
     if (archivingId != null) return;
     setArchivingId(spool.id);
     try {
       await archiveSpool(spool.id);
       if (!mounted.current) return;
       setSpools((list) => list.filter((s) => s.id !== spool.id));
+      settle(slot);
       showToast(`#${spool.id} archived`, { severity: "success" });
       void refresh();
     } catch (e) {
@@ -274,15 +296,22 @@ export default function FilamentScreen() {
     }
   }
 
+  function settle(slot: SlotView) {
+    const next = answered(readMemory(), slot.source.printer_id, slot.source.source);
+    writeMemory(next);
+    setMemory((held) => answered(held, slot.source.printer_id, slot.source.source));
+  }
+
   /** "Back on the shelf": this slot stops asking about this spool. */
   function shelve(slot: SlotView, spool: InventorySpool) {
     const next = new Set(shelved).add(shelfKey(slot.source.printer_id, slot.source.source, spool.id));
     writeShelved(next);
     setShelved(next);
+    settle(slot);
   }
 
   const offAms = inventoryOn ? offAmsSpools(spools, status) : [];
-  const cameOut = (slot: SlotView | null) => (slot && inventoryOn && !rescanning ? cameOutOf(slot, spools, status, shelved) : null);
+  const cameOut = (slot: SlotView | null) => (slot && inventoryOn && !rescanning ? cameOutOf(slot, spools, status, shelved, memory) : null);
 
   function openAssign(slot: SlotView) {
     if (!selectedId) return;
@@ -411,7 +440,7 @@ export default function FilamentScreen() {
                 size="small"
                 disabled={archivingId != null}
                 loading={archivingId === gone.id}
-                onPress={() => void archiveCameOut(gone)}
+                onPress={() => void archiveCameOut(slot, gone)}
               />
               <Button
                 label="Back on the shelf"

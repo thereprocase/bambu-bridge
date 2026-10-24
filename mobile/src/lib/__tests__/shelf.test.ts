@@ -1,5 +1,5 @@
 import type { InventorySource, InventorySpool, InventoryStatus } from "../../api/inventory";
-import { cameOutOf, everySpool, offAmsSpools, pruneShelved, readShelved, shelfKey, spoolColor, writeShelved } from "../shelf";
+import { answered, cameOutOf, everySpool, offAmsSpools, pruneShelved, readMemory, readShelved, remember, shelfKey, spoolColor, writeMemory, writeShelved } from "../shelf";
 import type { SlotView } from "../slotInventory";
 
 const mockStore: Record<string, string> = {};
@@ -99,4 +99,40 @@ it("everySpool pages by 100 until a short page, and stops at the bridge's 1000",
   expect(page.mock.calls).toEqual([[0, 100], [100, 100], [200, 100]]);
   const endless = jest.fn(async (offset: number) => Array.from({ length: 100 }, (_, i) => spool(offset + i)));
   expect((await everySpool(endless)).length).toBe(1000);
+});
+
+describe("slot memory", () => {
+  const S = "ams:abc:tray:2";
+  const spools = [spool(8), spool(9), spool(1)];
+
+  it("turns the spool seen before into the slot's question, and keeps it until it is seated or gone", () => {
+    let memory = remember({}, "P1", status([S, 8]), spools);
+    expect(memory).toEqual({ [`P1|${S}`]: { seen: 8, out: null } });
+    memory = remember(memory, "P1", status(), spools); // emptied
+    expect(memory).toEqual({ [`P1|${S}`]: { seen: null, out: 8 } });
+    memory = remember(memory, "P1", status([S, 9]), spools); // #9 loaded; #8 still asked
+    expect(memory).toEqual({ [`P1|${S}`]: { seen: 9, out: 8 } });
+    expect(cameOutOf(view(9, 9), spools, status([S, 9]), new Set(), { "P1|ams:abc:tray:0": { seen: 9, out: 8 } })?.id).toBe(8);
+    expect(remember(memory, "P1", status([S, 9], ["ams:abc:tray:0", 8]), spools)[`P1|${S}`]).toEqual({ seen: 9, out: null });
+    expect(remember(memory, "P1", status([S, 9]), [spool(9)])[`P1|${S}`]).toEqual({ seen: 9, out: null });
+  });
+
+  it("leaves other printers' slots as they were seen, and ignores a bridge without assignments", () => {
+    const memory = { "P2|ams:def:tray:0": { seen: 8, out: null } };
+    expect(remember(memory, "P1", status(), spools)).toEqual(memory);
+    const older = { ...status(), assignments: undefined };
+    expect(remember({ [`P1|${S}`]: { seen: 8, out: null } }, "P1", older, spools)).toEqual({ [`P1|${S}`]: { seen: 8, out: null } });
+  });
+
+  it("is cleared by an answer and round-trips through local storage", () => {
+    const memory = { [`P1|${S}`]: { seen: 9, out: 8 }, "P1|ams:abc:tray:3": { seen: null, out: 5 } };
+    expect(answered(memory, "P1", S)).toEqual({ [`P1|${S}`]: { seen: 9, out: null }, "P1|ams:abc:tray:3": { seen: null, out: 5 } });
+    expect(answered(memory, "P1", "ams:abc:tray:3")).toEqual({ [`P1|${S}`]: { seen: 9, out: 8 } });
+    expect(writeMemory(memory)).toBe(true);
+    expect(readMemory()).toEqual(memory);
+    mockStore["filament.seen"] = JSON.stringify({ a: { seen: "x", out: 3 }, b: null, c: 4 });
+    expect(readMemory()).toEqual({ a: { seen: null, out: 3 } });
+    mockStore["filament.seen"] = "[";
+    expect(readMemory()).toEqual({});
+  });
 });

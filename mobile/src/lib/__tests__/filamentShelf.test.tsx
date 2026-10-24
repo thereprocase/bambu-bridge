@@ -170,3 +170,75 @@ describe("a spool that came out of a slot", () => {
     expect(texts()).not.toContain("#8 · Bambu PETG Colour 8 came out of this slot");
   });
 });
+
+describe("a swap made while the app was closed", () => {
+  const SLOT3 = "ams:abc:tray:2";
+  const question = "#8 · Bambu PETG Colour 8 came out of this slot";
+  const pla = (id: number) => spool(id, { filament: { ...spool(id).filament, name: `PLA ${id}`, material: "PLA" } });
+  const reopen = async () => { await act(async () => { tree.unmount(); }); await mount(); };
+
+  beforeEach(async () => {
+    useLiveStore.setState({ printers: { P1: { status: "open", lastEvent: null, eventLog: [], refills: [], snapshot: {
+      model: "P1S", phase: "idle", _raw: { gcode_state: "IDLE" },
+      ams: { present: true, slots: [
+        { physical_slot: 1, type: "PETG", color: "#ff0000", state: "loaded" },
+        { physical_slot: 2, type: "PETG", color: "#000000", state: "loaded" },
+        { physical_slot: 3, type: "PETG", color: "#ffffff", state: "loaded" },
+      ] },
+    } } } } as any);
+    mocked.inventorySpools.mockResolvedValue([spool(1), spool(8), spool(9), pla(12), spool(20)]);
+    // Untagged Elegoo White #8 seen in slot 3.
+    mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1), assigned(SLOT3, 8)));
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), source(2, 8)]);
+    await mount();
+    expect(texts()).not.toContain(question);
+  });
+
+  it("asks about #8 after the slot emptied and #9 of the same product was assigned", async () => {
+    // The bridge's history for that identity and slot now names #9 only.
+    mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1), assigned(SLOT3, 9)));
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), source(2, 9)]);
+    await reopen();
+    expect(texts()).toContain(question);
+    await reopen(); // still asked until answered
+    expect(texts()).toContain(question);
+    await press(button("Back on the shelf"));
+    expect(texts()).not.toContain(question);
+    await reopen();
+    expect(texts()).not.toContain(question);
+  });
+
+  it("asks on the emptied slot before anything else is loaded", async () => {
+    mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1)));
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), { ...source(2), issues: ["source_empty"] }]);
+    await reopen();
+    expect(texts()).toContain(question);
+  });
+
+  it("asks after a swap to another material", async () => {
+    mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1), assigned(SLOT3, 12)));
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), { ...source(2, null), material: "PLA" }]);
+    await reopen();
+    expect(texts()).toContain(question);
+  });
+
+  it("asks after a swap to a tagged spool", async () => {
+    mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1), { ...assigned(SLOT3, 20), origin: "rfid_new" } as any));
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), { ...source(2, null), tagged: true }]);
+    await reopen();
+    expect(texts()).toContain(question);
+    await press(button("Empty – archive it"));
+    expect(mocked.archiveSpool).toHaveBeenCalledWith(8);
+  });
+
+  it("says nothing when #8 moved to another slot, and forgets it", async () => {
+    mocked.inventoryStatus.mockResolvedValue(status(assigned("ams:abc:tray:0", 1), assigned("ams:abc:tray:1", 8)));
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), source(2)]);
+    await reopen();
+    expect(texts()).not.toContain(question);
+    expect(JSON.parse(mockStore["filament.seen"])).toEqual({
+      "P1|ams:abc:tray:0": { seen: 1, out: null },
+      "P1|ams:abc:tray:1": { seen: 8, out: null },
+    });
+  });
+});
