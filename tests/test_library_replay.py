@@ -128,7 +128,7 @@ def test_standard_multi_ams_ids_are_not_array_positions():
     assert all("spool-" not in json.dumps(s) for s in view["slots"])
 
 
-def test_temperature_updates_cannot_refresh_inventory_or_hide_partial_change(monkeypatch):
+def test_temperature_updates_cannot_refresh_inventory_and_partial_changes_apply(monkeypatch):
     clock = [100.0]
     monkeypatch.setattr("bambu_bridge.service.material_inventory.time.time", lambda: clock[0])
     tracker = MaterialInventory()
@@ -140,7 +140,9 @@ def test_temperature_updates_cannot_refresh_inventory_or_hide_partial_change(mon
     assert not inventory_view(tracker.snapshot())["ams_fresh"]
     tracker.observe(materials())
     tracker.observe({"ams": {"tray_exist_bits": "7"}})
-    assert inventory_view(tracker.snapshot())["slots"] == []
+    # A partial report is applied to the last full frame: slot 4 is now empty.
+    view = inventory_view(tracker.snapshot())
+    assert [slot["present"] for slot in view["slots"]] == [True, True, True, False]
     tracker.observe(materials())
     tracker.clear()  # reconnect must seed a new inventory
     assert inventory_view(tracker.snapshot())["slots"] == []

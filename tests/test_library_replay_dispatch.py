@@ -65,6 +65,9 @@ def setup(tmp_path, *, data=None, external=False):
             )
         ),
     )
+    gateway.prepare_shadow_accounting = lambda identifier: NativeGateway.prepare_shadow_accounting(
+        gateway, identifier
+    )
     manager = LibraryReplay(store, lambda: gateway, enabled=True)
     gateway.app.state.library_replay = manager
     return SimpleNamespace(

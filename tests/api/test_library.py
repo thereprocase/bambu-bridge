@@ -204,3 +204,21 @@ def test_replay_start_requires_device_auth_confirmation_and_enabled_native_queue
     assert len(fixture.inbox.status()) == 1
     assert fixture.store.replay_request(body["id"])["approval"] == body
     fixture.service.send_raw.assert_not_awaited()
+
+
+def test_the_plate_thumbnail_route_serves_a_cacheable_png(client: TestClient) -> None:
+    from tests.test_library import PNG_SMALL, sliced_bundle, stored_slice
+
+    store = client.app.state.library  # type: ignore[attr-defined]
+    cid = stored_slice(store, sliced_bundle({"plate_1_small.png": PNG_SMALL}))
+    url = f"/api/v1/library/captures/{cid}/thumbnail"
+    assert client.get(url).status_code == 401
+    response = client.get(url, headers=OWNER)
+    assert response.status_code == 200 and response.content == PNG_SMALL
+    assert response.headers["content-type"] == "image/png"
+    etag = response.headers["etag"]
+    again = client.get(url, headers={**OWNER, "If-None-Match": etag})
+    assert again.status_code == 304 and again.content == b""
+    assert client.get(url + "?plate=2", headers=OWNER).status_code == 404
+    missing = f"/api/v1/library/captures/{'f' * 32}/thumbnail"
+    assert client.get(missing, headers=OWNER).status_code == 404

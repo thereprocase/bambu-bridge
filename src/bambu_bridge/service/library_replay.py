@@ -208,10 +208,8 @@ class LibraryReplay:
         """Stage and release failed reservations while holding the dispatch lock."""
         inbox = gateway.inbox
         assert inbox is not None
-        path, _ = await asyncio.to_thread(self.store.download, cid, name)
-        data = await asyncio.to_thread(path.read_bytes)
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise LibraryError(409, "Slice changed before staging")
+        # The capture is immutable and read verifies it, so these are its bytes.
+        data = await asyncio.to_thread(self.store.read, cid, name)
         reserve_task = asyncio.create_task(
             asyncio.to_thread(
                 inbox.reserve,

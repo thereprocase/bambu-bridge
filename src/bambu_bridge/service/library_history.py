@@ -101,7 +101,36 @@ def native_attempt(row: dict[str, Any], capture_id: str) -> Attempt:
     )
 
 
-def archive_native(store: LibraryStore, inbox: NativeInbox, row: dict[str, Any]) -> bool:
+# Inbox row id -> (capture id, attempt document) recorded earlier in this run.
+Recorded = dict[str, tuple[str, str]]
+
+
+def _record(store: LibraryStore, row: dict[str, Any], cid: str, recorded: Recorded | None) -> bool:
+    attempt = native_attempt(row, cid)
+    store.record_attempt(attempt)
+    if recorded is not None:
+        recorded[row["id"]] = (cid, attempt.model_dump_json())
+    return True
+
+
+def archive_native(
+    store: LibraryStore, inbox: NativeInbox, row: dict[str, Any], recorded: Recorded | None = None
+) -> bool:
+    if recorded is not None and row["id"] in recorded:
+        cid, document = recorded[row["id"]]
+        # record_attempt writes nothing for an identical document, so skipping
+        # it changes nothing; any doubt falls through to the full path.
+        with contextlib.suppress(Exception):
+            if native_attempt(row, cid).model_dump_json() == document:
+                return True
+    if row.get("kind") == "observed":
+        # A print the bridge did not send: print_capture copied it from the
+        # printer's storage under its MD5. Record the print against that copy.
+        md5 = str(json.loads(row["command"])["print"].get("md5") or "")
+        cid = identity("printer-file", md5)
+        if store.capture_state(cid) != "stored":
+            return False
+        return _record(store, row, cid, recorded)
     replay = (
         store.replay_request(row["replay_request_id"]) if row.get("replay_request_id") else None
     )
@@ -147,8 +176,7 @@ def archive_native(store: LibraryStore, inbox: NativeInbox, row: dict[str, Any])
                     store.append(cid, artifact.name, offset, chunk, OWNER)
                     offset += len(chunk)
             store.finalize(cid, OWNER)
-    store.record_attempt(native_attempt(row, cid))
-    return True
+    return _record(store, row, cid, recorded)
 
 
 class LibraryHistory:
@@ -158,6 +186,9 @@ class LibraryHistory:
         self.task: asyncio.Task[None] | None = None
         self.last_scan: float | None = None
         self.last_error: dict[str, Any] | None = None
+        # Rows recorded earlier and unchanged since are skipped; a scan still
+        # reads every row, so this holds at most one entry per inbox row.
+        self.recorded: Recorded = {}
 
     def start(self) -> None:
         self.task = asyncio.create_task(self.run(), name="library:history")
@@ -174,16 +205,20 @@ class LibraryHistory:
             return
         cursor = 0
         errors = 0
+        seen: set[str] = set()
         while not self.stop.is_set():
             rows = await asyncio.to_thread(inbox.archive_page, cursor)
             if not rows:
+                # A full pass: forget rows the inbox no longer keeps.
+                self.recorded = {k: v for k, v in self.recorded.items() if k in seen}
                 break
             for row in rows:
                 if self.stop.is_set():
                     return
                 cursor = row["archive_cursor"]
+                seen.add(row["id"])
                 try:
-                    await asyncio.to_thread(archive_native, self.store, inbox, row)
+                    await asyncio.to_thread(archive_native, self.store, inbox, row, self.recorded)
                 except Exception as exc:
                     errors += 1
                     # No original paths, commands, keys or printer credentials.
@@ -198,6 +233,10 @@ class LibraryHistory:
         while not self.stop.is_set():
             try:
                 await self.scan()
+                # Size and age limits: drop what was printed longest ago.
+                await asyncio.to_thread(
+                    self.store.prune, keep_bytes=self.store.quota, max_age_s=self.store.max_age_s
+                )
             except Exception as exc:
                 self.last_error = {"code": type(exc).__name__}
                 log.warning("library.history_scan_failed", **self.last_error)

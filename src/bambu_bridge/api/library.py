@@ -160,6 +160,22 @@ def delete_capture(cid: str, request: Request) -> Response:
     return Response(status_code=204)
 
 
+@router.get("/captures/{cid}/thumbnail")
+def thumbnail(
+    cid: str, request: Request, plate: int | None = Query(None, ge=1, le=1000)
+) -> Response:
+    """The slicer's picture of the printed plate; 404 when the slice has none."""
+    data, etag = invoke(store(request).thumbnail, cid, plate)
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "private, max-age=86400",  # a capture's bytes never change
+        "X-Content-Type-Options": "nosniff",
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(data, media_type="image/png", headers=headers)
+
+
 @router.get("/captures/{cid}/files/{name}")
 def download(cid: str, name: str, request: Request) -> FileResponse:
     path, digest = invoke(store(request).download, cid, name)
@@ -202,8 +218,6 @@ async def chunk(
     offset: int = Query(ge=0),
     client: dict[str, Any] = Depends(require_slicer),
 ) -> Any:
-    import asyncio
-
     data = bytearray()
     async for part in request.stream():
         if len(data) + len(part) > CHUNK_LIMIT:

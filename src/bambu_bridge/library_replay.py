@@ -249,10 +249,8 @@ def review(
     artifact = next((a for a in capture["artifacts"] if a["role"] == "slice"), None)
     if artifact is None:
         raise LibraryError(409, "This capture has no sliced print file")
-    path, _ = store.download(cid, artifact["name"])
-    spec = requirements(path.read_bytes(), capture["plate"])
-    if spec["slice_sha256"] != artifact["sha256"]:
-        raise LibraryError(409, "Archived slice changed during analysis; verify library integrity")
+    # Verified in memory, so the bytes analysed are the archived ones.
+    spec = requirements(store.read(cid, artifact["name"]), capture["plate"])
     inventory = inventory_view(frame)
     issues = list(spec["issues"])
     if not printer.get("connected"):

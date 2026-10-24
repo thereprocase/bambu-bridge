@@ -12,7 +12,9 @@ import json
 import os
 import sqlite3
 import time
-from collections.abc import Iterator
+import zipfile
+import zlib
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -23,6 +25,8 @@ CHUNK_LIMIT = 4 * 1024 * 1024
 FILE_LIMIT = 512 * 1024 * 1024
 CAPTURE_LIMIT = 2 * 1024 * 1024 * 1024
 IDENTIFIER = r"^[0-9a-f]{32}$"
+THUMBNAIL_LIMIT = 4 * 1024 * 1024
+PNG = b"\x89PNG\r\n\x1a\n"
 DIGEST = r"^[0-9a-f]{64}$"
 
 
@@ -127,8 +131,15 @@ class Attempt(BaseModel):
 
 
 class LibraryStore:
-    def __init__(self, root: Path, *, quota: int = 20 * 1024**3, _restoring: bool = False):
-        self.root, self.quota = root.resolve(), quota
+    def __init__(
+        self,
+        root: Path,
+        *,
+        quota: int = 20 * 1024**3,
+        max_age_s: float | None = None,
+        _restoring: bool = False,
+    ):
+        self.root, self.quota, self.max_age_s = root.resolve(), quota, max_age_s
         if (self.root / "INCOMPLETE").exists() and not _restoring:
             raise LibraryError(503, "This library is an incomplete backup or restore")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -159,6 +170,9 @@ class LibraryStore:
                 CREATE TABLE IF NOT EXISTS replay_requests (
                     id TEXT PRIMARY KEY, capture TEXT NOT NULL REFERENCES captures(id),
                     signature TEXT NOT NULL, document TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS printer_files (
+                    printer TEXT NOT NULL, path TEXT NOT NULL, modified REAL NOT NULL,
+                    PRIMARY KEY(printer, path, modified));
             """)
 
     @contextmanager
@@ -175,8 +189,18 @@ class LibraryStore:
             raise LibraryError(404, "Capture not found")
         return cast(sqlite3.Row, row)
 
-    def create(self, owner: str, capture: Capture) -> dict[str, Any]:
+    def create(
+        self, owner: str, capture: Capture, *, created: float | None = None
+    ) -> dict[str, Any]:
+        """Reserve a capture. `created` backdates it, e.g. to the printer's file time."""
         manifest = capture.model_dump_json()
+        # Make room first: the newest print always fits by evicting the oldest.
+        # A backdated copy only displaces captures older than itself.
+        self.prune(
+            keep_bytes=self.quota - sum(a.size for a in capture.artifacts),
+            max_age_s=self.max_age_s,
+            before=created,
+        )
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT * FROM captures WHERE id=?", (capture.id,)).fetchone()
@@ -191,7 +215,7 @@ class LibraryStore:
                     raise LibraryError(507, "Library quota reached; review retained captures")
                 db.execute(
                     "INSERT INTO captures VALUES(?,?,?,?,NULL,NULL)",
-                    (capture.id, owner, manifest, time.time()),
+                    (capture.id, owner, manifest, created or time.time()),
                 )
                 db.executemany(
                     "INSERT INTO artifacts(capture,name,hash,size) VALUES(?,?,?,?)",
@@ -261,7 +285,8 @@ class LibraryStore:
             )
             return True
 
-    def replay_receipt_created(self, identifier: str) -> None:
+    def _update_replay(self, identifier: str, change: Callable[[dict[str, Any]], None]) -> None:
+        """Rewrite a replay request's document in one write transaction."""
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
@@ -270,30 +295,24 @@ class LibraryStore:
             if row is None:
                 raise LibraryError(404, "Replay request not found")
             document = json.loads(row["document"])
-            document["receipt_created"] = True
+            change(document)
             db.execute(
                 "UPDATE replay_requests SET document=? WHERE id=?",
                 (json.dumps(document, sort_keys=True), identifier),
             )
 
+    def replay_receipt_created(self, identifier: str) -> None:
+        self._update_replay(identifier, lambda document: document.update(receipt_created=True))
+
     def prepare_replay(
         self, identifier: str, command: dict[str, Any], inventory: dict[str, Any]
     ) -> None:
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT document FROM replay_requests WHERE id=?", (identifier,)
-            ).fetchone()
-            if row is None:
-                raise LibraryError(404, "Replay request not found")
-            document = json.loads(row["document"])
+        def prepare(document: dict[str, Any]) -> None:
             if "command" in document:
                 raise LibraryError(409, "This replay was already prepared")
             document.update(command=command, inventory=inventory)
-            db.execute(
-                "UPDATE replay_requests SET document=? WHERE id=?",
-                (json.dumps(document, sort_keys=True), identifier),
-            )
+
+        self._update_replay(identifier, prepare)
 
     def record_attempt(self, attempt: Attempt) -> None:
         with self.connect() as db:
@@ -468,21 +487,75 @@ class LibraryStore:
             ).fetchall()
         return [self.get(row["id"], owner) for row in rows]
 
-    def download(self, cid: str, name: str) -> tuple[Path, str]:
+    def _stored(self, cid: str, name: str) -> tuple[Path, str]:
+        """A finalized artifact's blob path and hash, if the blob has its full size."""
         with self.connect() as db:
             capture = self._capture(db, cid, None)
             a = db.execute(
                 "SELECT * FROM artifacts WHERE capture=? AND name=?", (cid, name)
             ).fetchone()
-            if not capture["finalized"] or a is None:
-                raise LibraryError(404, "Stored artifact not found")
-            path = self.root / "blobs" / a["hash"]
-            if not path.is_file() or path.stat().st_size != a["size"]:
-                raise LibraryError(409, "Stored artifact is missing or damaged")
-            with path.open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() != a["hash"]:
-                    raise LibraryError(409, "Stored artifact is damaged")
-            return path, a["hash"]
+        if not capture["finalized"] or a is None:
+            raise LibraryError(404, "Stored artifact not found")
+        path = self.root / "blobs" / a["hash"]
+        if not path.is_file() or path.stat().st_size != a["size"]:
+            raise LibraryError(409, "Stored artifact is missing or damaged")
+        return path, a["hash"]
+
+    def download(self, cid: str, name: str) -> tuple[Path, str]:
+        """A verified artifact's path, for streaming it from disk."""
+        path, digest = self._stored(cid, name)
+        with path.open("rb") as source:
+            if hashlib.file_digest(source, "sha256").hexdigest() != digest:
+                raise LibraryError(409, "Stored artifact is damaged")
+        return path, digest
+
+    def thumbnail(self, cid: str, plate: int | None = None) -> tuple[bytes, str]:
+        """The slicer's PNG of a plate in the capture's slice, and an ETag for it.
+
+        Only that member is read, and zipfile checks its CRC, so a picture
+        never costs hashing the whole slice. The small render is preferred.
+        """
+        capture = self.get(cid)
+        number = plate or capture["plate"]
+        artifact = next((a for a in capture["artifacts"] if a["role"] == "slice"), None)
+        if artifact is not None:
+            path, digest = self._stored(cid, artifact["name"])
+            try:
+                with zipfile.ZipFile(path) as bundle:
+                    names = set(bundle.namelist())
+                    for member in (f"plate_{number}_small.png", f"plate_{number}.png"):
+                        name = "Metadata/" + member
+                        if name in names and bundle.getinfo(name).file_size <= THUMBNAIL_LIMIT:
+                            data = bundle.read(name)
+                            if data.startswith(PNG):
+                                return data, f'"{digest}-{member}"'
+            except (zipfile.BadZipFile, OSError, zlib.error, NotImplementedError, RuntimeError):
+                pass  # plain G-code, or a member that cannot be read: no picture
+        raise LibraryError(404, "This capture has no plate picture")
+
+    def captures_for(self, source_ids: Iterable[str]) -> dict[str, str]:
+        """The capture of each inbox row the library history has recorded, by row id."""
+        ids = list(source_ids)
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        with self.connect() as db:
+            return {
+                row["source_id"]: row["capture"]
+                for row in db.execute(
+                    "SELECT source_id, capture FROM attempts "
+                    f"WHERE source IN ('native','replay') AND source_id IN ({marks})",
+                    ids,
+                )
+            }
+
+    def read(self, cid: str, name: str) -> bytes:
+        """A verified artifact's bytes: read once and hashed in memory."""
+        path, digest = self._stored(cid, name)
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise LibraryError(409, "Stored artifact is damaged")
+        return data
 
     def usage(self) -> dict[str, int]:
         with self.connect() as db:
@@ -517,6 +590,55 @@ class LibraryStore:
             (
                 self.root / "uploads" / hashlib.sha256((cid + "\0" + name).encode()).hexdigest()
             ).unlink(missing_ok=True)
+
+    def prune(
+        self, *, keep_bytes: int, max_age_s: float | None = None, before: float | None = None
+    ) -> list[str]:
+        """Delete the captures printed longest ago until within size and age.
+
+        A capture's age is its last print (or its capture time if never
+        printed), so a reprint keeps a file. Unfinished uploads are left alone.
+        `before` limits size eviction to captures last printed before then.
+        """
+        now = time.time()
+        # One read; a cheaper "nothing to evict" check would need this same
+        # last-print age per capture to stay right after a reprint.
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT c.id, MAX(c.created, COALESCE("
+                "(SELECT MAX(observed) FROM attempts WHERE capture=c.id), 0)) AS last, "
+                "(SELECT COALESCE(SUM(size), 0) FROM artifacts WHERE capture=c.id) AS bytes "
+                "FROM captures c WHERE c.deleted IS NULL AND c.finalized IS NOT NULL "
+                "ORDER BY last, c.id"
+            ).fetchall()
+        total = sum(row["bytes"] for row in rows)
+        removed = []
+        for row in rows:
+            old = max_age_s is not None and now - row["last"] > max_age_s
+            if not old and (total <= keep_bytes or (before is not None and row["last"] >= before)):
+                break
+            self.delete(row["id"])
+            total -= row["bytes"]
+            removed.append(row["id"])
+        if removed:
+            self.collect_unreferenced()
+        return removed
+
+    def printer_files(self, printer: str) -> dict[str, float]:
+        """Each printer-storage path looked at, and the latest file time it was seen at."""
+        with self.connect() as db:
+            return dict(
+                db.execute(
+                    "SELECT path, MAX(modified) FROM printer_files WHERE printer=? GROUP BY path",
+                    (printer,),
+                ).fetchall()
+            )
+
+    def saw_printer_file(self, printer: str, path: str, modified: float) -> None:
+        with self.connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO printer_files VALUES(?,?,?)", (printer, path, modified)
+            )
 
     def collect_unreferenced(self) -> int:
         removed = 0

@@ -216,3 +216,56 @@ async def test_scan_pages_isolates_failures_and_retries_without_command_access(t
     history.start()
     await asyncio.wait_for(history.close(), 2)
     assert history.task is None
+
+
+def receipts_inbox(rows: list[dict]) -> Mock:
+    inbox = Mock(spec=["archive_page", "open_verified"])
+    inbox.archive_page.side_effect = lambda after: [r for r in rows if r["archive_cursor"] > after]
+    inbox.open_verified.side_effect = lambda _: io.BytesIO(b"exact submitted slice")
+    return inbox
+
+
+def library_rows(store: LibraryStore) -> list[tuple]:
+    """Every attempt and attempt event, without the wall-clock time each was written."""
+    with store.connect() as db:
+        attempts = db.execute("SELECT id,capture,source,source_id,document FROM attempts")
+        events = db.execute("SELECT attempt,state,document FROM attempt_events ORDER BY id")
+        return sorted(map(tuple, attempts)) + [tuple(row) for row in events]
+
+
+async def test_a_rescan_records_only_rows_that_changed(tmp_path: Path, monkeypatch):
+    rows = [{**receipt(c * 32), "archive_cursor": n} for n, c in enumerate("ab", 1)]
+    store = LibraryStore(tmp_path / "skip")
+    history = LibraryHistory(store, lambda: receipts_inbox(rows))
+    await history.scan()
+    recorded = []
+    record = store.record_attempt
+    monkeypatch.setattr(store, "record_attempt", lambda a: recorded.append(a) or record(a))
+    await history.scan()
+    assert recorded == []
+    rows[1] = {**rows[1], "start_state": "running", "running_at": 120.0}
+    await history.scan()
+    assert [a.source_id for a in recorded] == ["b" * 32] and recorded[0].state == "active"
+    # A row the inbox no longer keeps is forgotten.
+    del rows[0]
+    await history.scan()
+    assert set(history.recorded) == {"b" * 32}
+
+
+async def test_skipping_unchanged_rows_leaves_the_library_exactly_as_rescanning(tmp_path: Path):
+    rows = [{**receipt(c * 32), "archive_cursor": n} for n, c in enumerate("abc", 1)]
+    skipping = LibraryHistory(LibraryStore(tmp_path / "skip"), lambda: receipts_inbox(rows))
+    full, inbox = LibraryStore(tmp_path / "full"), receipts_inbox(rows)
+    changes = [
+        {},
+        {"start_state": "running", "running_at": 120.0, "acknowledged": 1},
+        {},
+        {"start_state": "completed", "terminal_at": 300.0, "code": "BBSTART_COMPLETED"},
+        {"revision": 4},
+    ]
+    for change in changes:
+        rows[1] = {**rows[1], **change}
+        await skipping.scan()
+        for row in rows:
+            archive_native(full, inbox, row)
+    assert library_rows(skipping.store) == library_rows(full) != []

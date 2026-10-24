@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PIL import Image
 import pytest
+from PIL import Image
 
 from bambu_bridge.preview_geometry import body_faces, crease_edges
 from bambu_bridge.turntable_overlay import Shape, cel_color, paint_cel, part_color, projection

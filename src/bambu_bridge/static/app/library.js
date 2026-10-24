@@ -18,6 +18,19 @@ export function mount(root, app) {
   ]);
   root.append(el('div', { class: 'app-shell' }, [page]));
 
+  // The slicer's picture of the plate, when the bridge has one; older
+  // bridges and captures without a project answer 404 and show no frame.
+  async function picture(row, card) {
+    try {
+      const response = await app.api.api(`/library/captures/${encodeURIComponent(row.id)}/thumbnail`, { raw: true, signal: controller.signal });
+      if (!response.ok || stopped) return;
+      const url = URL.createObjectURL(await response.blob());
+      const img = el('img', { src: url, alt: `Picture of ${row.title}`, style: { maxWidth: '240px', maxHeight: '180px', display: 'block', marginBottom: '8px' } });
+      img.addEventListener('load', () => URL.revokeObjectURL(url), { once: true });
+      card.prepend(img);
+    } catch { /* no picture */ }
+  }
+
   async function download(row, artifact, button) {
     button.disabled = true;
     try {
@@ -79,6 +92,7 @@ export function mount(root, app) {
         card.append(openReview, review);
       }
       content.append(card);
+      picture(row, card);
     }
     if (!matches.length) content.append(el('p', { text: rows.length ? 'No matching captures in the loaded results.' : 'No captures have been archived yet.' }));
     loadMore.hidden = !more;
