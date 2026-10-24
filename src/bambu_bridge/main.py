@@ -10,7 +10,7 @@ Routers are thin; all domain state hangs off ``app.state``.
 
 from __future__ import annotations
 
-import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,6 +26,9 @@ from bambu_bridge.api import (
     events,
     filament,
     files,
+    inventory,
+    inventory_refill,
+    inventory_usage,
     jobs,
     library,
     native,
@@ -33,7 +36,7 @@ from bambu_bridge.api import (
     pairing,
     printers,
     queue,
-    spools,
+    skip_objects,
     status,
     viz,
 )
@@ -54,11 +57,16 @@ from bambu_bridge.orca import OrcaStore
 from bambu_bridge.pairing import PairingStore
 from bambu_bridge.protocol.ftps import SlicedDateMemo
 from bambu_bridge.push.ntfy import NotificationService, NtfyDispatcher
+from bambu_bridge.service.consumption_delivery import delivery_worker
 from bambu_bridge.service.event_persister import EventPersister
+from bambu_bridge.service.inventory import InventoryService
 from bambu_bridge.service.jobs import JobManager
 from bambu_bridge.service.library_history import LibraryHistory
 from bambu_bridge.service.library_replay import LibraryReplay
+from bambu_bridge.service.print_capture import capture_worker
+from bambu_bridge.service.refill_adapter import restoration_worker
 from bambu_bridge.service.registry import Registry
+from bambu_bridge.service.slot_display import seating_worker
 from bambu_bridge.service.viz_cache import VizCache
 
 log = structlog.get_logger(__name__)
@@ -77,7 +85,11 @@ def create_app(
     configure_logging(
         settings.bridge_log_level,
         settings.bridge_log_format,
-        secrets=(settings.bridge_api_key, settings.bridge_viz_token),
+        secrets=(
+            settings.bridge_api_key,
+            settings.bridge_viz_token,
+            settings.bridge_spoolman_bearer.get_secret_value(),
+        ),
     )
 
     # Warn loudly when the API key is set but suspiciously short — empty is
@@ -99,6 +111,7 @@ def create_app(
         await db.connect()
         registry = Registry(
             PrinterRepo(db),
+            diagnostic_history_dir=Path(settings.bridge_db_path).parent / "diagnostic-history",
             jobs=JobRepo(db),
             filament_memory=FilamentMemoryRepo(db),
             mqtt_port=mqtt_port,
@@ -138,6 +151,7 @@ def create_app(
         # get the external-print watcher attached on startup (same as
         # EventPersister and NotificationService).
         registry.add_listener(job_manager.attach)
+        await job_manager.recover()  # rows a previous process left mid-upload
         await registry.load()
 
         # Startup backfill: if any printer has a live job (submitted/preparing/
@@ -172,12 +186,13 @@ def create_app(
         app.state.orca = OrcaStore(app.state.pairing) if app.state.pairing else None
         app.state.library = (
             LibraryStore(
-                Path(settings.bridge_library_dir), quota=settings.bridge_library_quota_bytes
+                Path(settings.bridge_library_dir),
+                quota=settings.bridge_library_quota_bytes,
+                max_age_s=settings.bridge_library_max_age_days * 86400 or None,
             )
             if settings.bridge_library_dir
             else None
         )
-        app.state.orca_submit_lock = asyncio.Lock()
         app.state.db = db
         app.state.registry = registry
         app.state.jobs = job_manager
@@ -231,10 +246,62 @@ def create_app(
         # .gcode.3mf for viz pre-warm.  Exposed on app.state so the files
         # listing endpoint can consult it without a direct dependency on VizCache.
         app.state.sliced_date_memo = sliced_date_memo
+        app.state.inventory = None
+        if settings.bridge_spoolman_url:
+            try:
+                if not settings.bridge_inventory_dir:
+                    raise ValueError("BRIDGE_INVENTORY_DIR is required for spool inventory")
+                app.state.inventory = await InventoryService.open(
+                    Path(settings.bridge_inventory_dir),
+                    settings.bridge_spoolman_url,
+                    bearer=settings.bridge_spoolman_bearer.get_secret_value(),
+                )
+            except Exception:
+                # Inventory failure must not prevent ordinary printer recovery/control.
+                # No endpoint may write while the coordinator is unavailable.
+                log.error("inventory.start_failed")
         log.info("bridge.started", version=__version__)
+        restorer = contextlib.AsyncExitStack()
+        if app.state.inventory:
+            await restorer.enter_async_context(
+                seating_worker(
+                    registry.list,
+                    app.state.inventory,
+                    events=EventRepo(db).add,
+                    inbox=lambda: getattr(app.state.native_gateway, "inbox", None),
+                )
+            )
+            app.state.inventory.consumption_qualified = settings.bridge_inventory_auto_deduct
+            if settings.bridge_inventory_auto_deduct:
+                await restorer.enter_async_context(
+                    delivery_worker(
+                        app.state.inventory,
+                        lambda: getattr(app.state.native_gateway, "inbox", None),
+                        registry.get,
+                    )
+                )
+        if app.state.inventory and app.state.inventory.refill:
+            await restorer.enter_async_context(
+                restoration_worker(registry.list, app.state.inventory.refill)
+            )
+        if app.state.library:
+            # Copy every print the printer runs; count the foreign ones only
+            # when automatic deduction is on.
+            await restorer.enter_async_context(
+                capture_worker(
+                    registry.list,
+                    app.state.library,
+                    lambda: getattr(app.state.native_gateway, "inbox", None),
+                    app.state.inventory if settings.bridge_inventory_auto_deduct else None,
+                    ftps_port,
+                )
+            )
         try:
             yield
         finally:
+            await restorer.aclose()
+            if app.state.inventory:
+                await app.state.inventory.close()
             if app.state.library_history:
                 await app.state.library_history.close()
             await job_manager.shutdown()
@@ -257,11 +324,15 @@ def create_app(
     v1.include_router(status.router)
     v1.include_router(control.router)
     v1.include_router(advanced.router)
+    v1.include_router(skip_objects.router)
     v1.include_router(files.router)
     v1.include_router(jobs.router)
     v1.include_router(camera.router)
     v1.include_router(queue.router)
-    v1.include_router(spools.router)
+    v1.include_router(inventory.router)
+    v1.include_router(inventory_refill.router)
+    v1.include_router(inventory_usage.router)
+    v1.include_router(inventory_usage.spool_router)
     v1.include_router(events.router)
     v1.include_router(viz.router)
     v1.include_router(filament.router)

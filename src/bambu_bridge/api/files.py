@@ -25,6 +25,7 @@ from fastapi.responses import Response
 from bambu_bridge.api.auth import require_auth
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.api.uploads import read_upload
+from bambu_bridge.preview_source import printing_names
 from bambu_bridge.protocol.ftps import (
     UPLOAD_DIR_CACHE,
     UPLOAD_DIR_PERSISTENT,
@@ -76,9 +77,18 @@ async def upload_file(
     request: Request,
     registry: Registry = Depends(get_registry),
 ) -> dict[str, str]:
-    """Upload a 3MF to the printer's root storage (``/``); return its path."""
+    """Upload a 3MF to the printer's root storage (``/``); return its path.
+
+    Refused (409) while a print is using a file of that name: overwriting
+    it would change what the printer, the viewer and Skip Objects read.
+    """
     ftps = _ftps_for(request, registry, printer_id)
     name = PurePosixPath(file.filename or "upload.3mf").name
+    if name.casefold() in printing_names(registry.get(printer_id).snapshot().get("_raw") or {}):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{name} is printing now; uploading it would overwrite the printing file",
+        )
     data = await read_upload(file)
     try:
         path = await ftps.upload_bytes(data, name, remote_dir=UPLOAD_DIR_PERSISTENT)

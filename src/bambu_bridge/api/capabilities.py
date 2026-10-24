@@ -6,8 +6,11 @@ Identity refresh stays available while model discovery is pending.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import HTTPException, Request
 
@@ -25,7 +28,7 @@ def model_of(service: Any) -> str:
     return "P1S" if model.upper() in {"P1S", "BAMBU LAB P1S", "C12"} else model
 
 
-def unavailable(message: str) -> None:
+def unavailable(message: str) -> NoReturn:
     raise HTTPException(409, {"error": "capability_unavailable", "message": message})
 
 
@@ -34,27 +37,60 @@ def require_p1s(service: Any) -> None:
         unavailable("Bridge control support requires a verified P1S identity")
 
 
-def reported_nozzle(service: Any) -> float:
+def reported_nozzle(service: Any) -> float | None:
+    """The printer's nozzle diameter, or None when it reports none.
+
+    Like Orca's _is_same_nozzle_diameters, an unknown (0) printer nozzle is
+    assumed to match the slice; any reported value must equal it.
+    """
     try:
-        diameter = float((service.snapshot().get("_raw") or {}).get("nozzle_diameter"))
+        diameter = float((service.snapshot().get("_raw") or {}).get("nozzle_diameter") or 0)
     except (TypeError, ValueError):
         diameter = 0
-    if diameter not in {0.2, 0.4, 0.6, 0.8}:
-        unavailable("Reported nozzle diameter required for file compatibility")
-    return diameter
+    return diameter or None
 
 
-def fresh_state(service: Any) -> str:
-    snapshot = service.snapshot()
-    session = snapshot.get("session") or {}
+def telemetry_fresh(service: Any) -> bool:
+    """Connected, with a status report no older than 15 s (5 s clock tolerance)."""
+    session = service.snapshot().get("session") or {}
     try:
         stamp = datetime.fromisoformat(session["last_telemetry_at"].replace("Z", "+00:00"))
         age = (datetime.now(UTC) - stamp).total_seconds()
     except (KeyError, TypeError, ValueError):
         age = float("inf")
-    if not session.get("connected") or not -5 <= age <= 15:
+    return bool(session.get("connected")) and -5 <= age <= 15
+
+
+# An idle P1S reports in bursts, with gaps (about 27 s seen) longer than the
+# 15 s window; a stale status gets one full report request and this long to arrive.
+FRESH_WAIT_S = 5.0
+
+
+async def await_fresh_telemetry(service: Any, wait_s: float | None = None) -> None:
+    """Make status fresh when it can be, before a check that needs it.
+
+    With stale telemetry this asks for a full report (spaced by the printer
+    service) and waits up to wait_s for any report; fresh_state then decides.
+    """
+    if telemetry_fresh(service) or not service.connected:
+        return
+    request = getattr(service, "request_full_report", None)
+    bus = getattr(service, "raw_bus", None)
+    if request is None or bus is None:
+        return
+    async with bus.subscribe() as reports:
+        await request()
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(FRESH_WAIT_S if wait_s is None else wait_s):
+                async for _ in reports:
+                    if telemetry_fresh(service):
+                        return
+
+
+def fresh_state(service: Any) -> str:
+    if not telemetry_fresh(service):
         unavailable("Fresh printer status required")
-    return str((snapshot.get("_raw") or {}).get("gcode_state", "UNKNOWN"))
+    return str((service.snapshot().get("_raw") or {}).get("gcode_state", "UNKNOWN"))
 
 
 # A P1S keeps reporting FAILED after a stopped or failed print until the next
@@ -69,6 +105,30 @@ def require_start_ready(service: Any, what: str = "a file") -> None:
         unavailable(f"Printer must be idle before starting {what}")
 
 
+def require_trusted_cert(service: Any) -> None:
+    """403 printer_cert_changed while the printer's certificate differs from its pin."""
+    from bambu_bridge.api import errors
+
+    gate = errors.cert_gate(service)
+    if gate is not None:
+        raise HTTPException(gate.status_code, json.loads(bytes(gate.body)))
+
+
+def require_start(service: Any, what: str = "a file") -> float | None:
+    """The one printer-side gate for every bridge-initiated print start.
+
+    The checks and their order follow Orca's pre-send checks in
+    SelectMachineDialog::update_show_status: a trusted printer, the right
+    machine (is_blocking_printing), fresh status that is not printing
+    (is_info_ready, is_in_printing). Returns the reported nozzle diameter the
+    slice must match (_is_same_nozzle_diameters), or None when unknown.
+    """
+    require_trusted_cert(service)
+    require_p1s(service)
+    require_start_ready(service, what)
+    return reported_nozzle(service)
+
+
 async def control_capability_gate(request: Request) -> None:
     """Protect every typed/raw route in the control routers before publication."""
     from bambu_bridge.api.printers import get_registry
@@ -79,13 +139,7 @@ async def control_capability_gate(request: Request) -> None:
         service = registry.get(request.path_params["printer_id"])
     except PrinterNotFoundError:
         raise HTTPException(404, "Printer not found") from None
-    from bambu_bridge.api import errors
-
-    gate = errors.cert_gate(service)
-    if gate is not None:
-        import json
-
-        raise HTTPException(gate.status_code, json.loads(bytes(gate.body)))
+    require_trusted_cert(service)
     suffix = request.url.path.split(f"/printers/{request.path_params['printer_id']}/", 1)[-1]
     if suffix == "get_version":
         return
@@ -113,14 +167,21 @@ async def control_capability_gate(request: Request) -> None:
         "steppers/off",
         "filament/unload",
         "ams/change",
-        "skip_objects",
     }:
         unavailable("Control support under review")
+    if suffix == "skip_objects":
+        from bambu_bridge.skip_objects import enabled
+
+        if not enabled():
+            unavailable("Control support under review")
+    await await_fresh_telemetry(service)
     state = fresh_state(service)
     allowed = {
         "print/pause": {"RUNNING", "PREPARE"},
         "print/resume": {"PAUSE"},
         "print/stop": {"RUNNING", "PREPARE", "PAUSE"},
+        # StatusPanel enables part skip while printing, not preparing.
+        "skip_objects": {"RUNNING", "PAUSE"},
     }
     if suffix in allowed and state not in allowed[suffix]:
         unavailable(f"Printer state: {state}")
@@ -129,10 +190,18 @@ async def control_capability_gate(request: Request) -> None:
         isinstance(n, dict) and n.get("node") == "work_light" for n in raw.get("lights_report", [])
     ):
         unavailable("Not available on P1S")
+    if not (suffix.startswith("ams/") or suffix == "print_option"):
+        return
+    body = await request.json()
+    if not isinstance(body, dict):
+        return  # the route's body model rejects it with 422 before the handler runs
     if suffix.startswith("ams/"):
         units = (raw.get("ams") or {}).get("ams") or []
-        body = await request.json()
-        unit = next((u for u in units if str(u.get("id")) == str(body.get("ams_id"))), None)
+        if not units:
+            unavailable("AMS requires a current hardware report")
+        if "ams_id" not in body:
+            return  # ams/control addresses the AMS system, not one unit
+        unit = next((u for u in units if str(u.get("id")) == str(body["ams_id"])), None)
         if unit is None:
             unavailable("Selected AMS requires a current hardware report")
         if suffix in {"ams/rfid", "ams/filament_setting"}:
@@ -140,7 +209,6 @@ async def control_capability_gate(request: Request) -> None:
             if not any(str(t.get("id")) == str(slot) for t in unit.get("tray", [])):
                 unavailable("Selected tray requires a current hardware report")
     if suffix == "print_option":
-        body = await request.json()
         flag = raw.get("home_flag")
         for name in body:
             if name == "auto_recovery":

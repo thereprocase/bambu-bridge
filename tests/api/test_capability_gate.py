@@ -8,8 +8,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from bambu_bridge.api import advanced, control
+from bambu_bridge.api import advanced, control, skip_objects
 from bambu_bridge.api.auth import require_auth
+from bambu_bridge.service.events import EventBus
+from bambu_bridge.service.remaining_estimates import RemainingEstimates
 
 
 @pytest.fixture
@@ -28,15 +30,17 @@ def rig():
         model=None,
         connected=True,
         cert_status="ok",
-        nozzle_type="hardened_steel",
         snapshot=lambda: snapshot,
         send_raw=AsyncMock(),
+        raw_bus=EventBus(),
+        remaining_estimates=RemainingEstimates(),
     )
     app = FastAPI()
     app.state.registry = SimpleNamespace(get=lambda _: service)
     app.dependency_overrides[require_auth] = lambda: None
     app.include_router(control.router)
     app.include_router(advanced.router)
+    app.include_router(skip_objects.router)
     with TestClient(app) as client:
         yield client, service, snapshot
 
@@ -49,7 +53,7 @@ def rig():
         ("ams/drying", {}),
         ("set_accessories/nozzle", {"nozzle_type": "hardened_steel", "nozzle_diameter": 0.4}),
         ("home", {}),
-        ("move", {"axis": "Z", "distance_mm": -50}),
+        ("move", {"axis": "Z", "distance_mm": -10}),
         ("extrude", {"distance_mm": 10}),
         ("steppers/off", {}),
         ("ams/change", {"target_tray": 0}),
@@ -125,9 +129,90 @@ def test_alphanumeric_credentials_preserve_case():
 
 def test_sparse_ams_address_rejected_before_publication(rig):
     client, service, snapshot = rig
+    snapshot["_raw"]["gcode_state"] = "IDLE"  # tags are read only while idle
     snapshot["_raw"]["ams"] = {"ams": [{"id": "1", "tray": [{"id": "3"}]}]}
     assert client.post("/printers/p/ams/rfid", json={"ams_id": 0, "slot_id": 0}).status_code == 409
     service.send_raw.assert_not_awaited()
     response = client.post("/printers/p/ams/rfid", json={"ams_id": 1, "slot_id": 3})
     assert response.status_code == 200, response.text
     service.send_raw.assert_awaited_once()
+    assert response.json()["refresh_status"] == "requested"
+    assert response.json()["remaining_estimate"]["refresh_confirmed"] is False
+    assert 0 not in service.remaining_estimates.slots
+    assert 7 in service.remaining_estimates.slots
+
+
+def _with_ams(snapshot):
+    snapshot["_raw"]["ams"] = {"ams": [{"id": "0", "tray": [{"id": "0"}, {"id": "1"}]}]}
+
+
+def test_ams_resume_reaches_printer_without_unit_id(rig):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    response = client.post("/printers/p/ams/control", json={"action": "resume"})
+    assert response.status_code == 200, response.text
+    assert service.send_raw.await_args.args[0]["print"]["param"] == "resume"
+
+
+@pytest.mark.parametrize("action", ["pause", "reset"])
+def test_ams_actions_orca_never_sends_are_refused(rig, action):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    assert client.post("/printers/p/ams/control", json={"action": action}).status_code == 422
+    service.send_raw.assert_not_awaited()
+
+
+def test_ams_control_needs_a_reported_ams(rig):
+    client, service, _ = rig
+    assert client.post("/printers/p/ams/control", json={"action": "resume"}).status_code == 409
+    service.send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize("path", ["ams/rfid", "ams/control", "ams/user_setting", "print_option"])
+@pytest.mark.parametrize("body", [b"[1]", b"7", b"null", b"not json"])
+def test_non_object_bodies_are_422_not_500(rig, path, body):
+    client, service, snapshot = rig
+    _with_ams(snapshot)
+    response = client.post(
+        f"/printers/p/{path}", content=body, headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422, response.text
+    service.send_raw.assert_not_awaited()
+
+
+def _quiet(snapshot, seconds: float = 26) -> None:
+    """An idle P1S between bursts: its last report is older than the 15 s window."""
+    stamp = datetime.now(UTC).timestamp() - seconds
+    snapshot["session"]["last_telemetry_at"] = datetime.fromtimestamp(stamp, UTC).isoformat()
+    snapshot["_raw"]["gcode_state"] = "IDLE"
+    snapshot["_raw"]["ams"] = {"ams": [{"id": "0", "tray": [{"id": "1"}]}]}
+
+
+def test_a_quiet_idle_printer_is_asked_for_status_before_refusing(rig):
+    from bambu_bridge.service.events import Event
+
+    client, service, snapshot = rig
+    _quiet(snapshot)
+
+    async def reply():
+        snapshot["session"]["last_telemetry_at"] = datetime.now(UTC).isoformat()
+        service.raw_bus.publish(Event("snapshot", {}))
+        return True
+
+    service.request_full_report = AsyncMock(side_effect=reply)
+    response = client.post("/printers/p/ams/rfid", json={"ams_id": 0, "slot_id": 1})
+    assert response.status_code == 200, response.text
+    service.request_full_report.assert_awaited_once()
+
+
+def test_a_printer_that_never_answers_is_still_refused(rig, monkeypatch):
+    from bambu_bridge.api import capabilities
+
+    client, service, snapshot = rig
+    _quiet(snapshot)
+    service.request_full_report = AsyncMock(return_value=True)
+    monkeypatch.setattr(capabilities, "FRESH_WAIT_S", 0.2)
+    response = client.post("/printers/p/ams/rfid", json={"ams_id": 0, "slot_id": 1})
+    assert response.status_code == 409
+    assert response.json()["detail"]["message"] == "Fresh printer status required"
+    service.send_raw.assert_not_awaited()

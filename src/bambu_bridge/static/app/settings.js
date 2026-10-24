@@ -31,7 +31,7 @@ import { mountNative } from './native.js';
 
 // The SPA's own build constant (§6.3). Bumped by hand alongside releases; the
 // bridge version comes from GET /version separately.
-const SPA_BUILD = '0.6.0';
+const SPA_BUILD = '0.7.0b1';
 
 // Test-flow status-line copy — identical wording to onboarding Step 1 (§6.1).
 const TEST_COPY = {
@@ -99,27 +99,25 @@ function buildBridgeSection(app) {
   }
 
   testBtn.addEventListener('click', async () => {
-    const prevKey = app.getKey();
-    // point testConnection() at the typed address; same-origin → clear override.
+    // Test the typed address and key; save them only if the test passes.
     const addr = addrInput.value.trim();
-    app.api.setBaseUrl(addr === location.origin ? '' : addr);
-    app.setKey(keyInput.value.trim());      // temporary; reverted on failure
+    const base = addr === location.origin ? '' : addr;   // same-origin → no override
+    const key = keyInput.value.trim();
 
     testBtn.disabled = true;
     setStatus('Testing…', 'info');
-    const res = await app.api.testConnection();
+    const res = await app.api.testConnection(base, key);
 
     if (res.outcome === 'connected') {
+      app.api.setBaseUrl(base);
+      app.setKey(key);
       const n = res.printerCount || 0;
       setStatus(n ? TEST_COPY.connected(n) : TEST_COPY.connected0, 'ok');
-      // key already stored (success); refresh the printer list in the store.
       if (Array.isArray(res.printers)) app.store.setPrinterList(res.printers);
       testBtn.disabled = false;
       return;
     }
 
-    // failure — do not persist a bad key; revert.
-    app.setKey(prevKey);
     testBtn.disabled = false;
     setStatus(TEST_COPY[res.outcome] || 'Could not connect.', TEST_KIND[res.outcome] || 'err');
   });

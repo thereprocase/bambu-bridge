@@ -27,8 +27,10 @@ from tests.conftest import (
     API_KEY,
     SERIAL,
     MockPrinter,
-    build_app as _build_app,
     patch_discovery_ok,
+)
+from tests.conftest import (
+    build_app as _build_app,
 )
 
 _AUTH = {"Authorization": f"Bearer {API_KEY}"}
@@ -429,59 +431,6 @@ async def test_print_option_multiple_flags_combined(
 
 
 # --------------------------------------------------------------------------- #
-# Wave-2: skip_objects (YELLOW)                                                #
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.asyncio
-async def test_skip_objects_reaches_printer(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
-    """Happy path: valid obj_list forwarded."""
-    app = build_app(tmp_path / "so.db", mqtt_port=mqtt_broker)
-
-    def run() -> None:
-        with TestClient(app) as c:
-            _register(c)
-            _wait_connected(c)
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/skip_objects",
-                headers=_AUTH,
-                json={"obj_list": [1, 2, 3]},
-            )
-            assert r.status_code == 200, r.text
-            req = _wait_request(
-                mock_printer,
-                lambda r: r.get("print", {}).get("command") == "skip_objects",
-            )
-            assert req["print"]["obj_list"] == [1, 2, 3]
-            assert isinstance(req["print"]["timestamp"], int)
-
-    await asyncio.to_thread(run)
-
-
-@pytest.mark.asyncio
-async def test_skip_objects_empty_list_is_422(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
-    """Guard: empty obj_list → 422."""
-    app = build_app(tmp_path / "so_empty.db", mqtt_port=mqtt_broker)
-
-    def run() -> None:
-        with TestClient(app) as c:
-            _register(c)
-            _wait_connected(c)
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/skip_objects",
-                headers=_AUTH,
-                json={"obj_list": []},
-            )
-            assert r.status_code == 422, r.text
-
-    await asyncio.to_thread(run)
-
-
-# --------------------------------------------------------------------------- #
 # Wave-2: AMS filament_setting (YELLOW)                                        #
 # --------------------------------------------------------------------------- #
 
@@ -581,9 +530,10 @@ async def test_ams_filament_setting_unknown_type_is_422(
 
 @pytest.mark.asyncio
 async def test_ams_rfid_reaches_printer(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
+    tmp_path: Path, mqtt_broker: int, printing_mock: MockPrinter
 ) -> None:
-    """Happy path: ams_get_rfid forwarded."""
+    """Happy path: ams_get_rfid forwarded while the printer is idle."""
+    mock_printer = printing_mock
     app = build_app(tmp_path / "ams_rfid.db", mqtt_port=mqtt_broker)
 
     def run() -> None:
@@ -602,6 +552,30 @@ async def test_ams_rfid_reaches_printer(
             )
             assert req["print"]["ams_id"] == 0
             assert req["print"]["slot_id"] == 2
+
+    await asyncio.to_thread(run)
+
+
+@pytest.mark.asyncio
+async def test_ams_rfid_waits_for_an_idle_printer(
+    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
+) -> None:
+    """While printing, the re-read is refused and nothing reaches the printer."""
+    app = build_app(tmp_path / "ams_rfid_busy.db", mqtt_port=mqtt_broker)
+
+    def run() -> None:
+        with TestClient(app) as c:
+            _register(c)
+            _wait_connected(c)
+            r = c.post(
+                f"/api/v1/printers/{SERIAL}/ams/rfid",
+                headers=_AUTH,
+                json={"ams_id": 0, "slot_id": 2},
+            )
+            assert r.status_code == 409, r.text
+            assert r.json()["message"] == "The printer reads tags when it's idle"
+            commands = [q.get("print", {}).get("command") for q in list(mock_printer.requests)]
+            assert "ams_get_rfid" not in commands
 
     await asyncio.to_thread(run)
 
@@ -897,37 +871,6 @@ async def test_set_nozzle_reaches_printer(
             assert req["system"]["nozzle_type"] == "stainless_steel"
             assert req["system"]["nozzle_diameter"] == 0.4
             assert req["system"]["accessory_type"] == "nozzle"
-
-    await asyncio.to_thread(run)
-
-
-@pytest.mark.asyncio
-async def test_set_nozzle_preserves_unconfirmed_service_type(
-    tmp_path: Path, mqtt_broker: int, mock_printer: MockPrinter
-) -> None:
-    """Publication alone leaves the reported nozzle policy unchanged."""
-    app = build_app(tmp_path / "nz_mem.db", mqtt_port=mqtt_broker)
-
-    def run() -> None:
-        with TestClient(app) as c:
-            _register(c)
-            _wait_connected(c)
-
-            svc = _service(app)
-            assert svc.nozzle_type != "hardened_steel"
-
-            r = c.post(
-                f"/api/v1/printers/{SERIAL}/set_accessories/nozzle",
-                headers=_AUTH,
-                json={"nozzle_type": "hardened_steel", "nozzle_diameter": 0.6},
-            )
-            assert r.status_code == 200, r.text
-            # Wait for the command to be sent before checking state.
-            _wait_request(
-                mock_printer,
-                lambda r: r.get("system", {}).get("command") == "set_accessories",
-            )
-            assert svc.nozzle_type != "hardened_steel"
 
     await asyncio.to_thread(run)
 

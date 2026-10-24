@@ -146,3 +146,53 @@ async def test_empty_report_is_ignored() -> None:
     snap = svc.snapshot()
     assert snap["_raw"] == {}
     assert snap["phase"] == "unknown"
+
+
+_FULL_AMS = {
+    "print": {
+        "gcode_state": "RUNNING",
+        "ams": {
+            "ams_exist_bits": "1",
+            "tray_now": "0",
+            "ams": [
+                {
+                    "id": "0",
+                    "humidity": "3",
+                    "tray": [{"id": "0", "tray_type": "PLA"}, {"id": "1", "tray_type": "PETG"}],
+                }
+            ],
+        },
+    }
+}
+
+
+async def _ams_after(delta: dict[str, Any]) -> dict[str, Any]:
+    service = _service()
+    await service._handle_report(ReportMessage.parse(_FULL_AMS))
+    assert len(service.snapshot()["ams"]["slots"]) == 2
+    await service._handle_report(ReportMessage.parse(delta))
+    return service.snapshot()
+
+
+async def test_partial_ams_delta_keeps_the_slots():
+    snapshot = await _ams_after({"print": {"ams": {"tray_now": "1"}}})
+    assert [s["type"] for s in snapshot["ams"]["slots"]] == ["PLA", "PETG"]
+    assert snapshot["ams"]["engaged_slot"] == 2
+
+
+async def test_unit_delta_without_trays_keeps_them_like_orca():
+    snapshot = await _ams_after({"print": {"ams": {"ams": [{"id": "0", "humidity": "4"}]}}})
+    assert [s["type"] for s in snapshot["ams"]["slots"]] == ["PLA", "PETG"]
+    assert snapshot["_raw"]["ams"]["ams"][0]["humidity"] == "4"
+
+
+async def test_reported_tray_list_still_replaces_trays_whole():
+    delta = {"print": {"ams": {"ams": [{"id": "0", "tray": [{"id": "0"}, {"id": "1"}]}]}}}
+    snapshot = await _ams_after(delta)
+    assert [s.get("type") for s in snapshot["ams"]["slots"]] == [None, None]
+
+
+async def test_rfid_rescan_empty_unit_list_still_empties_slots():
+    snapshot = await _ams_after({"print": {"ams": {"ams": []}}})
+    assert snapshot["ams"]["slots"] == []
+    assert snapshot["ams"]["present"] is True

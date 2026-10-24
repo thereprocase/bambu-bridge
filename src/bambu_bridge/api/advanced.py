@@ -10,7 +10,6 @@ Wave 2 — YELLOW/GREEN (typed, phase-aware, clamped):
   POST /{id}/ams/rfid                 trigger RFID re-read for a slot
   POST /{id}/ams/drying               start AMS filament drying cycle
   POST /{id}/ams/user_setting         configure AMS RFID read behaviour
-  POST /{id}/skip_objects             per-object cancel mid-print
   POST /{id}/calibration              withheld pending protocol qualification
   POST /{id}/set_accessories/nozzle   set nozzle type + diameter
 
@@ -24,14 +23,9 @@ BLACK — gated by env var:
 Contract §11 (Advanced controls) table:
   See docs/API-CONTRACT.md §11 for the risk tier column and guard list.
 
-Nozzle write-back note:
-  set_accessories/nozzle sends the command to the printer and updates the
-  in-memory ``service.nozzle_type`` attribute (used by the temperature clamp).
-  Persistent write-back to the ``printers`` DB row is a one-line follow-up
-  for the architect: ``await registry.update_nozzle_type(printer_id, nozzle_type)``
-  (or equivalent) — not done here because the DB layer is outside this file
-  partition. The in-memory update is sufficient for the temp-clamp gate within
-  the current session.
+Nozzle note:
+  set_accessories/nozzle only tells the printer which nozzle is fitted. The
+  nozzle type does not set the temperature ceiling (see POST /temperature).
 
 M84 position-state note:
   steppers/off sends M84 and calls ``service.reset_motion_state("M84")`` to
@@ -48,16 +42,17 @@ from typing import Any, Literal
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
-from bambu_bridge.api.capabilities import control_capability_gate
+from bambu_bridge.api.capabilities import control_capability_gate, fresh_state
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol import commands
 from bambu_bridge.protocol.commands import AMS_DRYING_MAX_TEMP_C, AMS_ID_MAX
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
+from bambu_bridge.service.remaining_estimates import request_remaining_report
 
 # Home-flag bitmask — mirrors control.py's _HOME_BIT.
 # Extrude requires ALL three axes homed; an unhomed axis means position is
@@ -228,45 +223,6 @@ async def set_print_option(
 
 
 # --------------------------------------------------------------------------- #
-# Wave-2: skip_objects (YELLOW)                                               #
-# --------------------------------------------------------------------------- #
-
-
-class SkipObjectsBody(BaseModel):
-    """Per-object cancellation.
-
-    ``obj_list`` must be a non-empty list of integer Bambu object IDs from
-    the slice (not user-facing indices).
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    obj_list: list[int] = Field(
-        min_length=1,
-        description="non-empty list of Bambu object IDs from the slice",
-    )
-
-
-@router.post("/{printer_id}/skip_objects")
-async def skip_objects(
-    printer_id: str,
-    body: SkipObjectsBody,
-    registry: Registry = Depends(get_registry),
-) -> dict[str, Any]:
-    """Cancel specific objects mid-print without stopping the job.
-
-    Object IDs are the internal Bambu IDs from the slice, not user-facing
-    indices. Requires Bambu Studio to have sliced with object information
-    (the object map must be in the .gcode.3mf file).
-
-    Risk: YELLOW — removes objects from a running print; irreversible for
-    those objects but the remaining objects continue normally.
-    """
-    service = _online(registry, printer_id)
-    return await _send(service, _build(commands.skip_objects, body.obj_list))
-
-
-# --------------------------------------------------------------------------- #
 # Wave-2: AMS operations (YELLOW/GREEN)                                       #
 # --------------------------------------------------------------------------- #
 
@@ -294,12 +250,144 @@ class AmsFilamentSettingBody(BaseModel):
     nozzle_temp_min: int = Field(gt=0, description="minimum nozzle temperature (°C)")
     nozzle_temp_max: int = Field(gt=0, description="maximum nozzle temperature (°C)")
     tray_type: str = Field(description="material type (PLA, PETG, ABS, …)")
+    # Write a slot that holds an assigned spool or belongs to a refill backup
+    # anyway. Never forwarded to the printer. Strict: only JSON true lets it by.
+    override: StrictBool = False
+
+
+async def _slot_in_use(
+    request: Request, service: PrinterService, printer_id: str, body: AmsFilamentSettingBody
+) -> dict[str, Any] | None:
+    """What a raw write would disturb: the slot's assignment and its refill backup.
+
+    None when the slot has neither. The external holder never reaches this
+    route (ams_id and tray_id are 0–3). assignment_kept is what the seating
+    pass would decide for the slot as the write leaves it (same_spool): only a
+    chemistry change ends a stamped assignment; one stored before stamping
+    also ends on a product change. refill_state_expected is predicted, since
+    the printer has not read the write back: an enabled group turns pending,
+    one being restored needs attention, and a write that changes nothing
+    leaves it be.
+    """
+    from bambu_bridge.inventory_sources import (
+        declared_identity,
+        same_spool,
+        source_choices,
+        spool_key,
+    )
+    from bambu_bridge.refill import backups
+
+    inventory = getattr(request.app.state, "inventory", None)
+    if inventory is None:
+        return None
+    wire = body.ams_id * 4 + body.tray_id
+    snapshot = await inventory.assignments.snapshot()
+    assignment = next(
+        (a for a in snapshot.assignments if a.printer_id == printer_id and a.wire_slot == wire),
+        None,
+    )
+    frame = service.material_inventory.snapshot()
+    unit: dict[str, Any] = next(
+        (
+            u
+            for u in ((frame.get("ams") or {}).get("ams") or [])
+            if str(u.get("id")) == str(body.ams_id)
+        ),
+        {},
+    )
+    tray: dict[str, Any] = next(
+        (t for t in unit.get("tray") or [] if str(t.get("id")) == str(body.tray_id)), {}
+    )
+    written = {
+        "tray_type": body.tray_type,
+        "tray_info_idx": body.tray_info_idx,
+        "tray_color": body.tray_color.upper(),
+        "nozzle_temp_min": body.nozzle_temp_min,
+        "nozzle_temp_max": body.nozzle_temp_max,
+    }
+    current = next((c for c in source_choices(service) if c["wire_slot"] == wire), None)
+    unchanged = current is not None and current["setting"] == {
+        **written,
+        "tray_type": body.tray_type.strip().upper(),
+    }
+    refill = None
+    controller = getattr(inventory, "refill", None)
+    if controller is not None and body.ams_id == 0:
+        report = service.refill_reports.snapshot(connected=service.connected)
+        status_ = controller.status(printer_id, report)  # read-only
+        if status_["state"] != "disabled" and any(s["wire"] == wire for s in status_["steps"]):
+            chain = next(iter(backups(status_, report)), None)
+            refill = {
+                "from_wire": status_["steps"][0]["wire"],
+                "to_wire": status_["steps"][1]["wire"],
+                "state": chain["state"] if chain else status_["state"],
+                "expected": None
+                if unchanged
+                else ("pending" if status_["enabled"] else "needs_attention"),
+            }
+    if assignment is None and refill is None:
+        return None
+    after = {**tray, **written}
+    kept = (
+        assignment is None
+        or same_spool(
+            assignment,
+            {
+                "material": body.tray_type,
+                "spool_key": spool_key(after),
+                "observed_identity": declared_identity(after),
+            },
+        )
+        is not False
+    )
+    label = f"Slot {wire + 1}"
+    parts = []
+    if assignment is not None:
+        parts.append(f"holds spool #{assignment.spool_id}")
+    if refill is not None:
+        parts.append(
+            f"is part of the slot {refill['from_wire'] + 1} → slot {refill['to_wire'] + 1} backup"
+        )
+    if refill is not None:
+        cause = "slot_assigned_and_in_refill" if assignment is not None else "slot_in_refill"
+        hint = (
+            "Remove the backup first; it puts both slots back. Writing now makes the backup "
+            "need you."
+        )
+    else:
+        assert assignment is not None
+        cause = "slot_assigned"
+        hint = (
+            "Change the spool in Spoolman or assign another spool; the bridge sets the slot "
+            f"to match. Send with override to write it anyway — spool #{assignment.spool_id} "
+            + (
+                "stays assigned."
+                if kept
+                else "is unassigned, since the slot then reads as another spool."
+            )
+        )
+    return {
+        "error": "slot_in_use",
+        "message": f"{label} " + " and ".join(parts) + ".",
+        "likely_cause": cause,
+        "remediation_hint": hint,
+        "context": {
+            "printer_id": printer_id,
+            "wire_slot": wire,
+            "spool_id": assignment.spool_id if assignment is not None else None,
+            "refill": {k: v for k, v in refill.items() if k != "expected"} if refill else None,
+            "assignment_kept": kept,
+            "override_field": "override",
+        },
+        "_refill_expected": refill["expected"] if refill else None,
+    }
 
 
 @router.post("/{printer_id}/ams/filament_setting")
 async def ams_filament_setting(
     printer_id: str,
     body: AmsFilamentSettingBody,
+    request: Request,
     registry: Registry = Depends(get_registry),
 ) -> dict[str, Any]:
     """Write a filament profile to an AMS slot.
@@ -308,11 +396,31 @@ async def ams_filament_setting(
     colour, and temperature range so the printer knows how to handle the
     filament. Also allows overriding an incorrect RFID-read profile.
 
+    A slot that holds an assigned spool or belongs to a refill backup is
+    refused (409 slot_in_use, saying what the write would do) unless the
+    body sets override; the assignment and refill flows keep those right.
+
     Risk: YELLOW — changes the printer's per-slot filament configuration;
     using incorrect temperatures could damage filament or the printer.
     """
     service = _online(registry, printer_id)
-    return await _send(
+    try:
+        in_use = await _slot_in_use(request, service, printer_id, body)
+    except Exception:
+        # Fail closed: a write that might release a spool or break a backup is
+        # not sent on a guess. The override still gets through.
+        log.exception("ams_filament_setting.guard_failed", printer=printer_id)
+        if not body.override:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The bridge could not check this slot's spool or backup; try again, "
+                "or send with override to write it anyway.",
+            ) from None
+        in_use = None
+    expected = in_use.pop("_refill_expected", None) if in_use is not None else None
+    if in_use is not None and not body.override:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=in_use)
+    sent = await _send(
         service,
         _build(
             commands.ams_filament_setting,
@@ -325,6 +433,19 @@ async def ams_filament_setting(
             tray_type=body.tray_type,
         ),
     )
+    if in_use is not None:
+        context = in_use["context"]
+        sent["guard"] = {
+            "overridden": True,
+            "assignment_kept": context["assignment_kept"],
+            # Predicted: the printer has not read the write back yet.
+            "refill_state_expected": expected,
+        }
+    return sent
+
+
+# Printer states in which nothing is printing, so the AMS may turn a slot.
+_RFID_READ_STATES = frozenset({"IDLE", "FINISH", "FAILED"})
 
 
 class AmsRfidBody(BaseModel):
@@ -334,6 +455,7 @@ class AmsRfidBody(BaseModel):
 
     ams_id: int = Field(ge=0, le=AMS_ID_MAX, description="AMS unit index, 0-based (max 3)")
     slot_id: int = Field(ge=0, le=3, description="slot index within AMS unit, 0-based")
+    wait_for_report_s: float = Field(default=0, ge=0, le=30)
 
 
 @router.post("/{printer_id}/ams/rfid")
@@ -347,13 +469,21 @@ async def ams_get_rfid(
     Useful after swapping a spool to force the printer to re-read the RFID
     tag rather than waiting for the next automatic poll.
 
-    Risk: GREEN — read-only RFID scan; no physical motion or heating.
+    Risk: GREEN — read-only RFID scan; no physical motion or heating. The
+    AMS turns the slot to read it, so only while the printer is idle.
     """
     service = _online(registry, printer_id)
-    return await _send(
-        service,
-        _build(commands.ams_get_rfid, ams_id=body.ams_id, slot_id=body.slot_id),
-    )
+    if fresh_state(service) not in _RFID_READ_STATES:
+        raise HTTPException(status_code=409, detail="The printer reads tags when it's idle")
+    try:
+        return await request_remaining_report(
+            service,
+            _build(commands.ams_get_rfid, ams_id=body.ams_id, slot_id=body.slot_id),
+            body.ams_id * 4 + body.slot_id,
+            body.wait_for_report_s,
+        )
+    except ConnectionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 class AmsDryingBody(BaseModel):
@@ -500,16 +630,10 @@ async def set_nozzle(
     """Notify the printer of the installed nozzle type and diameter.
 
     Sends a ``system.set_accessories`` command to update the printer's
-    nozzle profile. Also updates the in-memory service attribute
-    ``nozzle_type`` so the temperature clamp in ``POST /temperature`` uses
-    the correct ceiling (280 °C stainless vs 300 °C hardened) immediately.
+    nozzle profile.
 
-    NOTE — persistent write-back to the DB ``printers`` row is a one-line
-    follow-up owned by the architect: ``registry.update_nozzle_type(id, type)``.
-    The in-memory update is sufficient for the temp-clamp gate within this session.
-
-    Risk: YELLOW — incorrect nozzle settings affect temperature limits and
-    could cause under/over-temp on the next print.
+    Risk: YELLOW — incorrect nozzle settings mislead the printer's own
+    filament/nozzle compatibility checks.
     """
     service = _online(registry, printer_id)
     result = await _send(
@@ -520,9 +644,6 @@ async def set_nozzle(
             nozzle_diameter=body.nozzle_diameter,
         ),
     )
-    # Update in-memory service attribute so the temperature clamp picks it up
-    # immediately — no restart or re-register needed.
-    # Reported hardware, rather than publication, determines temperature policy.
     return result
 
 

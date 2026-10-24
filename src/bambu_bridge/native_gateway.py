@@ -30,10 +30,13 @@ import structlog
 
 from bambu_bridge.camera_overlay import OverlayStream
 from bambu_bridge.native_code import NativeCodeStore
+from bambu_bridge.native_spools import NativeSpoolOverlay, VirtualSpoolStateUnavailable
 from bambu_bridge.native_video import NativeVideo
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.preview_source import PreviewSources
+from bambu_bridge.retention import prune_state
 from bambu_bridge.service.events import Event, EventBus
+from bambu_bridge.service.slot_display import InventoryDisplay
 from bambu_bridge.spinner_frames import SPINNER_FRAMES
 from bambu_bridge.turntable_overlay import Shape
 
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 # Wake an idle delivery worker so stale start owners are swept without traffic.
 INBOX_TICK = 60
+RETENTION_INTERVAL_S = 3600
 
 
 def field(value: bytes) -> bytes:
@@ -167,6 +171,9 @@ class NativeGateway:
         self.inbox_wake = asyncio.Event()
         self.inbox_dispatch_lock = asyncio.Lock()
         self.inbox_owner = contextvars.ContextVar[str | None]("inbox_dispatch_owner", default=None)
+        self.inbox_artifact = contextvars.ContextVar[bytes | None](
+            "inbox_dispatch_artifact", default=None
+        )
         self.inbox_cancel = contextvars.ContextVar[asyncio.Event | None](
             "inbox_managed_cancel", default=None
         )
@@ -199,6 +206,15 @@ class NativeGateway:
         self.video = NativeVideo(self)
         self.camera_overlay.shapes = self.video_overlay.shapes
         self.inbox_reports = EventBus()
+        # Compatibility probe only: no public activation until stock-client
+        # validation passes. Inventory signals must never enter physical raw_bus.
+        self.spool_overlay: NativeSpoolOverlay | None = None
+        self.spool_reports = EventBus()
+        self.spool_observer_service: Any = None
+        self.spool_connection_task: asyncio.Task[None] | None = None
+        self.inventory_display: InventoryDisplay | None = None
+        self.inventory_display_task: asyncio.Task[None] | None = None
+        self.retention_task: asyncio.Task[None] | None = None
         self.change_lock = asyncio.Lock()
         self.config: dict[str, str] | None = None
         self.serial: str | None = None
@@ -375,9 +391,21 @@ class NativeGateway:
     async def start(self) -> None:
         if not self.config:
             return
+        # One handler for the whole start: a failure anywhere (a changed printer
+        # certificate, identity, listeners) releases the inbox lock and hooks.
+        try:
+            await self._start()
+        except Exception:
+            await self.close()
+            self.last_error = "Could not start native listeners; check the bind address and ports"
+            raise
+
+    async def _start(self) -> None:
         preview_task = asyncio.create_task(self.warm_preview())
         self.tasks.add(preview_task)
         preview_task.add_done_callback(self.tasks.discard)
+        if self.retention_task is None:
+            self.retention_task = asyncio.create_task(self.retain())
         if self.app.state.settings.bridge_native_durable_inbox:
             from bambu_bridge.native_inbox import NativeInbox
 
@@ -392,7 +420,22 @@ class NativeGateway:
             self.inbox_task = asyncio.create_task(self.deliver_inbox())
             self.inbox_task.add_done_callback(self.inbox_worker_done)
             self.inbox_wake.set()
+        self.spool_observer_service = self.service()
+        self.spool_observer_service.native_observer = self.observe_inbox
+        if hasattr(self.spool_observer_service, "bus"):
+            self.spool_connection_task = asyncio.create_task(
+                self.watch_spool_connection(self.spool_observer_service)
+            )
         self.serial = self.identity_serial()
+        self.inventory_display = InventoryDisplay(
+            self.serial,
+            lambda: getattr(self.app.state, "inventory", None),
+            self.service,
+            self.inventory_display_changed,
+            load_policy=self.inventory_display_policy,
+        )
+        # Qualification defaults off; no public activation until compatibility gates pass.
+        self.inventory_display_task = asyncio.create_task(self.inventory_display.run())
         # Native TLS clients may offer RSA-authenticated cipher suites only.
         # Keep this identity separate from pinned phones and the old EC leaf.
         directory = self.store.directory / "native-rsa"
@@ -412,35 +455,28 @@ class NativeGateway:
         self.data_context = data_context
         from bambu_bridge.native_ftps import serve_ftps
 
-        try:
-            for port, handler in zip(
-                (*self.ports, self.detect_port),
-                (self.mqtt, serve_ftps, self.camera, self.detect),
-                strict=True,
-            ):
+        for port, handler in zip(
+            (*self.ports, self.detect_port),
+            (self.mqtt, serve_ftps, self.camera, self.detect),
+            strict=True,
+        ):
 
-                def connected(
-                    reader: asyncio.StreamReader,
-                    writer: asyncio.StreamWriter,
-                    handler: Any = handler,
-                ) -> None:
-                    task = asyncio.create_task(self.client(handler, reader, writer))
-                    self.tasks.add(task)
-                    task.add_done_callback(self.tasks.discard)
+            def connected(
+                reader: asyncio.StreamReader,
+                writer: asyncio.StreamWriter,
+                handler: Any = handler,
+            ) -> None:
+                task = asyncio.create_task(self.client(handler, reader, writer))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
 
-                options: dict[str, Any] = {}
-                if handler != self.detect:
-                    options = {"ssl": context, "ssl_handshake_timeout": 10}
-                server = await asyncio.start_server(
-                    connected, self.host, port, limit=8192, **options
-                )
-                self.servers.append(server)
-            self.last_error = None
-            await self.video.start()
-        except Exception:
-            await self.close()
-            self.last_error = "Could not start native listeners; check the bind address and ports"
-            raise
+            options: dict[str, Any] = {}
+            if handler != self.detect:
+                options = {"ssl": context, "ssl_handshake_timeout": 10}
+            server = await asyncio.start_server(connected, self.host, port, limit=8192, **options)
+            self.servers.append(server)
+        self.last_error = None
+        await self.video.start()
 
     async def close(self) -> None:
         for task in list(self.tasks):
@@ -450,6 +486,18 @@ class NativeGateway:
             await self.video_overlay.shapes.close()
         await self.preview_sources.close()
         await self.video.close()
+        if self.inventory_display_task is not None:
+            self.inventory_display_task.cancel()
+            await asyncio.gather(self.inventory_display_task, return_exceptions=True)
+            self.inventory_display_task = None
+        if self.spool_connection_task is not None:
+            self.spool_connection_task.cancel()
+            await asyncio.gather(self.spool_connection_task, return_exceptions=True)
+            self.spool_connection_task = None
+        if self.retention_task is not None:
+            self.retention_task.cancel()
+            await asyncio.gather(self.retention_task, return_exceptions=True)
+            self.retention_task = None
         SPINNER_FRAMES.close()
         for server in self.servers:
             server.close()
@@ -470,6 +518,10 @@ class NativeGateway:
             await asyncio.to_thread(self.inbox.close)
             self.inbox = None
             self.inbox_service = None
+        if self.spool_observer_service is not None:
+            if self.spool_observer_service.native_observer == self.observe_inbox:
+                self.spool_observer_service.native_observer = None
+            self.spool_observer_service = None
         for handle in self.inbox_expiry:
             handle.cancel()
         self.inbox_expiry.clear()
@@ -477,25 +529,15 @@ class NativeGateway:
         self.servers.clear()
 
     def require_idle(self) -> None:
+        """The start readiness the HTTP routes use (capabilities), as BBSTART codes."""
+        from bambu_bridge.api.capabilities import START_READY_STATES, telemetry_fresh
+
         service = self.service()
         state = service.native_snapshot().get("print", {}).get("gcode_state")
-        if not service.connected or state not in ("IDLE", "FINISH", "FAILED"):
+        if not service.connected or state not in START_READY_STATES:
             raise ValueError("BBSTART_NOT_IDLE")
-        if hasattr(service, "snapshot"):
-            from datetime import UTC, datetime
-
-            stamp = service.snapshot().get("session", {}).get("last_telemetry_at")
-            age = (
-                (
-                    (
-                        datetime.now(UTC) - datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-                    ).total_seconds()
-                )
-                if stamp
-                else 999
-            )
-            if not 0 <= age <= 15:
-                raise ValueError("BBSTART_STALE_TELEMETRY")
+        if not telemetry_fresh(service):
+            raise ValueError("BBSTART_STALE_TELEMETRY")
 
     async def ensure_idle(self, *, timeout: float = 10, force_refresh: bool = False) -> None:
         """Refresh an idle printer's quiet telemetry before rejecting a new start."""
@@ -552,6 +594,36 @@ class NativeGateway:
             # the start path; a failure here must not stop either of them.
             log.warning("native.start_recovery_failed", exc_info=True)
 
+    async def prepare_shadow_accounting(
+        self,
+        identifier: str,
+        *,
+        artifact: bytes | None = None,
+        command: dict[str, Any] | None = None,
+    ) -> None:
+        inventory = getattr(self.app.state, "inventory", None)
+        if inventory is None or self.inbox is None or self.config is None:
+            return
+        from bambu_bridge.service.shadow_accounting import reserve_shadow
+
+        try:
+            await reserve_shadow(
+                self.inbox,
+                identifier,
+                inventory,
+                self.config["printer_id"],
+                self.service(),
+                artifact=artifact,
+                command=command,
+            )
+        except Exception:
+            # Accounting never blocks a print. Note a fixed, non-sensitive reason;
+            # no provider or G-code text.
+            log.warning("native.accounting_not_frozen", upload_id=identifier, exc_info=True)
+            await asyncio.to_thread(
+                self.inbox.review_accounting, identifier, "analysis_or_source_unverified"
+            )
+
     def arm_inbox_expiry(self) -> None:
         def expired() -> None:
             self.inbox_expiry.discard(handle)
@@ -567,7 +639,9 @@ class NativeGateway:
             )
 
     @contextlib.asynccontextmanager
-    async def guard_managed_job(self, cancelled: asyncio.Event) -> AsyncIterator[None]:
+    async def guard_managed_job(
+        self, cancelled: asyncio.Event, *, artifact: bytes | None = None
+    ) -> AsyncIterator[None]:
         inbox = self.inbox
         if inbox is None:
             yield
@@ -583,11 +657,13 @@ class NativeGateway:
             )
         token = self.inbox_owner.set(identifier)
         cancel_token = self.inbox_cancel.set(cancelled)
+        artifact_token = self.inbox_artifact.set(artifact)
         try:
             yield
         finally:
             self.inbox_owner.reset(token)
             self.inbox_cancel.reset(cancel_token)
+            self.inbox_artifact.reset(artifact_token)
             await asyncio.to_thread(inbox.abandon_reserved, identifier)
             self.inbox_wake.set()
 
@@ -598,20 +674,34 @@ class NativeGateway:
             yield
             return
         command = payload.get("print", {}).get("command")
+        printer = cast(dict[str, str], self.config)["printer_id"]
+        if command in ("stop", "pause"):
+            # Like Orca (StatusPanel::on_subtask_abort -> MachineObject::command_task_abort),
+            # never condition a stop or pause on which job is running. The P1S names the
+            # inner Metadata/plate_N.gcode in gcode_file, so a file match cannot work anyway.
+            # It only drops starts still queued behind it.
+            async with self.inbox_dispatch_lock:
+                await asyncio.to_thread(self.inbox.cancel_queued, printer)
+                yield
+            self.inbox_wake.set()
+            return
         owner = self.inbox_owner.get()
         if owner is not None:
             row = await asyncio.to_thread(self.inbox.get, owner)
             if row["kind"] == "upload":
                 yield  # native worker already owns the dispatch lock and claim
                 return
-            if command in ("stop", "pause") and row["start_state"] != "running":
-                raise ValueError("BBSTOP_START_NOT_CONFIRMED")
             if command in ("project_file", "gcode_file"):
                 async with self.inbox_dispatch_lock:
                     await self.ensure_idle()
                     cancelled = self.inbox_cancel.get()
                     if cancelled is not None and cancelled.is_set():
                         raise ValueError("BBSTART_CANCELLED")
+                    await self.prepare_shadow_accounting(
+                        owner, artifact=self.inbox_artifact.get(), command=payload
+                    )
+                    # The manifest is frozen; do not hold the file for the whole print.
+                    self.inbox_artifact.set(None)
                     await asyncio.to_thread(self.inbox.activate_reserved, owner, payload)
                     self.arm_inbox_expiry()
                     try:
@@ -626,31 +716,15 @@ class NativeGateway:
             r"\bM(?:23|24|32|98)\b", str(payload["print"].get("param", "")), re.IGNORECASE
         ):
             raise ValueError("BBSTART_USE_FILE_COMMAND")
-        if command not in ("project_file", "gcode_file", "stop", "pause"):
+        if command not in ("project_file", "gcode_file"):
             yield
             return
         async with self.inbox_dispatch_lock:
             inbox = self.inbox
-            printer = cast(dict[str, str], self.config)["printer_id"]
-            if command in ("stop", "pause"):
-                if owner is not None:
-                    row = await asyncio.to_thread(inbox.get, owner)
-                    live = self.service().native_snapshot().get("print", {})
-                    filename = str(live.get("gcode_file", "")).rsplit("/", 1)[-1]
-                    if (
-                        row["start_state"] != "running"
-                        or not self.service().connected
-                        or filename != row["remote"].rsplit("/", 1)[-1]
-                        or live.get("gcode_state") not in ("PREPARE", "RUNNING", "PAUSE")
-                    ):
-                        raise ValueError("BBSTOP_START_NOT_CONFIRMED")
-                await asyncio.to_thread(inbox.cancel_queued, printer)
-                yield
-                self.inbox_wake.set()
-                return
             await self.recover_lost_start()
             await self.ensure_idle()
             identifier = await asyncio.to_thread(inbox.claim_external, printer, payload)
+            await self.prepare_shadow_accounting(identifier)
             self.arm_inbox_expiry()
             try:
                 yield
@@ -662,15 +736,56 @@ class NativeGateway:
             finally:
                 self.inbox_wake.set()
 
+    async def retain(self) -> None:
+        """Hourly cache and snapshot retention for this gateway's state directory."""
+        settings = self.app.state.settings
+        while True:
+            try:
+                await asyncio.to_thread(
+                    prune_state,
+                    self.store.directory,
+                    preview_max_age_days=getattr(settings, "bridge_preview_max_age_days", 30),
+                    native_backups_keep=getattr(settings, "bridge_native_backups_keep", 10),
+                )
+            except OSError as exc:
+                log.warning("retention.failed", error=str(exc))
+            await asyncio.sleep(RETENTION_INTERVAL_S)
+
+    async def watch_spool_connection(self, service: Any) -> None:
+        async with service.bus.subscribe() as subscription:
+            async for event in subscription:
+                if event.name == "connection_lost" and self.spool_overlay is not None:
+                    self.spool_overlay.invalidate()
+                    self.spool_reports.publish(Event("snapshot", {}))
+
+    def inventory_display_changed(self) -> None:
+        if self.inventory_display is not None:
+            self.spool_overlay = self.inventory_display.overlay
+            self.spool_reports.publish(Event("snapshot", {}))
+
+    async def inventory_display_policy(self) -> tuple[bool, bool]:
+        inventory = getattr(self.app.state, "inventory", None)
+        if inventory is None or self.config is None:
+            return False, False
+        provider = (await inventory.assignments.snapshot()).provider_id
+        policy = await inventory.display_policy.snapshot(provider)
+        return policy["global_enabled"], self.config["printer_id"] in policy["printers"]
+
     async def observe_inbox(self, report: dict[str, Any]) -> None:
+        overlay = getattr(self, "spool_overlay", None)
+        if overlay is not None:
+            overlay.observe_physical(self.service().native_snapshot())
         inbox = self.inbox
         if inbox is None:
             return
+        # Runs inside the reporting printer's own handler. Observing a report is
+        # not a control action: skip the certificate gate in service(), or a
+        # changed certificate would raise here and drop the MQTT session in a loop.
         changed = await asyncio.to_thread(
             inbox.observe,
             cast(dict[str, str], self.config)["printer_id"],
             report,
-            self.service().native_snapshot(),
+            self.inbox_service.native_snapshot(),
         )
         if changed:
             previous = {row["id"]: row.get("code") for row in self.inbox_status}
@@ -741,12 +856,14 @@ class NativeGateway:
                         if current["command"]:
                             self.inbox_failure(current, "BBDELIVERY_FAILED")
                 async with self.inbox_dispatch_lock:
-                    service = self.service()
                     current = await asyncio.to_thread(inbox.get, identifier)
                     if current["state"] != "delivered" or current["start_state"] != "queued":
                         continue
                     await asyncio.to_thread(inbox.mark_readiness, identifier)
                     try:
+                        # A changed certificate blocks this start with its reason
+                        # instead of stopping the worker for every later upload.
+                        service = self.service()
                         await self.ensure_idle()
                         if current.get("replay_request_id"):
                             replay = getattr(self.app.state, "library_replay", None)
@@ -755,6 +872,9 @@ class NativeGateway:
                             await replay.before_dispatch(current)
                             # The inventory round trip can reveal a newly active
                             # printer. Recheck readiness against that fresh state.
+                            await self.ensure_idle()
+                        await self.prepare_shadow_accounting(identifier)
+                        if getattr(self.app.state, "inventory", None) is not None:
                             await self.ensure_idle()
                     except ValueError as exc:
                         reason = str(exc)
@@ -1106,8 +1226,10 @@ class NativeGateway:
         report_topic = f"device/{serial}/report".encode()
         request_topic = f"device/{serial}/request".encode()
         subscribed = False
+        ever_subscribed = False
         peer = writer.get_extra_info("peername")[0]
         seen_publishes: dict[bytes, bytes] = {}
+        virtual_slots: set[int] = set()
         lock = asyncio.Lock()
 
         async def send(kind: int, body: bytes = b"") -> None:
@@ -1122,6 +1244,20 @@ class NativeGateway:
                     cast(dict[str, str], self.config)["printer_id"],
                     payload,
                 )
+            if self.spool_overlay is not None:
+                try:
+                    payload = self.spool_overlay.project(
+                        payload,
+                        service.native_snapshot(),
+                        connected=service.connected,
+                        projected_slots=virtual_slots,
+                    )
+                except VirtualSpoolStateUnavailable:
+                    # report() also runs in forwarding tasks. Closing here wakes
+                    # the independent MQTT reader instead of leaving a stale
+                    # connection alive after a failed forwarding task.
+                    writer.close()
+                    raise
             value = native_report(payload, service.ip, self.host)
             value = transpose_identity(value, service.serial, serial)
             value = self.video.advertise(value)
@@ -1150,6 +1286,14 @@ class NativeGateway:
                             await report(event.data)
 
             inbox_forwarding = asyncio.create_task(forward_inbox())
+
+            async def forward_spools() -> None:
+                async with self.spool_reports.subscribe() as subscription:
+                    async for _ in subscription:
+                        if subscribed:
+                            await report({"print": {"command": "push_status"}})
+
+            spool_forwarding = asyncio.create_task(forward_spools())
             try:
                 await send(0x20, b"\x00\x00")
                 while True:
@@ -1165,6 +1309,7 @@ class NativeGateway:
                             pos += 1
                             grants.append(0 if allowed else 128)
                             subscribed |= allowed
+                        ever_subscribed |= subscribed
                         await send(0x90, data[:2] + grants)
                         if subscribed:
                             await report(service.native_snapshot())
@@ -1216,6 +1361,20 @@ class NativeGateway:
                                 }
                             )
                         else:
+                            response = (
+                                self.spool_overlay.command_response(
+                                    payload,
+                                    service.native_snapshot(),
+                                    protected_slots=virtual_slots,
+                                )
+                                if self.spool_overlay is not None
+                                else None
+                            )
+                            if response is not None:
+                                await report(response)
+                                if qos:
+                                    await send(0x40, mid)
+                                continue
                             translated = transpose_identity(payload, serial, service.serial)
                             held = None
                             if self.inbox is not None:
@@ -1279,6 +1438,13 @@ class NativeGateway:
                     elif kind == 10:
                         subscribed = False
                         await send(0xB0, data[:2])
+                        if not ever_subscribed:
+                            # Stock Orca's plug-in replays the unsubscribe from the
+                            # connection it lost (a bridge restart) on the new one and
+                            # then never subscribes. Closing makes it run its full
+                            # connect again, which subscribes.
+                            self.note("mqtt", "stale_unsubscribe_closed")
+                            return
                     elif kind == 12:
                         await send(0xD0)
                     elif kind == 14:
@@ -1288,4 +1454,7 @@ class NativeGateway:
             finally:
                 forwarding.cancel()
                 inbox_forwarding.cancel()
-                await asyncio.gather(forwarding, inbox_forwarding, return_exceptions=True)
+                spool_forwarding.cancel()
+                await asyncio.gather(
+                    forwarding, inbox_forwarding, spool_forwarding, return_exceptions=True
+                )

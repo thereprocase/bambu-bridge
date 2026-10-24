@@ -1,4 +1,10 @@
-"""MediaMTX on-demand worker. Credentials stay in memory, never in FFmpeg argv."""
+"""MediaMTX on-demand worker.
+
+The bridge API key stays in memory and never reaches FFmpeg argv. The remux
+publish URL does carry MediaMTX's per-start publisher password, so local
+processes can read it from the command line. It grants publishing only, changes
+on every backend start, and keeps relayed TLS clients (seen as 127.0.0.1) out.
+"""
 
 from __future__ import annotations
 
@@ -77,7 +83,7 @@ def main() -> None:
                 process.wait()
 
 
-def remux_command(executable: str, playlist: str) -> list[str]:
+def remux_command(executable: str, playlist: str, password: str) -> list[str]:
     return [
         executable,
         "-hide_banner",
@@ -95,7 +101,7 @@ def remux_command(executable: str, playlist: str) -> list[str]:
         "rtsp",
         "-rtsp_transport",
         "tcp",
-        "rtsp://127.0.0.1:18554/streaming/live/1",
+        f"rtsp://publisher:{password}@127.0.0.1:18554/streaming/live/1",
     ]
 
 
@@ -114,9 +120,10 @@ def remux(printer: str, port: int) -> None:
         return result
 
     playlist = lease()
-    process = subprocess.Popen(
-        remux_command(os.environ["BRIDGE_VIDEO_FFMPEG"], playlist), stderr=subprocess.DEVNULL
+    command = remux_command(
+        os.environ["BRIDGE_VIDEO_FFMPEG"], playlist, os.environ["BRIDGE_VIDEO_PUBLISH_PASS"]
     )
+    process = subprocess.Popen(command, stderr=subprocess.DEVNULL)
     try:
         while True:
             try:

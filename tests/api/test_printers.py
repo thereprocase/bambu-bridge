@@ -329,3 +329,41 @@ def test_trust_refuses_if_different_serial_now_at_host(
         body = r.json()
         assert body["error"] == "conflict"
         assert body["discovered_serial"] == "DIFFERENT_SERIAL"
+
+
+def test_delete_ignores_interrupted_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INTERRUPTED is terminal: it must not block DELETE (audit 2026-10-01)."""
+    import functools
+
+    from bambu_bridge.db.jobs import Job, JobRepo, JobState
+
+    patch_discovery_ok(monkeypatch, serial=SERIAL)
+    with TestClient(build_app(tmp_path / "del-int.db")) as c:
+        assert _post_register(c).status_code == 201
+        repo = JobRepo(c.app.state.db)  # type: ignore[attr-defined]
+        for ident, state in (("lost", JobState.INTERRUPTED), ("live", JobState.PRINTING)):
+            c.portal.call(
+                repo.create,
+                Job(id=ident, printer_id=SERIAL, file_name="x", state=state, queued_at=1),
+            )
+        r = c.delete(f"/api/v1/printers/{SERIAL}", headers=_AUTH)
+        assert r.status_code == 409
+        assert r.json()["active_job_ids"] == ["live"]
+        c.portal.call(functools.partial(repo.update, "live", state=JobState.COMPLETED))
+        assert c.delete(f"/api/v1/printers/{SERIAL}", headers=_AUTH).status_code == 204
+
+
+def test_diagnostic_history_requires_auth_and_is_printer_scoped(tmp_path, monkeypatch):
+    patch_discovery_ok(monkeypatch, serial=SERIAL)
+    with TestClient(build_app(tmp_path / "history.db")) as client:
+        assert _post_register(client).status_code == 201
+        route = f"/api/v1/printers/{SERIAL}/diagnostics"
+        assert client.get(route).status_code == 401
+        result = client.get(route, headers=_AUTH)
+        assert result.status_code == 200
+        assert result.json() == {
+            "durable": True, "faults": [], "archived_refills": [], "current_refills": []
+        }
+        assert client.get("/api/v1/printers/missing/diagnostics", headers=_AUTH).status_code == 404

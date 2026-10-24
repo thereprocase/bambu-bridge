@@ -8,14 +8,17 @@ to a :class:`PrinterService` it didn't get from here.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 import structlog
 
 from bambu_bridge.db.jobs import FilamentMemory, FilamentMemoryRepo, JobRepo, Printer, PrinterRepo
 from bambu_bridge.service.printer import PrinterService
+from bambu_bridge.slicedoc import subtask_name
 
 PrinterListener = Callable[[PrinterService], Awaitable[None]]
 
@@ -42,7 +45,9 @@ class Registry:
         camera_linger_s: float = 10.0,
         camera_settle_frames: int = 0,
         camera_keep_warm: str = "off",
+        diagnostic_history_dir: Path | None = None,
     ) -> None:
+        self._diagnostic_history_dir = diagnostic_history_dir
         self._repo = repo
         # Optional jobs repo, used only to give each PrinterService a
         # restart-recovery hook for job.started_at (the P1S firmware reports no
@@ -188,6 +193,12 @@ class Registry:
             friendly_name=record.friendly_name,
             model=record.model,
             on_seen=_touch,
+            diagnostic_history_path=(
+                self._diagnostic_history_dir
+                / (hashlib.sha256(record.id.encode()).hexdigest() + ".json")
+                if self._diagnostic_history_dir is not None
+                else None
+            ),
             mqtt_port=self._mqtt_port,
             camera_port=self._camera_port,
             camera_linger_s=self._camera_linger_s,
@@ -200,9 +211,6 @@ class Registry:
             recover_started_at=recover,
             load_filament_memory=load_mem,
             invalidate_filament_memory=invalidate_mem,
-            # Wave-1: nozzle_type gates the 300 °C allowance in api/control.py.
-            # None for legacy rows (stainless fallback → 280 °C ceiling).
-            nozzle_type=record.nozzle_type,
         )
 
     def _build_filament_memory_hooks(
@@ -234,8 +242,21 @@ class Registry:
         if jobs is None:
             return None
 
-        async def _recover() -> datetime | None:
-            epoch = await jobs.latest_active_started_at(printer_id)
+        async def _recover(subtask: str | None = None) -> datetime | None:
+            if subtask:
+                # Only the row for the print the printer reports (Orca names the
+                # job by subtask_name); a stale live row must not lend its time.
+                rows = await jobs.list(printer_id=printer_id, limit=50)
+                epochs = [
+                    j.started_at
+                    for j in rows
+                    if not j.state.terminal
+                    and j.started_at is not None
+                    and subtask_name(j.file_name) == subtask
+                ]
+                epoch = max(epochs, default=None)
+            else:
+                epoch = await jobs.latest_active_started_at(printer_id)
             if epoch is None:
                 return None
             return datetime.fromtimestamp(epoch, tz=UTC)

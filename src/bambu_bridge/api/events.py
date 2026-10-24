@@ -204,14 +204,6 @@ def _format(event_type: str, payload: dict[str, Any]) -> tuple[str, str, str]:
             f"{where} ran out — swap the spool and resume.",
             f"Code: {payload.get('code') or '—'}",
         )
-    if event_type == "feed_warning":
-        since_ms = payload.get("since_ms")
-        detail = (
-            f"No extrusion for {int(since_ms) // 1000}s — the print may not be feeding."
-            if since_ms
-            else "The print may not be feeding filament."
-        )
-        return ("Filament not feeding", detail, payload.get("advice") or "—")
     if event_type == "error":
         err = payload.get("print_error")
         err = err if isinstance(err, dict) else {}
@@ -232,6 +224,18 @@ def _format(event_type: str, payload: dict[str, Any]) -> tuple[str, str, str]:
         )
     if event_type == "cert_trusted":
         return ("Printer re-trusted", "Security key pin updated.", "—")
+    if event_type == "slot_colour_set":
+        slot, spool = payload.get("slot_label") or "A slot", payload.get("spool_id")
+        return (payload.get("text") or f"{slot} colour set to match #{spool}", "—", "—")
+    if event_type == "spool_adopted":
+        spool, slot = payload.get("spool_id"), payload.get("slot_label") or "a slot"
+        name = payload.get("name") or "Spool"
+        text = payload.get("text") or (
+            f"New spool #{spool} · {name} · {slot} (from its RFID tag)"
+            if payload.get("new")
+            else f"Spool #{spool} · {name} · {slot} (matched by its RFID tag)"
+        )
+        return (text, "—", "—")
     # Catch-all
     return (event_type.replace("_", " ").title(), "—", "—")
 

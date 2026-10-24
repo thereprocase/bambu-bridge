@@ -396,14 +396,14 @@ def install(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def _unhandled(  # noqa: ARG001
-        request: Request, exc: Exception
-    ) -> JSONResponse:
+    async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
+        settings = getattr(request.app.state, "settings", None)
+        dev = bool(getattr(settings, "bridge_dev_mode", False))
         return envelope(
             error=ERR_INTERNAL,
             message="Bridge hit an unexpected error.",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            raw={"exc_type": type(exc).__name__, "exc_str": str(exc) or repr(exc)},
+            raw={"exc_type": type(exc).__name__, "exc_str": str(exc) or repr(exc)} if dev else None,
         )
 
 

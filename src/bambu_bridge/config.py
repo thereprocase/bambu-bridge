@@ -16,16 +16,14 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from bambu_bridge.log_redaction import install, redact_event
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # Server
     bridge_host: str = "0.0.0.0"  # noqa: S104 - bind-all is intended (Tailscale-fronted)
@@ -58,10 +56,25 @@ class Settings(BaseSettings):
     # Storage
     bridge_library_dir: str | None = None  # opt-in immutable artifact archive
     bridge_library_quota_bytes: int = Field(default=20 * 1024**3, gt=0)
+    # Prints not printed again within this many days are dropped; 0 keeps them.
+    bridge_library_max_age_days: int = Field(default=365, ge=0)
     bridge_library_replay_enabled: bool = False  # explicit rollout after replay qualification
+    bridge_spoolman_url: str | None = None  # operator configuration, never app-supplied
+    bridge_spoolman_web_url: str | None = None  # the UI the app links to, when reachable
+    bridge_dev_mode: bool = False  # exception type and text in 500 bodies
+    bridge_spoolman_bearer: SecretStr = SecretStr("")
+    bridge_inventory_dir: str | None = None  # required with spoolman URL; backup with provider DB
+    # Deduct each completed single-spool print's sliced estimate from Spoolman.
+    # Uncertain prints are held for review instead of deducted.
+    bridge_inventory_auto_deduct: bool = False
     bridge_db_path: str = "/var/lib/bambu-bridge/jobs.db"
     bridge_files_dir: str = "/var/lib/bambu-bridge/files"
     bridge_max_transfer_bytes: int = Field(default=64 * 1024 * 1024, gt=0)
+    # Preview caches (sources, geometry, spinner frames) unread for this many
+    # days are removed hourly; they rebuild on demand. 0 disables the age limit.
+    bridge_preview_max_age_days: int = Field(default=30, ge=0)
+    # Newest native-inbox snapshots kept in pairing/native-backups; 0 keeps all.
+    bridge_native_backups_keep: int = Field(default=10, ge=0)
 
     # Camera idle-linger: hold the upstream camera connection for this many
     # seconds after the last subscriber leaves, so a subsequent snapshot
@@ -114,12 +127,14 @@ class Settings(BaseSettings):
     ntfy_topic: str = ""
 
 
-def configure_logging(level: str = "info", fmt: str = "json",
-                      *, secrets: tuple[str | None, ...] = ()) -> None:
+def configure_logging(
+    level: str = "info", fmt: str = "json", *, secrets: tuple[str | None, ...] = ()
+) -> None:
     """structlog -> stdout (spec 12). systemd captures stdout to the journal."""
     install(*secrets)
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level)
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # INFO lines carry URL secrets
 
     # JSON: serialise tracebacks into the record. Console (dev): let
     # ConsoleRenderer pretty-print exc_info itself (format_exc_info would

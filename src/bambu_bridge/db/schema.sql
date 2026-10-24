@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS print_queue (
   printer_id        TEXT NOT NULL REFERENCES printers(id) ON DELETE CASCADE,
   file_path         TEXT NOT NULL,              -- printer-side path (model/<name>.gcode.3mf)
   file_name         TEXT NOT NULL,              -- display name
-  ams_mapping_json  TEXT,                       -- JSON array of physical_slot ints, e.g. "[1,3]"
+  ams_mapping_json  TEXT,                       -- Orca ams_mapping: tray per project filament, -1 unused, e.g. "[1,-1]"
   position          INTEGER NOT NULL,           -- 0-based ordering within printer_id
   added_at          INTEGER NOT NULL,           -- unix epoch seconds
   notes             TEXT
@@ -93,17 +93,3 @@ CREATE TABLE IF NOT EXISTS filament_memory (
   PRIMARY KEY (printer_id, slot)
 );
 
--- Off-AMS filament cabinet inventory (design Filament / Cabinet section).
--- User-managed; bridge does not auto-discover. Distinct from AMS-loaded
--- spools which are reported by the printer in ams.tray[].
-CREATE TABLE IF NOT EXISTS spool_inventory (
-  id            TEXT PRIMARY KEY,             -- UUID4 hex
-  name          TEXT NOT NULL,                -- "PLA Matte Charcoal"
-  material      TEXT NOT NULL,                -- "PLA" | "PETG" | "ASA" | ...
-  color_hex     TEXT NOT NULL,                -- "#1a1a1f"
-  brand         TEXT,                         -- "Bambu" | "Polymaker" | ...
-  total_g       REAL,                         -- typical 1000; nullable
-  remaining_g   REAL,                         -- user-updated; nullable
-  notes         TEXT,
-  added_at      INTEGER NOT NULL
-);

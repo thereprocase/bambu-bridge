@@ -77,9 +77,8 @@ class Printer(BaseModel):
     # §3.6). Stored on register; compared on every connect. Mismatch ->
     # 403 printer_cert_changed (post-firmware-update re-trust prompt).
     cert_fingerprint: str | None = None
-    # Installed nozzle type: "hardened_steel" allows 300 °C; NULL/"stainless_steel"
-    # defaults to 280 °C (the safe stainless ceiling).  Set via
-    # POST /printers/{id}/nozzle or learned from set_accessories MQTT reports.
+    # Legacy column, no longer read: the nozzle ceiling follows the printer's
+    # report (api/control.py _nozzle_max_c), not a stored nozzle type.
     nozzle_type: str | None = None
 
 
@@ -127,8 +126,7 @@ _MIGRATIONS = (
     # NotificationsScreen. Both nullable so existing rows survive.
     "ALTER TABLE events ADD COLUMN severity TEXT",
     "ALTER TABLE events ADD COLUMN dismissed_at INTEGER",
-    # Wave-1 controls: nozzle_type lets the API gate 300 °C only for
-    # hardened-steel nozzles.  NULL = unknown = stainless fallback (280 °C).
+    # Legacy nozzle_type column (unused; kept so existing databases migrate).
     "ALTER TABLE printers ADD COLUMN nozzle_type TEXT",
     # G3 — filament memory table. CREATE TABLE IF NOT EXISTS is idempotent, but
     # the schema.sql path runs only on new databases; on existing ones we need
@@ -206,8 +204,29 @@ class Database:
         # 0-row no-ops).
         for ddl in _MIGRATION_UPDATES:
             await self._conn.execute(ddl)
+        await self._migrate_queue_trays()
         await self._conn.commit()
         log.info("db.connected", path=self._path)
+
+    async def _migrate_queue_trays(self) -> None:
+        """Version 1: queued ``ams_mapping`` moves from physical slots (1-4) to
+        Orca's 0-based trays. Old rows were validated as 1-4, so ``x - 1`` is
+        exact; ``user_version`` makes the rewrite happen once."""
+        async with self.conn.execute("PRAGMA user_version") as cur:
+            row = await cur.fetchone()
+        if row is not None and row[0] >= 1:
+            return
+        async with self.conn.execute(
+            "SELECT id, ams_mapping_json FROM print_queue WHERE ams_mapping_json IS NOT NULL"
+        ) as cur:
+            rows = await cur.fetchall()
+        for item_id, mapping in rows:
+            trays = [slot - 1 for slot in json.loads(mapping)]
+            await self.conn.execute(
+                "UPDATE print_queue SET ams_mapping_json = ? WHERE id = ?",
+                (json.dumps(trays), item_id),
+            )
+        await self.conn.execute("PRAGMA user_version = 1")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -643,24 +662,6 @@ class QueueItem(BaseModel):
     notes: str | None = None
 
 
-class Spool(BaseModel):
-    """A cabinet/off-AMS spool the user tracks manually.
-
-    Distinct from AMS-loaded trays (reported by the printer in ams.tray[]);
-    these are spools in the operator's filament cabinet.
-    """
-
-    id: str
-    name: str
-    material: str
-    color_hex: str
-    brand: str | None = None
-    total_g: float | None = None
-    remaining_g: float | None = None
-    notes: str | None = None
-    added_at: int
-
-
 _QUEUE_COLS = (
     "id, printer_id, file_path, file_name, ams_mapping_json, position, added_at, notes"
 )
@@ -770,71 +771,6 @@ class QueueRepo:
         ams_raw = d.pop("ams_mapping_json", None)
         d["ams_mapping"] = json.loads(ams_raw) if ams_raw else None
         return QueueItem(**d)
-
-
-_SPOOL_COLS = (
-    "id, name, material, color_hex, brand, total_g, remaining_g, notes, added_at"
-)
-
-
-class SpoolRepo:
-    """Off-AMS cabinet inventory (user-managed)."""
-
-    def __init__(self, db: Database) -> None:
-        self._db = db
-
-    async def add(self, spool: Spool) -> Spool:
-        await self._db.conn.execute(
-            f"INSERT INTO spool_inventory ({_SPOOL_COLS}) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                spool.id,
-                spool.name,
-                spool.material,
-                spool.color_hex,
-                spool.brand,
-                spool.total_g,
-                spool.remaining_g,
-                spool.notes,
-                spool.added_at,
-            ),
-        )
-        await self._db.conn.commit()
-        return spool
-
-    async def get(self, spool_id: str) -> Spool | None:
-        async with self._db.conn.execute(
-            f"SELECT {_SPOOL_COLS} FROM spool_inventory WHERE id = ?",
-            (spool_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        return Spool(**dict(row)) if row else None
-
-    async def list(self) -> list[Spool]:
-        async with self._db.conn.execute(
-            f"SELECT {_SPOOL_COLS} FROM spool_inventory ORDER BY added_at ASC"
-        ) as cur:
-            rows = await cur.fetchall()
-        return [Spool(**dict(r)) for r in rows]
-
-    async def update(self, spool_id: str, **fields: Any) -> Spool | None:
-        if not fields:
-            return await self.get(spool_id)
-        cols = ", ".join(f"{k} = ?" for k in fields)
-        params: list[Any] = list(fields.values())
-        params.append(spool_id)
-        await self._db.conn.execute(
-            f"UPDATE spool_inventory SET {cols} WHERE id = ?", params
-        )
-        await self._db.conn.commit()
-        return await self.get(spool_id)
-
-    async def delete(self, spool_id: str) -> bool:
-        cur = await self._db.conn.execute(
-            "DELETE FROM spool_inventory WHERE id = ?", (spool_id,)
-        )
-        await self._db.conn.commit()
-        return cur.rowcount > 0
 
 
 # --------------------------------------------------------------------------- #

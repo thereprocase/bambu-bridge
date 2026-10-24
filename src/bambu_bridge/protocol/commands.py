@@ -27,24 +27,33 @@ for any endpoint where the contract documents physical slots.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from bambu_bridge.protocol.models import build_command
 
 Envelope = dict[str, Any]
 
-# Default nozzle temperature ceiling (stainless steel nozzle).  Hardened-steel
-# nozzles can go to 300 °C; the API layer applies the conditional clamp and
-# passes the already-validated value here.  The builder enforces the
-# hardcoded absolute maximum (300 °C) so no client-supplied clamp can exceed
-# the physical limit regardless of nozzle type.
-NOZZLE_MAX_C = 280             # default / stainless ceiling
-NOZZLE_MAX_HARDENED_C = 300   # conditional ceiling; requires nozzle_type=hardened
+# Nozzle temperature ceiling, as in OrcaSlicer: 300 °C whatever the nozzle
+# type (StatusPanel::create_temp_control), unless the printer reports its own
+# nozzle_temp_range (StatusPanel::update_temp_ctrl), which the API passes in.
+NOZZLE_MAX_C = 300
 BED_MAX_C = 100  # Qualified adapter: P1S (manufacturer C12 profile).
 SPEED_LEVELS = {1: "silent", 2: "standard", 3: "sport", 4: "ludicrous"}
 # print.gcode_line fan index per Bambu convention.
 _FAN_PARTS = {"part": 1, "aux": 2, "chamber": 3}
-AMS_ACTIONS = frozenset({"pause", "resume", "reset"})
+# The project_file ``ams_mapping`` exactly as Orca builds it
+# (SelectMachineDialog::get_ams_mapping_result): one entry per PROJECT filament,
+# in project order, each the global AMS tray ``ams_id * 4 + slot`` (0 = physical
+# slot 1 of the first AMS ... 3 = slot 4) or -1 for a filament that is unused or
+# fed from the external spool. Every bridge path stores and forwards it as is.
+AmsMapping = Annotated[list[Annotated[int, Field(ge=-1, le=15)]], Field(max_length=64)]
+
+# Orca's GUI only ever sends "resume" to a P1S AMS (DeviceErrorDialog CONTINUE /
+# RETRY_FILAMENT_EXTRUDED, StatusPanel ExtruderSwithingStatus::on_retry); it has
+# no pause or reset control, so the bridge offers none either.
+AMS_ACTIONS = frozenset({"resume"})
 
 # P1S MQTT receive-buffer ceiling (research/02 §4).  Payloads larger than this
 # risk silently overflowing the printer's RX buffer and being discarded.
@@ -83,7 +92,15 @@ AMS_TRAY_TYPES: frozenset[str] = frozenset({
     "PLA", "ABS", "PETG", "TPU", "PA", "PA-CF", "PLA-CF",
     "PETG-CF", "PVA", "ASA", "PC", "HIPS", "ABS-GF",
     "PLA Silk", "PLA Matte",
+    # Filled and engineering types the owner's Orca profiles use (Orca MaterialType).
+    "ABS-CF", "ASA-CF", "ASA-GF", "PA-GF", "PA6-CF", "PA6-GF", "PC-ABS", "PC-CF",
+    "PCTG", "PET", "PET-CF", "PET-GF", "PETG-GF", "PPA-CF", "PPA-GF",
 })
+
+# The external holder in ams_filament_setting (OrcaSlicer DeviceManager:
+# ams_id VIRTUAL_TRAY_MAIN_ID, tray_id VIRTUAL_TRAY_DEPUTY_ID, slot_id 0).
+EXTERNAL_AMS_ID = 255
+EXTERNAL_TRAY_ID = 254
 
 # ---------------------------------------------------------------------------
 # AMS drying temperature ceiling (hardware safety limit).
@@ -125,7 +142,8 @@ _CALIBRATION_P1S_MASK: int = 0b110  # bed leveling=2, vibration=4; XCam=1 exclud
 
 def raw_gcode_enabled() -> bool:
     """Require an explicit true value for the diagnostic escape hatch."""
-    return os.environ.get("BRIDGE_ENABLE_RAW_GCODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    value = os.environ.get("BRIDGE_ENABLE_RAW_GCODE", "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -192,25 +210,14 @@ def gcode_line(line: str) -> Envelope:
 # --------------------------------------------------------------------------- #
 
 
-def set_nozzle_temp(celsius: int, *, hardened: bool = False) -> Envelope:
+def set_nozzle_temp(celsius: int, *, max_c: int = NOZZLE_MAX_C) -> Envelope:
     """Set nozzle target temperature (M104, no-wait).
 
-    ``hardened=False`` (default / stainless nozzle): ceiling is
-    :data:`NOZZLE_MAX_C` (280 °C).
-    ``hardened=True`` (hardened-steel nozzle confirmed in printer record):
-    ceiling is :data:`NOZZLE_MAX_HARDENED_C` (300 °C).
-
-    The API layer reads the nozzle_type from the printer record / service
-    state and sets ``hardened`` accordingly.  The builder itself never
-    trusts the caller to raise the limit — ``hardened=True`` is only ever
-    set by the server-side gate in ``api/control.py``.
+    ``max_c`` is the printer-reported ``nozzle_temp_range`` maximum when the
+    printer sends one, else :data:`NOZZLE_MAX_C`.
     """
-    ceiling = NOZZLE_MAX_HARDENED_C if hardened else NOZZLE_MAX_C
-    if not 0 <= celsius <= ceiling:
-        raise ValueError(
-            f"nozzle temp {celsius} out of range 0..{ceiling} "
-            f"({'hardened' if hardened else 'stainless'} nozzle)"
-        )
+    if not 0 <= celsius <= max_c:
+        raise ValueError(f"nozzle temp {celsius} out of range 0..{max_c}")
     return _gcode(f"M104 S{celsius}")
 
 
@@ -351,7 +358,7 @@ def ipcam_timelapse(enabled: bool) -> Envelope:
 
 
 def ams_control(action: str) -> Envelope:
-    """AMS handshake control: pause | resume | reset (e.g. after a runout)."""
+    """AMS handshake control: resume (e.g. after a runout or a failed feed)."""
     if action not in AMS_ACTIONS:
         raise ValueError(f"ams action must be one of {sorted(AMS_ACTIONS)}")
     return build_command("print", "ams_control", param=action)
@@ -460,27 +467,20 @@ def print_option(**flags: bool) -> Envelope:
 
 
 def skip_objects(obj_list: list[int]) -> Envelope:
-    """Cancel specific objects mid-print without stopping the whole job.
+    """Skip objects mid-print without stopping the job.
 
-    ``obj_list`` must be a non-empty list of integer Bambu object IDs (from
-    the slice, not user-facing indices).  The ``timestamp`` field is the
-    current Unix epoch (seconds, integer) as required by the wire protocol
-    (OpenBambuAPI / ha-bambulab).
+    ``obj_list`` holds slice identify_ids (slice_info ``<object identify_id>``,
+    the G-code's ``; model label id:``). Same body as OrcaSlicer's
+    MachineObject::command_task_partskip: command, obj_list, sequence_id.
     """
     if not obj_list:
         raise ValueError("obj_list must be non-empty")
     for i, oid in enumerate(obj_list):
-        if not isinstance(oid, int):
+        if not isinstance(oid, int) or isinstance(oid, bool):
             raise ValueError(
                 f"obj_list[{i}] must be an int, got {type(oid).__name__!r}"
             )
-    import time as _time
-    return build_command(
-        "print",
-        "skip_objects",
-        timestamp=int(_time.time()),
-        obj_list=obj_list,
-    )
+    return build_command("print", "skip_objects", obj_list=obj_list)
 
 
 # --------------------------------------------------------------------------- #
@@ -518,21 +518,23 @@ def ams_filament_setting(
     tray_type:
         Material type string — must be in :data:`AMS_TRAY_TYPES`.
     """
-    if ams_id < 0:
-        raise ValueError("ams_id must be >= 0")
-    if ams_id > AMS_ID_MAX:
-        raise ValueError(f"ams_id must be <= {AMS_ID_MAX} (P1S supports up to 4 AMS units)")
-    if tray_id < 0:
-        raise ValueError("tray_id must be >= 0")
+    external = (ams_id, tray_id) == (EXTERNAL_AMS_ID, EXTERNAL_TRAY_ID)
+    if not external:
+        if ams_id < 0:
+            raise ValueError("ams_id must be >= 0")
+        if ams_id > AMS_ID_MAX:
+            raise ValueError(f"ams_id must be <= {AMS_ID_MAX} (P1S supports up to 4 AMS units)")
+        if tray_id < 0:
+            raise ValueError("tray_id must be >= 0")
     if len(tray_color) != 8 or not all(c in "0123456789ABCDEFabcdef" for c in tray_color):
         raise ValueError("tray_color must be 8-char hex RRGGBBAA")
     if nozzle_temp_min >= nozzle_temp_max:
         raise ValueError(
             f"nozzle_temp_min ({nozzle_temp_min}) must be < nozzle_temp_max ({nozzle_temp_max})"
         )
-    if nozzle_temp_max > NOZZLE_MAX_HARDENED_C:
+    if nozzle_temp_max > NOZZLE_MAX_C:
         raise ValueError(
-            f"nozzle_temp_max {nozzle_temp_max} exceeds absolute ceiling {NOZZLE_MAX_HARDENED_C}"
+            f"nozzle_temp_max {nozzle_temp_max} exceeds absolute ceiling {NOZZLE_MAX_C}"
         )
     if tray_type not in AMS_TRAY_TYPES:
         raise ValueError(
@@ -543,6 +545,7 @@ def ams_filament_setting(
         "ams_filament_setting",
         ams_id=ams_id,
         tray_id=tray_id,
+        **({"slot_id": 0} if external else {}),
         tray_info_idx=tray_info_idx,
         tray_color=tray_color,
         nozzle_temp_min=nozzle_temp_min,

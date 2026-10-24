@@ -71,38 +71,51 @@ def test_add_assigns_dense_positions(
         assert a["ams_mapping"] is None
 
 
-def test_ams_mapping_validated_1_to_4(
+def test_ams_mapping_is_orca_trays(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Orca's ams_mapping: tray 0-15 (0 = physical slot 1) or -1 per filament."""
     patch_discovery_ok(monkeypatch, serial=SERIAL)
     with TestClient(build_app(tmp_path / "queue.db")) as c:
         _register(c)
-        # 0 is forbidden — physical slots are 1-4
-        r = c.post(
-            f"/api/v1/printers/{SERIAL}/queue",
-            headers=_AUTH,
-            json={"file_path": "/model/x.3mf", "file_name": "x.3mf", "ams_mapping": [0]},
-        )
-        assert r.status_code == 422
-        body = r.json()
-        assert body["error"] == "invalid_input"
-        msgs = [
-            (i["message"] if isinstance(i, dict) else str(i))
-            for i in body.get("issues", [])
-        ]
-        assert any("physical_slot" in m for m in msgs)
+        for bad in ([-2], [16], [0] * 65):
+            r = c.post(
+                f"/api/v1/printers/{SERIAL}/queue",
+                headers=_AUTH,
+                json={"file_path": "/model/x.3mf", "file_name": "x.3mf", "ams_mapping": bad},
+            )
+            assert r.status_code == 422, bad
+            assert r.json()["error"] == "invalid_input"
 
-        # 5 also rejected
-        r = c.post(
-            f"/api/v1/printers/{SERIAL}/queue",
-            headers=_AUTH,
-            json={"file_path": "/model/x.3mf", "file_name": "x.3mf", "ams_mapping": [5]},
-        )
-        assert r.status_code == 422
+        # Slot 1 (tray 0) and unused filaments (-1) are stored unchanged.
+        ok = _add(c, file_name="ok.3mf", ams=[0, -1, 3])
+        assert ok["ams_mapping"] == [0, -1, 3]
 
-        # 1-4 accepted
-        ok = _add(c, file_name="ok.3mf", ams=[1, 3])
-        assert ok["ams_mapping"] == [1, 3]
+
+async def test_legacy_physical_slots_migrate_once_to_trays(tmp_path: Path) -> None:
+    from bambu_bridge.db.jobs import Database
+
+    path = str(tmp_path / "legacy.db")
+    db = Database(path)
+    await db.connect()
+    await db.conn.execute("PRAGMA user_version = 0")
+    await db.conn.execute(
+        "INSERT INTO printers (id, friendly_name, ip, access_code, added_at) "
+        "VALUES ('p', 'P1S', '1.2.3.4', 'x', 0)"
+    )
+    await db.conn.execute(
+        "INSERT INTO print_queue (id, printer_id, file_path, file_name, ams_mapping_json,"
+        " position, added_at) VALUES ('q', 'p', '/a.3mf', 'a.3mf', '[2, 4]', 0, 0)"
+    )
+    await db.conn.commit()
+    await db.close()
+
+    for _ in range(2):  # the second connect must not shift again
+        db = Database(path)
+        await db.connect()
+        async with db.conn.execute("SELECT ams_mapping_json FROM print_queue") as cur:
+            assert [r[0] for r in await cur.fetchall()] == ["[1, 3]"]
+        await db.close()
 
 
 def test_reorder_sends_to_front_and_back(

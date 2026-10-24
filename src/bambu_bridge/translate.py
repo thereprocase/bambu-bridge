@@ -41,6 +41,7 @@ from bambu_bridge.hms import (
 from bambu_bridge.hms import (
     wiki_url as hms_wiki_url,
 )
+from bambu_bridge.skip_objects import part_skip_supported, skipped_ids
 
 # --------------------------------------------------------------------------- #
 # Types
@@ -78,6 +79,11 @@ class SnapshotContext:
     # it); an empty dict means memory is wired but no labels are stored.
     # `_ams_block` merges this into each slot's dict as "memory": {...}|null.
     filament_memory: dict[int, Any] | None = field(default=None)
+    # Skip Objects' run token (RunLog.run_id): changes on every run edge and
+    # MQTT reconnect, so a sheet built for one run is refused in another.
+    run_id: int | None = None
+    auto_refill_history: list[dict[str, Any]] = field(default_factory=list)
+    diagnostic_history: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -104,6 +110,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
             "last_connect_attempt": ctx.last_connect_attempt,
             "last_failure_phase": ctx.last_failure_phase,
         },
+        "diagnostics": ctx.diagnostic_history,
         "cert_status": ctx.cert_status,
         "phase": phase,
         "phase_reason": phase_reason,
@@ -116,10 +123,10 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
         "lights": _lights(raw),
         "print_params": _print_params(raw),
         "motion": _motion(raw),
-        "ams": _ams(raw, ctx),
-        "print_error": _print_error(raw),
+        "ams": {**_ams(raw, ctx), "refill_history": [dict(row) for row in ctx.auto_refill_history]},
+        "print_error": build_print_error(active_error_code(raw), ctx.serial[:3]),
         "stage": _stage(raw),
-        "hms": _hms_list(raw, job_ctx),
+        "hms": _hms_list(raw, job_ctx, ctx.serial[:3]),
         "_raw": _raw_passthrough(raw),
     }
 
@@ -132,7 +139,7 @@ def translate_snapshot(raw: dict[str, Any], ctx: SnapshotContext) -> dict[str, A
 def _phase_and_reason(raw: dict[str, Any]) -> tuple[Phase, str | None]:
     gs = raw.get("gcode_state")
     layer_num = _as_int(raw.get("layer_num")) or 0
-    perr = _print_error_active(raw)
+    perr = active_error_code(raw) is not None
 
     # An active print_error overrides phase classification — failure is sticky.
     if perr and gs in ("FAILED", "IDLE", "FINISH"):
@@ -168,7 +175,7 @@ def _preparing_reason(raw: dict[str, Any]) -> str:
         tn = str(ams.get("tray_now", "")).strip()
         if tn == "255" or tn == "":
             # Still preparing — feed hasn't engaged yet. Heuristic only;
-            # the 90s feed_warning watchdog is the alerting path.
+            # air printing is the printer's own air_print_detect alert.
             nozzle_c = _as_float(raw.get("nozzle_temper"))
             nozzle_target = _as_float(raw.get("nozzle_target_temper"))
             if nozzle_c is not None and nozzle_target is not None and nozzle_c < nozzle_target - 5:
@@ -191,12 +198,18 @@ def _preparing_reason(raw: dict[str, Any]) -> str:
     return "purging"
 
 
-def _print_error_active(raw: dict[str, Any]) -> bool:
+def active_error_code(raw: dict[str, Any]) -> int | None:
+    """The printer's active device error, or None.
+
+    Mirrors OrcaSlicer: only the integer ``print_error`` counts and ``<= 0`` is
+    benign (StatusPanel::update_error_message). ``mc_print_error_code`` is
+    ignored; the P1S sends it as the string "0", which Orca never reads
+    (MachineObject::parse_json takes it only when it is a number).
+    """
     perr = raw.get("print_error")
-    if perr in (None, 0, "0", ""):
-        code = raw.get("mc_print_error_code")
-        return code not in (None, 0, "0", "")
-    return True
+    if isinstance(perr, int) and not isinstance(perr, bool) and perr > 0:
+        return perr
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +363,7 @@ def _headline(
             "indicator": "green",
         }
     if phase == "failed":
-        entry = hms_lookup(raw.get("mc_print_error_code") or raw.get("print_error"))
+        entry = hms_lookup(active_error_code(raw))
         return {
             "title": "Print failed",
             "subtitle": entry["user_message"],
@@ -410,6 +423,10 @@ def _job_block(raw: dict[str, Any], phase: Phase, ctx: SnapshotContext) -> dict[
         "estimate_total_min": _as_int(raw.get("mc_estimated_time")),
         "remaining_min": _as_int(raw.get("mc_remaining_time")),
         "started_at": started_at,
+        # Orca's part skip: the printer's s_obj list and whether it supports it.
+        "skipped_objects": skipped_ids(raw),
+        "part_skip_supported": part_skip_supported(raw),
+        "run_id": ctx.run_id,
     }
 
 
@@ -605,7 +622,7 @@ def _ams_slots(
     """Translate four-tray AMS units using reported identifiers, never array order."""
     units = ams.get("ams")
     if isinstance(units, list) and units:
-        result = []
+        result: list[dict[str, Any]] = []
         for unit in units:
             if not isinstance(unit, dict):
                 continue
@@ -695,14 +712,10 @@ def _rfid_tray(tray: dict[str, Any]) -> str | None:
 def _remaining_pct(tray: dict[str, Any], has_filament: bool) -> int | None:
     if not has_filament:
         return None
-    # P1S sometimes ships `remain` as grams (0-1000ish), sometimes as %.
-    # If <= 100, treat as a percent; otherwise derive from a ~1000g spool.
+    # Firmware percentage; -1 is unknown. Do not guess mass units for
+    # out-of-range values or turn an unknown sentinel into an empty spool.
     remain = _as_int(tray.get("remain"))
-    if remain is None:
-        return None
-    if remain <= 100:
-        return max(0, min(100, remain))
-    return max(0, min(100, round(remain / 10)))
+    return remain if remain is not None and 0 <= remain <= 100 else None
 
 
 def _normalize_color(raw_color: Any) -> str | None:
@@ -738,7 +751,7 @@ def _external_from_ams(ams: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def build_print_error(code: Any) -> dict[str, Any] | None:
+def build_print_error(code: Any, catalog_model: str | None = None) -> dict[str, Any] | None:
     """Structured §6 ``print_error`` object from a raw P1S error code.
 
     Single source of the ``{code, hex, text, category, severity,
@@ -751,7 +764,7 @@ def build_print_error(code: Any) -> dict[str, Any] | None:
     """
     if code in (None, 0, "0", ""):
         return None
-    entry = hms_lookup(code)
+    entry = hms_lookup(code, catalog_model)
     # The hex form is what hms.lookup normalized; surface it back so the
     # APK can render "Code: 0300_0d00_0003_0001" if it wants.
     if isinstance(code, str):
@@ -770,10 +783,6 @@ def build_print_error(code: Any) -> dict[str, Any] | None:
         "wiki_url": hms_wiki_url(hex_form),
         "_raw": code,
     }
-
-
-def _print_error(raw: dict[str, Any]) -> dict[str, Any] | None:
-    return build_print_error(raw.get("mc_print_error_code") or raw.get("print_error"))
 
 
 # --------------------------------------------------------------------------- #
@@ -800,7 +809,9 @@ def _stage(raw: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _hms_list(raw: dict[str, Any], job_context: JobContext | None = None) -> list[dict[str, Any]]:
+def _hms_list(
+    raw: dict[str, Any], job_context: JobContext | None = None, catalog_model: str | None = None
+) -> list[dict[str, Any]]:
     """Decode the MQTT ``hms[]`` array into a list of structured entries.
 
     Each entry in the printer's ``hms`` payload is ``{"attr": int, "code": int}``.
@@ -826,7 +837,7 @@ def _hms_list(raw: dict[str, Any], job_context: JobContext | None = None) -> lis
         code = _as_int(item.get("code"))
         if attr is None or code is None:
             continue
-        decoded = decode_hms_entry(attr, code, job_context)
+        decoded = decode_hms_entry(attr, code, job_context, catalog_model)
         result.append(
             {
                 "code": f"{attr}:{code}",

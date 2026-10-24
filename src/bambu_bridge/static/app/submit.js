@@ -8,17 +8,16 @@
 //                   and a RECENT reprint list seeded from GET /jobs.
 //   §5.2 Map      — parse Metadata/slice_info.config from the chosen .3mf
 //                   IN-BROWSER (zip central dir + DecompressionStream(
-//                   'deflate-raw') inflate; feature-detected). Defaults the
-//                   per-filament tray pick; collects ams_mapping in 1-BASED
-//                   physical-slot space (1-4) — never 0 (contract §7.1).
+//                   'deflate-raw') inflate; feature-detected). Assigns each
+//                   filament a tray the way Orca's Send dialog does and sends
+//                   Orca's ams_mapping (ams-mapping.js, contract §7.1).
 //   §5.3 Confirm  — multipart POST .../jobs via XMLHttpRequest with a
 //                   determinate .upbar upload-progress bar. On 201 → dashboard
 //                   + snackbar "Submitted — waiting for the printer to start"
 //                   (NEVER "Printing" — queued ≠ printing, contract §7.3).
 //
-//   Error mapping (contract §7.2, §8): 422 invalid_3mf(issues) /
-//   ams_slot_empty / ams_slot_invalid / ams_material_mismatch(confirm_mismatch),
-//   409 printer_offline, 502 ftps_failed / print_submit_failed, 401 → Key
+//   Error mapping (contract §7.2, §8): 422 invalid_3mf(issues) / invalid_input
+//   (a bad ams_mapping), 409 printer_offline, 502 ftps_failed / print_submit_failed, 401 → Key
 //   screen, 403 printer_cert_changed → the TOFU trust sheet.
 //
 // Contract: export function mount(root, app) -> unmount(). See main.js header.
@@ -26,14 +25,16 @@
 import {
   el, clear, toast, errorCard, banner, certChangedSheet, slotLabel,
 } from './ui.js';
+import { amsMapping, autoMatch, projectFilamentCount } from './ams-mapping.js';
 
 const MAX_BYTES = 300 * 1024 * 1024;            // 300 MB (§5.1)
 const ACCEPT = '.3mf,.gcode.3mf';
 const SLICE_INFO_PATH = 'Metadata/slice_info.config';
+const PROJECT_SETTINGS_PATH = 'Metadata/project_settings.config';
 
-// External-spool sentinel for the per-filament pickers. The user picks "Slot
-// 1..4" (physical) or "External"; physical slots go into ams_mapping (1-based),
-// External flips the external_spool flag.
+// External-spool choice for the per-filament pickers. The user sees "Slot 1..4"
+// (labels only) or "External"; the value is the 0-based tray, and External
+// becomes -1 in ams_mapping, as in Orca.
 const EXTERNAL = 'external';
 
 export function mount(root, app) {
@@ -60,12 +61,12 @@ export function mount(root, app) {
   shell.appendChild(fileInput);
 
   // ── per-flow mutable state ────────────────────────────────────────────────
-  /** @type {{file:File|null, sliceErr:string|null, filaments:Array, externalSpool:boolean}} */
+  /** @type {{file:File|null, sliceErr:string|null, filaments:Array, count:number}} */
   const flow = {
     file: null,           // the chosen File
     sliceErr: null,       // non-null when slice_info couldn't be read (§5.2)
-    filaments: [],        // [{index, type, color, slot}]  slot is 1-4 or EXTERNAL
-    externalSpool: false, // derived from a picker set to External
+    filaments: [],        // [{index, type, color, tray}] tray: 0-15, EXTERNAL or null
+    count: 1,             // project filament count = ams_mapping length
   };
 
   let xhr = null;         // the in-flight upload (aborted on unmount)
@@ -87,14 +88,15 @@ export function mount(root, app) {
     const err = validateFile(f);
     if (err) { renderPick(err); return; }
     flow.file = f;
-    flow.externalSpool = false;
-    flow._confirmMismatch = false;   // fresh file — clear any prior overrides
     flow._submitFailCount = 0;
     // parse slice_info in-browser to seed the AMS-map defaults (§5.2)
     renderMapLoading();
     const parsed = await readSliceInfo(f);
     flow.sliceErr = parsed.error;
-    flow.filaments = parsed.filaments;
+    flow.count = parsed.count;
+    const slots = app.store.viewModel(printerId).ams.displaySlots || [];
+    const picks = autoMatch(parsed.filaments, slots);
+    flow.filaments = parsed.filaments.map((fil) => ({ ...fil, tray: picks.get(fil.index) }));
     renderMap();
   }
 
@@ -181,7 +183,7 @@ export function mount(root, app) {
       `${flow.filaments.length} filament${flow.filaments.length === 1 ? '' : 's'} needed`));
 
     if (flow.sliceErr) {
-      // couldn't read the slice — defaulted all to Slot 1 (§5.2)
+      // couldn't read the slice — the user picks every tray (§5.2)
       body.appendChild(banner(flow.sliceErr, 'amber'));
     }
 
@@ -193,9 +195,11 @@ export function mount(root, app) {
     body.appendChild(el('div', { class: 'card' }, [
       rows,
       el('div', { class: 'field__hint mt-3', text:
-        'Defaults came from the slice file. The bridge rejects empty or '
-        + 'wrong-type trays — you can override above.' }),
+        'Each filament defaults to a loaded tray of the same material with the '
+        + 'closest colour, as in Orca. Pick a tray for any filament left unassigned.' }),
     ]));
+
+    const unassigned = flow.filaments.some((f) => f.tray == null);
 
     const actions = el('div', { class: 'row mt-4' }, [
       el('button', {
@@ -204,7 +208,7 @@ export function mount(root, app) {
       }),
       el('span', { class: 'spread' }),
       el('button', {
-        class: 'btn btn--primary', text: 'Continue',
+        class: 'btn btn--primary', text: 'Continue', disabled: unassigned,
         onClick: () => renderConfirm(),
       }),
     ]);
@@ -212,17 +216,16 @@ export function mount(root, app) {
   }
 
   function filamentRow(fil, i) {
+    // option values are 0-based trays; "Slot N" is only the label
     const sel = el('select', { class: 'select' }, [
-      el('option', { value: '1', text: slotLabel(1) }),
-      el('option', { value: '2', text: slotLabel(2) }),
-      el('option', { value: '3', text: slotLabel(3) }),
-      el('option', { value: '4', text: slotLabel(4) }),
+      el('option', { value: '', text: 'Choose a tray', disabled: true }),
+      ...[0, 1, 2, 3].map((tray) => el('option', { value: String(tray), text: slotLabel(tray + 1) })),
       el('option', { value: EXTERNAL, text: 'External' }),
     ]);
-    sel.value = String(fil.slot);
+    sel.value = fil.tray == null ? '' : String(fil.tray);
     sel.addEventListener('change', () => {
-      flow._confirmMismatch = false;   // re-mapping clears the mismatch override
-      fil.slot = sel.value === EXTERNAL ? EXTERNAL : Number(sel.value);
+      fil.tray = sel.value === EXTERNAL ? EXTERNAL : Number(sel.value);
+      renderMap();
     });
 
     const swatch = fil.color
@@ -246,9 +249,8 @@ export function mount(root, app) {
   function renderConfirm(errResult) {
     clear(body);
 
-    flow.externalSpool = flow.filaments.some((f) => f.slot === EXTERNAL);
     const trayLine = flow.filaments
-      .map((f) => `${f.type || `Filament ${f.index}`} → ${slotLabel(f.slot === EXTERNAL ? null : f.slot)}`)
+      .map((f) => `${f.type || `Filament ${f.index}`} → ${slotLabel(f.tray === EXTERNAL ? null : f.tray + 1)}`)
       .join('  ·  ');
 
     body.appendChild(stepHeader('Start print?', flow.file.name, fmtSize(flow.file.size)));
@@ -283,22 +285,12 @@ export function mount(root, app) {
     body.appendChild(el('div', { class: 'mt-4' }, [startBtn, upbar, cancelBtn]));
   }
 
-  // build the ams_mapping (1-based physical slots; External filaments are not
-  // listed — they ride external_spool) and submit via XHR with upload progress.
+  // send Orca's ams_mapping (one tray or -1 per project filament; all -1 =
+  // external spool) and submit via XHR with upload progress.
   function doUpload(startBtn, cancelBtn, upbar) {
     const fd = new FormData();
     fd.append('file', flow.file, flow.file.name);
-
-    // ams_mapping: comma-separated PHYSICAL slots (1-4). Per contract §7.1 it is
-    // 1-based and MUST NOT contain 0. External-spool filaments are dropped from
-    // the mapping and signalled via external_spool instead.
-    const mapping = flow.filaments
-      .filter((f) => f.slot !== EXTERNAL)
-      .map((f) => f.slot);
-    if (mapping.length) fd.append('ams_mapping', mapping.join(','));
-    if (flow.externalSpool) fd.append('external_spool', 'true');
-    // confirm_mismatch rides along when the user opted to use a mismatched tray
-    if (flow._confirmMismatch) fd.append('confirm_mismatch', 'true');
+    fd.append('ams_mapping', amsMapping(flow.filaments, flow.count).join(','));
 
     // UI → uploading
     startBtn.classList.add('hidden');
@@ -406,20 +398,8 @@ export function mount(root, app) {
       });
     }
 
-    // 422 ams_material_mismatch — confirmable warning: "Use it anyway".
-    if (err === 'ams_material_mismatch') {
-      return errorCard(result, {
-        actions: [
-          { label: 'Use it anyway', primary: true, onClick: () => {
-            flow._confirmMismatch = true; renderConfirm();
-          } },
-          { label: 'Edit mapping', onClick: () => renderMap() },
-        ],
-      });
-    }
-
-    // 422 ams_slot_empty / ams_slot_invalid — fix the mapping.
-    if (err === 'ams_slot_empty' || err === 'ams_slot_invalid') {
+    // 422 invalid_input — the only form field the bridge checks is ams_mapping.
+    if (err === 'invalid_input') {
       return errorCard(result, {
         actions: [{ label: 'Edit mapping', primary: true, onClick: () => renderMap() }],
       });
@@ -494,14 +474,16 @@ function validateFile(f) {
  * the browser: locate the End-Of-Central-Directory record, walk the central
  * directory to find the entry, then inflate it with DecompressionStream(
  * 'deflate-raw'). Feature-detected; on any absence/failure we default all
- * filaments to Slot 1 and return an honest banner string.
+ * filament for the user to assign and return an honest banner string.
+ * Metadata/project_settings.config supplies the project filament count.
  *
  * @param {File} file
- * @returns {Promise<{filaments:Array<{index:number,type:string|null,color:string|null,slot:number}>, error:string|null}>}
+ * @returns {Promise<{filaments:Array<{index:number,type:string|null,color:string|null}>, count:number, error:string|null}>}
  */
 async function readSliceInfo(file) {
-  const fallback = (msg, count) => ({
-    filaments: defaultFilaments(count || 1),
+  const fallback = (msg) => ({
+    filaments: [{ index: 1, type: null, color: null }],
+    count: 1,
     error: msg,
   });
 
@@ -529,18 +511,18 @@ async function readSliceInfo(file) {
     if (!filaments.length) {
       return fallback('Couldn’t read the slice — pick trays manually.', 1);
     }
-    return { filaments, error: null };
+    let settings = null;
+    try {
+      const member = findZipEntry(buf, PROJECT_SETTINGS_PATH);
+      if (member) {
+        settings = JSON.parse(member.method === 0
+          ? new TextDecoder().decode(member.data) : await inflateRaw(member.data));
+      }
+    } catch { /* fall back to the highest filament id the plate uses */ }
+    return { filaments, count: projectFilamentCount(settings, filaments), error: null };
   } catch {
     return fallback('Couldn’t read the slice — pick trays manually.', 1);
   }
-}
-
-function defaultFilaments(count) {
-  const out = [];
-  for (let i = 1; i <= Math.max(1, count); i++) {
-    out.push({ index: i, type: null, color: null, slot: 1 });
-  }
-  return out;
 }
 
 /** Inflate raw-deflate bytes to a UTF-8 string via DecompressionStream. */
@@ -603,7 +585,7 @@ function readLocalEntry(buf, dv, localOffset, method, compSize) {
  * We use DOMParser (built-in, no deps) and fall back to a regex scan if the
  * document isn't well-formed.
  * @param {string} xml
- * @returns {Array<{index:number,type:string|null,color:string|null,slot:number}>}
+ * @returns {Array<{index:number,type:string|null,color:string|null}>} index = project filament id
  */
 function parseSliceInfoXml(xml) {
   const out = [];
@@ -618,7 +600,6 @@ function parseSliceInfoXml(xml) {
           index,
           type: node.getAttribute('type') || null,
           color: normColor(node.getAttribute('color')),
-          slot: clampSlot(index),
         });
       });
     }
@@ -638,7 +619,6 @@ function parseSliceInfoXml(xml) {
       index,
       type: (/\btype="([^"]*)"/.exec(tag) || [])[1] || null,
       color: normColor((/\bcolor="([^"]*)"/.exec(tag) || [])[1]),
-      slot: clampSlot(index),
     });
   }
   return dedupeByIndex(out);
@@ -652,13 +632,8 @@ function dedupeByIndex(list) {
     seen.add(f.index);
     out.push(f);
   }
-  // renumber to a contiguous 1..N for display while keeping the default slot
-  return out.map((f, i) => ({ ...f, index: i + 1, slot: clampSlot(i + 1) }));
-}
-
-// default per-filament tray = the matching physical slot, clamped to 1-4.
-function clampSlot(index) {
-  return Math.min(4, Math.max(1, index));
+  // keep the slice's own ids: ams_mapping is indexed by project filament
+  return out.sort((a, b) => a.index - b.index);
 }
 
 function normColor(c) {

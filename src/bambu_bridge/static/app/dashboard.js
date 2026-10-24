@@ -29,6 +29,32 @@ export function mount(root, app) {
   const { store, ws, api } = app;
   const pid = app.currentPrinterId();
 
+  // Spoolman spool per AMS tray (wire slot 0-3) and the external holder (254),
+  // read from the bridge's assignment table once a minute; a bridge without
+  // Spoolman answers configured:false and the line shows the tray type alone.
+  const spoolBySlot = new Map();
+  let spoolTick = null; // declared before the no-printer early return, whose unmount clears it
+  async function readSpools() {
+    try {
+      const status = await api.api('/inventory');
+      if (!status.ok || !status.data.configured) return;
+      // Capped: a hobby inventory fits one page; a bigger one would need paging here.
+      const spools = await api.api('/inventory/spools?limit=100');
+      const byId = new Map((spools.ok ? spools.data : []).map((s) => [s.id, s]));
+      spoolBySlot.clear();
+      for (const a of status.data.assignments || []) {
+        if (a.printer_id !== pid) continue;
+        const wire = a.source === 'external' ? 254 : a.wire_slot;
+        const spool = byId.get(a.spool_id);
+        const name = spool
+          ? `#${spool.id} ${[spool.filament?.vendor?.name, spool.filament?.name].filter(Boolean).join(' ')}`.trim()
+          : `#${a.spool_id}`;
+        const grams = spool && typeof spool.remaining_weight === 'number' ? ` · ${Math.round(spool.remaining_weight)} g left` : '';
+        spoolBySlot.set(wire, name + grams);
+      }
+    } catch { /* the AMS line stands without spool names */ }
+  }
+
   // ── DOM scaffold ───────────────────────────────────────────────────────────
   const shell = el('div', { class: 'app-shell' });
   const main = el('div', { class: 'app-main' });
@@ -58,7 +84,8 @@ export function mount(root, app) {
         onClick: () => app.navigate('#/settings'),
       }),
     ]));
-    return function unmount() {};
+    return function unmount() {
+    if (spoolTick) clearInterval(spoolTick);};
   }
 
   // The glance block (status, hero percent/time, layer, progress).
@@ -112,6 +139,7 @@ export function mount(root, app) {
   // got a snapshot this session.
   let everConnected = false;    // got at least one WS snapshot this mount
   let wsOpen = false;
+  let protocolMismatch = false; // sticky: every render redraws it
 
   function setConn(kind, labelText) {
     connEl.className = 'conn conn--' + kind;
@@ -121,8 +149,13 @@ export function mount(root, app) {
 
   function renderBanner(vm, facts) {
     clear(bannerHost);
+    if (protocolMismatch) {
+      bannerHost.appendChild(banner('This app needs an update to talk to the bridge.', 'red'));
+      return;
+    }
     if (facts.live) return;
-    const ago = vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt) : null;
+    const ago = facts.ageMs != null ? Math.round(facts.ageMs / 1000)
+      : vm.lastTelemetryAt ? store.secsAgo(vm.lastTelemetryAt, pid) : null;
     if (!everConnected && !vm.hasData) {
       // never reached: treat as no-bridge until we prove otherwise.
       bannerHost.appendChild(banner("Can't reach the bridge.", 'grey',
@@ -319,6 +352,8 @@ export function mount(root, app) {
     const pct = typeof shown.remaining_pct === 'number' ? ` (${shown.remaining_pct} %)` : '';
     const desc = `${slotLabel(shown.physical_slot)} ${shown.type || 'Unknown'}${pct}`;
     amsLine.appendChild(el('span', { class: 'live-num', text: desc }));
+    const spool = spoolBySlot.get(shown.physical_slot - 1);
+    if (spool) amsLine.appendChild(el('span', { class: 'dim t-caption', text: ` · ${spool}` }));
     if (ams.rescanning) {
       amsLine.appendChild(el('span', { class: 'dim t-caption', text: '· re-scanning…' }));
     }
@@ -569,32 +604,10 @@ export function mount(root, app) {
   function openWs() {
     conn = ws.connectStatus(pid, {
       onConnState: (open) => { wsOpen = open; if (open) everConnected = true; },
-      onEvent: (name, data) => onWsEvent(name, data),
       onUnauthorized: () => app.requireKeyScreen(),
       onUnknownPrinter: () => app.navigate('#/settings'),
-      onProtocolMismatch: () => {
-        clear(bannerHost);
-        bannerHost.appendChild(banner(
-          'This app needs an update to talk to the bridge.', 'red'));
-      },
+      onProtocolMismatch: () => { protocolMismatch = true; render(); },
     });
-  }
-
-  function onWsEvent(name, data) {
-    // §13 alert derivation is a UI concern; the load-bearing v0 one is the
-    // feed_warning air-print banner. We surface it as a non-blocking banner with
-    // "View camera" + "Stop".
-    if (name === 'feed_warning') {
-      clear(bannerHost);
-      const since = data && data.since_ms ? Math.round(data.since_ms / 1000) : null;
-      const msg = since != null
-        ? `Print may not be feeding filament (${since}s). Check the plate.`
-        : 'Print may not be feeding filament. Check the plate.';
-      const b = banner(msg, 'amber', { label: 'View camera', onClick: () => app.navigate('#/camera') });
-      bannerHost.appendChild(b);
-    }
-    // job_state_change / print_* events flow through the store snapshot/delta
-    // (the headline/phase already reflects them); no extra handling needed here.
   }
 
   // ── boot ─────────────────────────────────────────────────────────────────────
@@ -603,6 +616,8 @@ export function mount(root, app) {
   openWs();
   render();
   statusTick = setInterval(render, 5000);
+  readSpools();
+  spoolTick = setInterval(readSpools, 60_000);
   loadRecent();
 
   // refresh the printer list so the picker shows up if >1 (best-effort).
@@ -611,6 +626,7 @@ export function mount(root, app) {
   }).catch(() => { /* non-fatal */ });
 
   return function unmount() {
+    if (spoolTick) clearInterval(spoolTick);
     if (conn) { try { conn.close(); } catch { /* */ } conn = null; }
     if (unsub) { unsub(); unsub = null; }
     if (statusTick) clearInterval(statusTick);

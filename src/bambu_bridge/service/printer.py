@@ -16,6 +16,7 @@ import contextlib
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import structlog
@@ -24,14 +25,25 @@ from bambu_bridge.db.jobs import FilamentMemory
 from bambu_bridge.hms import lookup as hms_lookup
 from bambu_bridge.protocol import tls as tls_probe
 from bambu_bridge.protocol.camera import CameraStream
-from bambu_bridge.protocol.job_identity import empty_idle_report
-from bambu_bridge.protocol.models import GcodeState, ReportMessage, build_command
+from bambu_bridge.protocol.job_identity import empty_idle_report, job_lost
+from bambu_bridge.protocol.models import (
+    GcodeState,
+    ReportMessage,
+    build_command,
+    pushall_request,
+)
 from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
+from bambu_bridge.service.auto_refill import AutoRefillHistory
+from bambu_bridge.service.diagnostic_journal import DiagnosticJournal
 from bambu_bridge.service.events import Event, EventBus, diff_state
 from bambu_bridge.service.material_inventory import MaterialInventory
+from bambu_bridge.service.refill_reports import RefillReports
+from bambu_bridge.service.remaining_estimates import RemainingEstimates
+from bambu_bridge.skip_objects import RunLog
 from bambu_bridge.translate import (
     SnapshotContext,
     _started_at_iso,
+    active_error_code,
     build_print_error,
     engaged_slot,
     translate_snapshot,
@@ -43,7 +55,7 @@ TouchCallback = Callable[[], Awaitable[None]]
 # Restart-recovery hook: returns the start time (UTC) of the print this printer
 # is currently running, recovered from jobs.db, or None when the bridge has no
 # record (e.g. a screen/SD-started print, which never creates a job row).
-RecoverStartedAt = Callable[[], Awaitable[datetime | None]]
+RecoverStartedAt = Callable[[str | None], Awaitable[datetime | None]]
 # G3 hooks — filament memory.
 # Loader: called once on seed to populate the in-memory cache from the DB.
 LoadFilamentMemory = Callable[[], Awaitable[dict[int, FilamentMemory]]]
@@ -79,8 +91,11 @@ CertStatus = Literal["unknown", "trusted", "changed"]
 # resume and is deliberately not reported as print_started (contract
 # §6.0.1: PREPARE is part of "preparing", not "printing" — the §6.3
 # boundary lives at layer_num > 0, fired separately as `print_progress`).
-# A print is in flight (the camera stream is held warm through these).
 _IN_FLIGHT = {GcodeState.PREPARE, GcodeState.RUNNING, GcodeState.PAUSE}
+# Report fields naming what is printing and how; see fresh_print_fields().
+PRINT_IDENTITY = frozenset({"md5", "file", "param", "ams_mapping", "use_ams", "subtask_name"})
+# Minimum spacing of bridge-initiated full status requests (pushall).
+FULL_REPORT_INTERVAL_S = 10.0
 
 _INACTIVE_STATES = {
     None,
@@ -91,12 +106,16 @@ _INACTIVE_STATES = {
     GcodeState.UNKNOWN,
 }
 
-# Feed-warning watchdog (contract §12.2): once gcode_state is RUNNING and
-# 90s elapse without `ams.tray_now != 255`, fire a non-failing `feed_warning`
-# named event. Distinct from JobRun's 600s FED_NO_PROGRESS hard-fail — this
-# one is a UX nudge ("Is the filament loaded? AMS not feeding yet"), the
-# other is the §6.3 safety abort. The watchdog auto-clears on engagement.
-_FEED_WARNING_DELAY_S = 90.0
+
+def _print_mark(state: dict[str, Any]) -> tuple[Any, ...]:
+    """(subtask_name, gcode_file, total_layer_num, layer_num) of a print."""
+    try:
+        layer = int(state.get("layer_num") or 0)
+    except (TypeError, ValueError):
+        layer = 0
+    return (
+        state.get("subtask_name"), state.get("gcode_file"), state.get("total_layer_num"), layer,
+    )
 
 
 def _iso(ts: float | None) -> str | None:
@@ -124,14 +143,6 @@ def _tray_now(state: dict[str, Any]) -> str | None:
         return None
     val = ams.get("tray_now")
     return str(val) if val is not None else None
-
-
-def _ams_currently_engaged(state: dict[str, Any]) -> bool:
-    """tray_now != 255 (and is a digit) means the feed is engaged."""
-    tn = _tray_now(state)
-    if tn is None or tn == "":
-        return False
-    return tn.isdigit() and tn != "255"
 
 
 def _per_slot_types(state: dict[str, Any]) -> dict[int, str]:
@@ -167,6 +178,16 @@ def _deep_merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any
         cur = out.get(key)
         if isinstance(cur, dict) and isinstance(value, dict):
             out[key] = _deep_merge(cur, value)
+        elif key == "ams" and isinstance(cur, list) and isinstance(value, list):
+            # AMS units, as Orca's DevFilaSystemParser::ParseV1_0 does: the
+            # incoming list says which units exist, and a unit that arrives
+            # without ``tray`` (or humidity, ...) keeps the fields it had.
+            # Trays themselves are replaced whole, so an emptied slot does not
+            # keep its old material.
+            old = {u.get("id"): u for u in cur if isinstance(u, dict)}
+            out[key] = [
+                {**old.get(u.get("id"), {}), **u} if isinstance(u, dict) else u for u in value
+            ]
         else:
             out[key] = value
     return out
@@ -193,16 +214,13 @@ class PrinterService:
         recover_started_at: RecoverStartedAt | None = None,
         load_filament_memory: LoadFilamentMemory | None = None,
         invalidate_filament_memory: InvalidateFilamentMemory | None = None,
-        nozzle_type: str | None = None,
+        diagnostic_history_path: Path | None = None,
     ) -> None:
         self.serial = serial
         self.ip = ip
         self.access_code = access_code
         self.friendly_name = friendly_name
         self.model = model
-        # Wave-1: "hardened_steel" allows 300 °C nozzle target; None or any
-        # other value falls back to the 280 °C stainless ceiling.
-        self.nozzle_type = nozzle_type
         self._mqtt_port = mqtt_port
         self._camera_port = camera_port
         self._camera_linger_s = camera_linger_s
@@ -213,12 +231,12 @@ class PrinterService:
         self.bus = EventBus()
         self.raw_bus = EventBus()  # native P1S clients need every ack, even unchanged reports
         self.material_inventory = MaterialInventory()
+        self.remaining_estimates = RemainingEstimates()
+        self.refill_reports = RefillReports()
         self.command_guard: (
             Callable[[dict[str, Any]], contextlib.AbstractAsyncContextManager[None]] | None
         ) = None
-        self.job_guard: (
-            Callable[[asyncio.Event], contextlib.AbstractAsyncContextManager[None]] | None
-        ) = None
+        self.job_guard: Callable[..., contextlib.AbstractAsyncContextManager[None]] | None = None
         self.native_observer: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._native_categories: dict[str, dict[str, Any]] = {}
         self._on_seen = on_seen
@@ -226,8 +244,20 @@ class PrinterService:
         self._connected = False
         self._ever_connected = False
         self._need_seed = True
+        self._full_report_requested = -FULL_REPORT_INTERVAL_S
         self._gcode_state: GcodeState | None = None
-        self._error_signature: tuple[Any, Any] | None = None
+        # gcode_state has been reported since the last (re)connect (OrcaSlicer
+        # MachineObject::reset clears print_status on connect; it is unknown until
+        # a report carries it). Job reconciliation waits for it.
+        self._gcode_fresh = False
+        # A print is in flight (Orca is_in_printing_status: PREPARE/RUNNING/PAUSE),
+        # kept across reconnects so a job lost during a drop still reads as lost.
+        self._in_flight = False
+        # Print identity fields (md5, param, ams_mapping, ...) that a report
+        # during the current print carried; the merged state may still hold
+        # the previous print's values for the rest.
+        self._print_fields: set[str] = set()
+        self._error_signature: int | None = None
         # Bridge-synthesized print start time (UTC). The P1S ships NO start-time
         # field in push_status (verified on hardware: 64 raw keys, none of them
         # gcode_start_time/start_time), so the bridge is the only source of
@@ -244,14 +274,12 @@ class PrinterService:
         # snapshot ctx passes None → slot["memory"] is null for every slot).
         self._filament_memory: dict[int, FilamentMemory] | None = None
         self._load_filament_memory = load_filament_memory
+        # Skip Objects' run boundary, the skips sent this run and its file.
+        self.run_log = RunLog()
+        self.auto_refill = AutoRefillHistory()
+        self.diagnostic_journal = DiagnosticJournal(diagnostic_history_path)
+        self._gap: tuple[Any, ...] | None = None
         self._invalidate_filament_memory = invalidate_filament_memory
-        # True once we've absorbed the *first* report after a (re)connect.
-        # Named events are *transitions*, not seed observations — a printer
-        # that's already RUNNING/FINISH/FAILED when the bridge connects must
-        # NOT fire spurious print_started / print_completed / error events
-        # (design review CRIT #2; would let a fresh JobRun consume some
-        # other transition as its own RUNNING signal).
-        self._events_seeded = False
 
         # TOFU cert state (PR A.2; contract §4.5). `expected_fingerprint` is
         # what the registry loaded from `printers.cert_fingerprint`; `None`
@@ -276,16 +304,14 @@ class PrinterService:
         # - `_last_layer_num` is the previous report's layer_num so we can
         #   detect the 0 → positive transition that emits `print_progress`
         #   (the §6.0.1 "now actually printing" signal).
-        # - `_feed_warning_*` drives the 90s `tray_now == 255` watchdog
-        #   that fires `feed_warning` once per RUNNING entry, then clears.
         self._last_telemetry_at: float | None = None
         self._last_layer_num: int = 0
-        self._feed_warning_task: asyncio.Task[None] | None = None
-        self._feed_warning_fired: bool = False
         self._last_connect_attempt_at: float | None = None
         # Epoch of the last MQTT drop — `connection_restored` reports
         # `missed_ms` (offline duration) off it (contract §12.2).
         self._disconnected_at: float | None = None
+        # Times the printer link broke; usage delivery holds prints spanning one.
+        self.link_breaks: list[float] = []
 
         # Dead-reckoned toolhead position (crash-prevention; jog guard).
         #
@@ -333,7 +359,6 @@ class PrinterService:
         self._update_camera_warmth()
 
     async def stop(self) -> None:
-        self._cancel_feed_warning_watchdog()
         if self._camera is not None:
             await self._camera.aclose()
             self._camera = None
@@ -372,6 +397,7 @@ class PrinterService:
         await self.stop()
         self._mqtt = self._build_mqtt()
         self._need_seed = True
+        self._gcode_fresh = False
         await self.start()
 
     # ----------------------------------------------------------------- #
@@ -405,8 +431,28 @@ class PrinterService:
             expected_fingerprint=self.expected_fingerprint,
             print_started_at=_dt_iso(self._print_started_at),
             filament_memory=self._filament_memory,
+            run_id=self.run_log.run_id,
+            auto_refill_history=self.auto_refill.transitions,
+            diagnostic_history={"durable": self.diagnostic_journal.durable},
         )
-        return translate_snapshot(self._state, ctx)
+        snapshot = translate_snapshot(self._state, ctx)
+        for slot in snapshot["ams"]["slots"]:
+            slot["remaining_estimate"] = self.remaining_estimates.view(slot["physical_slot"] - 1)
+        return snapshot
+
+    @property
+    def print_md5_fresh(self) -> bool:
+        """The reported MD5 belongs to the print running now."""
+        return "md5" in self.fresh_print_fields()
+
+    def fresh_print_fields(self) -> set[str]:
+        """Identity fields reported during the print running now."""
+        return set(self._print_fields) if self._gcode_state in _IN_FLIGHT else set()
+
+    @property
+    def print_started_at(self) -> float | None:
+        """When the bridge saw the current print start (epoch seconds), if it did."""
+        return self._print_started_at.timestamp() if self._print_started_at else None
 
     def native_snapshot(self) -> dict[str, Any]:
         """Protocol-shaped state for native LAN clients, including AMS/virtual tray."""
@@ -414,6 +460,23 @@ class PrinterService:
         if "print" in snapshot:
             snapshot["print"] = {**snapshot["print"], "command": "push_status", "msg": 0}
         return snapshot
+
+    def print_view(self) -> dict[str, Any]:
+        """The printer's current print, as levels a job reconciles against.
+
+        ``gcode_state`` is None until a report since the last (re)connect has
+        carried it (OrcaSlicer MachineObject::reset clears print_status on
+        connect; parse_json sets it from the next report that has it).
+        ``lost`` is IDLE with an empty job identity (nothing to resume).
+        """
+        state = self._gcode_state if self._gcode_fresh else None
+        return {
+            "gcode_state": state.value if state is not None else None,
+            "layer_num": self._last_layer_num,
+            "tray_now": _tray_now(self._state),
+            "lost": job_lost(self._state),
+            "subtask_name": self._state.get("subtask_name") or None,
+        }
 
     def summary(self) -> dict[str, Any]:
         """Compact last-known state for the printer list (spec 6 GET /printers)."""
@@ -467,6 +530,22 @@ class PrinterService:
                 await self._mqtt.publish(envelope)
         else:
             await self._mqtt.publish(envelope)
+        # Every skip the bridge publishes, whoever asked for it.
+        self.run_log.sent(envelope)
+
+    async def request_full_report(self) -> bool:
+        """Ask the printer for a full status report; True when one was sent.
+
+        Between full reports a P1S sends deltas, and the bridge otherwise asks
+        only when its session connects, so a complete AMS frame goes stale.
+        Requests are spaced FULL_REPORT_INTERVAL_S apart.
+        """
+        now = time.monotonic()
+        if not self.connected or now - self._full_report_requested < FULL_REPORT_INTERVAL_S:
+            return False
+        self._full_report_requested = now
+        await self.send_raw(pushall_request())
+        return True
 
     # ----------------------------------------------------------------- #
     # Dead-reckoned motion state (jog crash-prevention)
@@ -524,13 +603,20 @@ class PrinterService:
 
     async def _handle_connected(self) -> None:
         self.material_inventory.clear()
+        self.remaining_estimates.clear()
+        self.refill_reports.clear()
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
-        # Re-seed event classification after a (re)connect — the printer may
-        # have transitioned states while we were disconnected; absorb the
-        # first post-reconnect report as the new baseline, don't replay it.
-        self._events_seeded = False
+        # A run may have ended and another begun while the link was down: open
+        # Skip sheets must reload. Its pin and pending skips stay only if the
+        # first report shows the same print going on (_check_gap).
+        self.run_log.new_run(keep=True)
+        self._gap = _print_mark(self._state)
+        # Keep the pre-disconnect state: the next report is classified against
+        # it, so a print that ended during the drop still ends (Orca keeps its
+        # attributes until a report carries a new value).
+        self._gcode_fresh = False
         # Successful connect clears the previous session_error surface — a
         # stale "tls_handshake failed 10 min ago" would actively mislead
         # the APK's status dot once the link is back up.
@@ -570,7 +656,10 @@ class PrinterService:
     async def _handle_lost(self) -> None:
         self._connected = False
         self.material_inventory.clear()
+        self.remaining_estimates.clear()
+        self.refill_reports.clear()
         self._disconnected_at = time.time()
+        self.link_breaks = [*self.link_breaks[-49:], self._disconnected_at]
         # Desync: while disconnected the toolhead may move (firmware recovery,
         # operator at the screen, a print starting) without us seeing it. Drop
         # the dead-reckon estimate so the jog guard fails closed until re-home.
@@ -593,7 +682,10 @@ class PrinterService:
         self.last_failure_phase = phase  # type: ignore[assignment]
         self.last_failure_text = human
         self.last_failure_at = _time.time()
+        self.link_breaks = [*self.link_breaks[-49:], self.last_failure_at]
         self.material_inventory.clear()
+        self.remaining_estimates.clear()
+        self.refill_reports.clear()
         # A failed MQTT session means we may have missed motion; forget the
         # dead-reckon estimate (fail closed) until the next successful home.
         self.reset_motion_state("session_error")
@@ -653,8 +745,19 @@ class PrinterService:
         # A raw-bus consumer must never see new state with an old watermark.
         if raw:
             self._last_telemetry_at = time.time()
+        # Each observer on its own: one that raises on a report must never
+        # starve the others (the material frame behind /sources above all).
+        observers = [(self.refill_reports.observe, raw)]
         if isinstance(raw.get("print"), dict):
-            self.material_inventory.observe(raw["print"])
+            observers += [
+                (self.material_inventory.observe, raw["print"]),
+                (self.remaining_estimates.observe, raw["print"]),
+            ]
+        for observe, payload in observers:
+            try:
+                observe(payload)
+            except Exception:
+                log.exception("printer.report_observer_failed", observer=observe.__qualname__)
         for category, payload in raw.items():
             if isinstance(payload, dict):
                 self._native_categories[category] = _deep_merge(
@@ -672,7 +775,9 @@ class PrinterService:
         if report.print is not None:
             # mode="json": enums -> str, so snapshots/deltas are wire-ready
             # and diff_state compares like-typed values across reports.
-            incoming = report.print.model_dump(mode="json", exclude_none=True)
+            # exclude_unset: a partial ``ams`` delta must not dump the model's
+            # empty-list defaults over the stored units and trays.
+            incoming = report.print.model_dump(mode="json", exclude_none=True, exclude_unset=True)
         for category, payload in (report.model_extra or {}).items():
             if isinstance(payload, dict):
                 incoming[category] = payload
@@ -687,20 +792,32 @@ class PrinterService:
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
 
-        if self._need_seed:
-            self._state = incoming
-            self._need_seed = False
-            self._refresh_gcode_state()
+        # OrcaSlicer DeviceManager.cpp MachineObject::parse_json: a report only
+        # updates the fields it carries; msg==0 marks the full (pushall) report.
+        # A partial frame never replaces what is known.
+        merged = _deep_merge(prev_state, incoming)
+        delta = diff_state(prev_state, merged)
+        self._state = merged
+        self._refresh_gcode_state()
+        if not self._gcode_fresh and "gcode_state" in incoming:
+            self._gcode_fresh = True
+            self._check_gap()
             await self._maybe_recover_started_at()
             await self._maybe_load_filament_memory()
+        if self._need_seed or (report.print is not None and report.print.msg == 0):
+            self._need_seed = False  # first report after connect: send it whole
             self.bus.publish(Event("snapshot", dict(self._state)))
-        else:
-            merged = _deep_merge(prev_state, incoming)
-            delta = diff_state(prev_state, merged)
-            self._state = merged
-            self._refresh_gcode_state()
-            if delta:
-                self.bus.publish(Event("delta", delta))
+        elif delta:
+            self.bus.publish(Event("delta", delta))
+
+        history_previous = self.diagnostic_journal.restore(
+            prev_state, self._state, self.auto_refill, _dt_iso(self._print_started_at)
+        )
+        self.auto_refill.update(history_previous, self._state)
+        self.diagnostic_journal.update(
+            self._state, self.snapshot(), self.auto_refill,
+            _dt_iso(self._print_started_at), incoming
+        )
 
         # Re-read layer_num *after* the merge so we see the printer's view.
         try:
@@ -709,19 +826,45 @@ class PrinterService:
             self._last_layer_num = 0
 
         await self._maybe_invalidate_filament_memory()
-        if empty_idle_report(raw.get("print", {}), self._state):
+        lost = empty_idle_report(raw.get("print", {}), self._state)
+        if lost and self._in_flight and prev_gcode is not None:
             self._print_started_at = None
-            self._cancel_feed_warning_watchdog()
             self.bus.publish(
                 Event("event", {"reason": "printer_job_lost"}, name="print_interrupted")
             )
         self._emit_named_events(prev_gcode, prev_layer_num)
+        if self._gcode_state in _IN_FLIGHT and prev_gcode not in _IN_FLIGHT:
+            self._print_fields = set()  # a new print: stored identity is the last one's
+        self._print_fields.update(PRINT_IDENTITY.intersection(raw.get("print") or {}))
+        if self._gcode_state in _IN_FLIGHT:
+            self._in_flight = True
+        elif lost or self._gcode_state in (GcodeState.FINISH, GcodeState.FAILED):
+            self._in_flight = False
         if self._gcode_state != prev_gcode:
             self._update_camera_warmth()
 
     # ----------------------------------------------------------------- #
     # Event classification
     # ----------------------------------------------------------------- #
+
+    def _check_gap(self) -> None:
+        """First report after a reconnect: the same print going on keeps the
+        RunLog's pin and pending skips; anything else forgets them."""
+        before, self._gap = self._gap, None
+        if before is None:
+            return
+        now = _print_mark(self._state)
+        same = (
+            self._state.get("gcode_state") in ("RUNNING", "PAUSE")
+            and before[:3] == now[:3]
+            and now[3] >= before[3]
+        )
+        if not same:
+            self.run_log.forget()
+            # Another print may have started while disconnected: its start time
+            # and identity are unknown until reported again.
+            self._print_started_at = None
+            self._print_fields = set()
 
     def _refresh_gcode_state(self) -> None:
         raw = self._state.get("gcode_state")
@@ -754,7 +897,7 @@ class PrinterService:
         if self._print_started_at is not None:
             return
         try:
-            recovered = await self._recover_started_at()
+            recovered = await self._recover_started_at(self._state.get("subtask_name") or None)
         except Exception:  # noqa: BLE001 — recovery is best-effort, never fatal
             self._log.warning("started_at.recover_failed")
             return
@@ -815,15 +958,15 @@ class PrinterService:
                         self._log.warning("filament_memory.invalidate_db_failed", slot=slot)
 
     def _emit_named_events(self, prev: GcodeState | None, prev_layer_num: int) -> None:
-        if not self._events_seeded:
-            # First report after (re)connect — establish the baseline silently.
-            # Seed the error signature too so _maybe_emit_error doesn't fire
-            # on a pre-existing print_error left over from before we connected.
-            self._events_seeded = True
-            code = self._state.get("mc_print_error_code")
-            perr = self._state.get("print_error")
-            has_error = (code not in (None, "0", "")) or bool(perr)
-            self._error_signature = (code, perr) if has_error else None
+        if prev is None:
+            # Nothing was known before this report (bridge start): it is the
+            # baseline, not a transition. Seed the error signature too so a
+            # pre-existing print_error is not re-announced. Reconnects keep
+            # their pre-drop baseline (Orca StatusPanel::update_error_message
+            # keeps last_error across reconnects).
+            if self._gcode_state is None:
+                return
+            self._error_signature = active_error_code(self._state)
             return
         cur = self._gcode_state
         if cur is not None and cur != prev:
@@ -840,6 +983,7 @@ class PrinterService:
                 # if a future firmware ever supplies one. The event payload
                 # carries the same synthesized value the snapshot will expose.
                 self._print_started_at = datetime.now(UTC)
+                self.run_log.new_run()
                 self.bus.publish(
                     Event(
                         "event",
@@ -851,30 +995,27 @@ class PrinterService:
                         name="print_started",
                     )
                 )
-                # RUNNING entered — start the feed-warning watchdog. If
-                # AMS engages within 90s the watchdog cancels itself; else
-                # it fires `feed_warning` once.
-                self._start_feed_warning_watchdog()
+            elif cur is GcodeState.IDLE:
+                self.run_log.new_run()
             elif cur is GcodeState.FINISH:
                 self._print_started_at = None
+                self.run_log.new_run()
                 self.bus.publish(Event("event", self._completion_data(), name="print_completed"))
-                self._cancel_feed_warning_watchdog()
             elif cur is GcodeState.FAILED:
                 self._print_started_at = None
+                self.run_log.new_run()
                 self.bus.publish(
                     Event(
                         "event",
                         {
                             "print_error": build_print_error(
-                                self._state.get("mc_print_error_code")
-                                or self._state.get("print_error")
+                                active_error_code(self._state), self.serial[:3]
                             ),
                             "layer_num": self._state.get("layer_num"),
                         },
                         name="print_failed",
                     )
                 )
-                self._cancel_feed_warning_watchdog()
 
         # `print_progress` — layer_num crossing 0 → positive (contract
         # §6.0.1). This is the canonical "printing actually began" signal
@@ -891,11 +1032,6 @@ class PrinterService:
                     name="print_progress",
                 )
             )
-
-        # Feed-warning watchdog auto-clear: if the AMS just engaged
-        # (tray_now flipped off 255), cancel the pending watchdog.
-        if self._feed_warning_task is not None and _ams_currently_engaged(self._state):
-            self._cancel_feed_warning_watchdog()
 
         self._maybe_emit_error()
 
@@ -917,17 +1053,13 @@ class PrinterService:
         The persisted row's severity bucket (info/warn/error) is assigned
         downstream by the EventPersister for the NotificationsScreen filter.
         """
-        code = self._state.get("mc_print_error_code")
-        perr = self._state.get("print_error")
-        has_error = (code not in (None, "0", "")) or bool(perr)
-        signature = (code, perr) if has_error else None
-        if signature == self._error_signature:
+        raw_code = active_error_code(self._state)
+        if raw_code == self._error_signature:
             return  # unchanged — already reported (or still clear)
-        self._error_signature = signature
-        if not has_error:
+        self._error_signature = raw_code
+        if raw_code is None:
             return  # error just cleared
-        raw_code = code or perr
-        entry = hms_lookup(raw_code)
+        entry = hms_lookup(raw_code, self.serial[:3])
         # Bucketed event name — the §8.4 catalog distinguishes
         # `filament_runout` from generic `error` so the APK can render
         # an actionable warning rather than a red alarm.
@@ -947,46 +1079,3 @@ class PrinterService:
                     name="error",
                 )
             )
-
-    # ----------------------------------------------------------------- #
-    # Feed-warning watchdog (contract §12.2)
-    # ----------------------------------------------------------------- #
-
-    def _start_feed_warning_watchdog(self) -> None:
-        """Spawn (or restart) the 90s `tray_now == 255` watchdog.
-
-        Re-entry is safe: a fresh RUNNING transition cancels any prior
-        watchdog so the timer always reflects the latest start.
-        """
-        self._cancel_feed_warning_watchdog()
-        self._feed_warning_fired = False
-        self._feed_warning_task = asyncio.create_task(self._feed_warning_after_delay())
-
-    def _cancel_feed_warning_watchdog(self) -> None:
-        task = self._feed_warning_task
-        if task is not None:
-            task.cancel()
-            self._feed_warning_task = None
-
-    async def _feed_warning_after_delay(self) -> None:
-        try:
-            await asyncio.sleep(_FEED_WARNING_DELAY_S)
-        except asyncio.CancelledError:
-            return
-        if self._feed_warning_fired:
-            return
-        # Re-check the engagement condition at fire time — the loop above
-        # may have raced ahead.
-        if _ams_currently_engaged(self._state):
-            return
-        self._feed_warning_fired = True
-        self.bus.publish(
-            Event(
-                "event",
-                {
-                    "since_ms": int(_FEED_WARNING_DELAY_S * 1000),
-                    "advice": "look at the plate",
-                },
-                name="feed_warning",
-            )
-        )

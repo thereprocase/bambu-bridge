@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
 import shlex
 import signal
 import sys
@@ -21,7 +22,7 @@ import structlog
 from bambu_bridge.adaptive_video import AdaptiveVideo
 
 
-def configuration(code: str) -> dict[str, Any]:
+def configuration(code: str, publisher: str) -> dict[str, Any]:
     return {
         "logLevel": "error",
         "rtsp": True,
@@ -29,14 +30,7 @@ def configuration(code: str) -> dict[str, Any]:
         "rtspTransports": ["tcp"],
         "rtspAddress": "127.0.0.1:18554",
         "rtmp": False,
-        "hls": True,
-        "hlsAddress": "127.0.0.1:18888",
-        "hlsAlwaysRemux": False,
-        "hlsVariant": "lowLatency",
-        "hlsSegmentDuration": "1s",
-        "hlsPartDuration": "200ms",
-        "hlsSegmentMaxSize": "8M",
-        "hlsMuxerCloseAfter": "10s",
+        "hls": False,
         "webrtc": False,
         "srt": False,
         "moq": False,
@@ -47,7 +41,10 @@ def configuration(code: str) -> dict[str, Any]:
                 "permissions": [{"action": "read", "path": "streaming/live/1"}],
             },
             {
-                "user": "any",
+                # The TLS relay makes remote clients look like 127.0.0.1; only
+                # the on-demand worker knows this per-start password.
+                "user": "publisher",
+                "pass": publisher,
                 "ips": ["127.0.0.1"],
                 "permissions": [{"action": "publish", "path": "streaming/live/1"}],
             },
@@ -100,6 +97,7 @@ class NativeVideo:
             ):
                 raise ValueError("Video requires a Linux host and authenticated loopback HTTP")
             code = self.gateway.saved_code()
+            publisher = secrets.token_hex(16)
             if not code or not Path(settings.bridge_ffmpeg_path).is_file():
                 raise ValueError("Video encoder or native code unavailable")
             directory = self.gateway.store.directory / "native-video"
@@ -109,7 +107,7 @@ class NativeVideo:
             assert self.config_path is not None
             fd = os.open(self.config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as stream:
-                json.dump(configuration(code), stream)
+                json.dump(configuration(code, publisher), stream)
             self.config_path.chmod(0o600)
             env = {
                 **os.environ,
@@ -117,6 +115,7 @@ class NativeVideo:
                 "BRIDGE_VIDEO_API_PORT": str(settings.bridge_port),
                 "BRIDGE_VIDEO_API_KEY": settings.bridge_api_key,
                 "BRIDGE_VIDEO_FFMPEG": settings.bridge_ffmpeg_path,
+                "BRIDGE_VIDEO_PUBLISH_PASS": publisher,
             }
             self.process = await asyncio.create_subprocess_exec(
                 settings.bridge_mediamtx_path,

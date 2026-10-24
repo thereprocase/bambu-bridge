@@ -401,6 +401,9 @@ async def test_job_manager_works_without_viz_cache(tmp_path: Path) -> None:
         serial = SERIAL
         bus = EventBus()
 
+        def print_view(self) -> dict[str, object]:
+            return {"gcode_state": None, "layer_num": 0, "tray_now": None, "lost": False}
+
     db = Database(str(tmp_path / "noviz.db"))
     await db.connect()
     manager = JobManager(

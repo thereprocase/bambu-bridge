@@ -39,7 +39,9 @@ def test_live_selection_and_reported_values():
     assert not panel["stale"] and panel["fault"] is None
 
 
-@pytest.mark.parametrize("value", [None, "", "Err", "nan", "inf", -1, 101, 255, True, [], {}, 10**400])
+@pytest.mark.parametrize(
+    "value", [None, "", "Err", "nan", "inf", -1, 101, 255, True, [], {}, 10**400]
+)
 def test_invalid_humidity_is_not_a_measurement(value):
     assert measured(value, 0, 100) is None
     s = sample()

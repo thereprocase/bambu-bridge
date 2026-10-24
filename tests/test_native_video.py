@@ -38,22 +38,26 @@ async def test_rgb_route_rejects_remote_disabled_or_wrong_printer(peer, enabled,
 
 
 def test_backend_only_exposes_loopback_and_separates_publish_permission():
-    config = configuration("test-code")
+    config = configuration("test-code", "worker-secret")
     assert config["rtspAddress"] == "127.0.0.1:18554"
     assert config["rtspTransports"] == ["tcp"]
     read, publish = config["authInternalUsers"]
     assert read["user"] == "bblp" and read["pass"] == "test-code"
     assert read["permissions"] == [{"action": "read", "path": "streaming/live/1"}]
+    # The TLS relay forwards remote clients from 127.0.0.1: publish needs the secret.
+    assert publish["user"] == "publisher" and publish["pass"] == "worker-secret"
     assert publish["ips"] == ["127.0.0.1"]
+    assert not any(user["user"] == "any" for user in config["authInternalUsers"])
+    assert config["hls"] is False
     assert publish["permissions"] == [{"action": "publish", "path": "streaming/live/1"}]
     assert config["paths"]["streaming/live/1"]["runOnDemandCloseAfter"] == "5s"
 
 
 def test_orca_remuxes_shared_high_stream_without_reencoding():
-    args = remux_command("ffmpeg", "/tmp/bridge-hls-test/high.m3u8")
+    args = remux_command("ffmpeg", "/tmp/bridge-hls-test/high.m3u8", "pw")
     assert args[args.index("-c:v") + 1] == "copy"
     assert args[args.index("-i") + 1] == "/tmp/bridge-hls-test/high.m3u8"
-    assert args[-1] == "rtsp://127.0.0.1:18554/streaming/live/1"
+    assert args[-1] == "rtsp://publisher:pw@127.0.0.1:18554/streaming/live/1"
 
 
 def test_advertisement_falls_back_after_backend_exit_and_removes_source_url():

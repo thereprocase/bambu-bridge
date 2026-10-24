@@ -9,7 +9,26 @@ vendor diagnostic catalog.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Literal, TypedDict
+
+_CATALOG_DATA = json.loads(
+    Path(__file__).with_name("hms_catalog.json").read_text(encoding="utf-8")
+)
+_CATALOG: dict[str, str] = _CATALOG_DATA["messages"]
+_MODEL_CATALOGS: dict[str, dict[str, str]] = _CATALOG_DATA.get("model_messages", {})
+
+
+def catalog_message(code: str | int, catalog_model: str | None = None) -> str | None:
+    key = (
+        f"{code & 0xFFFFFFFF:08x}"
+        if isinstance(code, int)
+        else code.lower().replace("_", "").replace("-", "")
+    )
+    return _MODEL_CATALOGS.get(catalog_model or "", {}).get(key) or _CATALOG.get(key)
+
+
 
 Severity = Literal["info", "warn", "error", "unknown"]
 
@@ -678,6 +697,23 @@ _TABLE: dict[str, HmsEntry] = {
     },
 }
 
+# Explicit auto-refill progress/success notices must not inherit generic feed-fault advice.
+# Vendor text: BambuStudio's frozen English catalog; code high word 3 alone is
+# insufficient to infer information severity (other common faults are warnings).
+_REFILL_CODES: set[str] = set()
+for _slot in range(4):
+    for _notice in (1, 2):
+        _key = f"0700_2{_slot}00_0003_000{_notice}"
+        _REFILL_CODES.add(_key)
+        _TABLE[_key] = {
+            "severity": "info",
+            "category": "ams",
+            "user_message": catalog_message(_key) or "AMS auto-refill notice.",
+            "remediation": (
+                "Wait while the AMS purges and switches filament." if _notice == 1 else None
+            ),
+        }
+
 # ---------------------------------------------------------------------------
 # Wiki URL table
 # ---------------------------------------------------------------------------
@@ -862,6 +898,9 @@ def _hms_family(hex_key: str, category: str) -> str:
     Families are used as the first element of the _CONTEXT_NOTES key.
     The hex_key is "aaaa_bbbb_cccc_dddd" (lowercase).
     """
+    if hex_key in _REFILL_CODES:
+        return "ams-refill"
+
     # AMS module prefix: attr_high = "0700" means AMS.
     if hex_key.startswith("07"):
         # Retract family: keys with second group 7000 (hub-level retract),
@@ -921,6 +960,7 @@ def decode_hms_entry(
     attr: int,
     code: int,
     job_context: JobContext | None = None,
+    catalog_model: str | None = None,
 ) -> HmsDecoded:
     """Decode one MQTT ``hms[]`` entry into the structured contract shape.
 
@@ -973,13 +1013,17 @@ def decode_hms_entry(
         base = {
             "severity": derived_severity,
             "category": category,
-            "user_message": hex_key,
+            "user_message": catalog_message(hex_key, catalog_model) or hex_key,
             "remediation": None,
             "hex": hex_key,
             "wiki_url": wiki_url(hex_key),
             "context_note": None,
             "stale": False,
         }
+
+    model_message = catalog_message(hex_key, catalog_model)
+    if model_message and model_message != catalog_message(hex_key):
+        base["user_message"] = model_message
 
     if job_context is not None:
         # stale: True only when the printer is idle with no active job
@@ -997,7 +1041,7 @@ def decode_hms_entry(
 # ---------------------------------------------------------------------------
 
 
-def lookup(code: str | int | None) -> HmsEntry:
+def lookup(code: str | int | None, catalog_model: str | None = None) -> HmsEntry:
     """Decode an HMS / print_error code into a structured entry.
 
     Accepts:
@@ -1016,11 +1060,14 @@ def lookup(code: str | int | None) -> HmsEntry:
     canonical = _canonical(code)
     entry = _TABLE.get(canonical)
     if entry is not None:
+        model_message = catalog_message(code, catalog_model)
+        if model_message and model_message != catalog_message(code):
+            return {**entry, "user_message": model_message}
         return entry
     return {
         "severity": "unknown",
-        "category": "unmapped",
-        "user_message": canonical,
+        "category": "printer" if catalog_message(code, catalog_model) else "unmapped",
+        "user_message": catalog_message(code, catalog_model) or canonical,
         "remediation": None,
     }
 
