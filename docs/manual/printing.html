@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Printing and charges.">
+<title>Printing and charges · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Printing and charges</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Printing and charges</nav>
+<p>The bridge reads the print file's grams per layer and charges the spool in each feeding slot in Spoolman as the print goes: it reads the spool, writes the difference, reads again to confirm. When the print ends it settles the last grams. Most prints need nothing from you; the ones that do become a card.</p>
+
+<h2>While a print runs</h2>
+<figure><img src="img/status-printing.png" alt="Status during a print: progress bar, layer count, time left and the filament line"><figcaption>Status while printing.</figcaption></figure>
+<p>The Print progress card on Status shows percent, layer, time left and the filament line: "Filament · 23 g used · 60 g to go". A print feeding from more than one slot gets a line per slot, and a slot with no spool assigned shows in the warning colour. "Sent to Spoolman: 19 g" under it is what has already been written. Figures are whole grams in the app; the bridge writes to the hundredth.</p>
+<p>Prints the bridge didn't start (Orca, the printer's screen) are adopted when the bridge sees them running and charged the same way.</p>
+
+<h2>When it ends</h2>
+<p>Nothing to tap. Activity gets a line ("Charged 84 g to #9 …"), the slot row's grams drop, and Recent prints on the Filament tab lists the print: "Benchy · finished 14:35 · 84 g → #8".</p>
+
+<h2>Needs you: a print with grams nowhere to go</h2>
+<figure><img src="img/needs-you-card.png" alt="A card at the top of the Filament tab: Cable clip x6, finished, 41 g from slot 3 · no spool was assigned, Which spool was in slot 3?"><figcaption>The card.</figcaption></figure>
+<p>A card appears at the top of the Filament tab, and the tab's badge counts them, when a finished print has grams the bridge could not place:</p>
+<ul>
+<li>"41 g from slot 3 · no spool was assigned" — the slot had no spool when it fed the print.</li>
+<li>"12 g short · #5 ran out in Spoolman" — Spoolman's figure for the spool hit zero before the count did.</li>
+<li>"40 g for #5 · archived in Spoolman" / "#5 isn't in Spoolman any more" — the spool was archived or deleted mid-print.</li>
+<li>"40 g for #5 · Spoolman didn't answer" — Spoolman was unreachable past the bridge's retry budget (six hours).</li>
+<li>"A filament the file gave no weight for" — the slicer wrote no weight; you type the grams.</li>
+</ul>
+<ol class="steps">
+<li>Tap <strong>Pick a spool</strong>; spools of the slot's material come first. The part's picture shows on the card when the bridge has the print file.</li>
+<li>Check the grams (whole numbers; the counted figure is filled in) and the switch <strong>Keep #9 in slot 3</strong>, on by default, which assigns the spool to the slot for next time.</li>
+<li>Tap <strong>Charge 41 g to #9</strong>. Or <strong>Skip · charge nothing</strong>, or <strong>Charged by hand in Spoolman</strong> if you already did it there.</li>
+</ol>
+<p>Refusals show the bridge's words on the card and the card stays: "Spoolman didn't answer; try again", "#9 is archived in Spoolman", "#9 ran out in Spoolman".</p>
+
+<h2>Wrong spool?</h2>
+<figure><img src="img/wrong-spool.png" alt="The Wrong spool? screen: 84 g charged to #8, a picked spool, the grams box and Move 84 g from #8 to #9"><figcaption>Moving a print's grams.</figcaption></figure>
+<ol class="steps">
+<li>On the Filament tab, under <strong>Recent prints</strong>, tap <strong>Wrong spool?</strong> on the print (one button per charged spool when a print used several).</li>
+<li>Pick the spool that really fed it; same material first.</li>
+<li>The grams default to all of it; lower the number for a partial move. Tap <strong>Move 84 g from #8 to #9</strong>.</li>
+</ol>
+<p>The bridge credits the first spool and charges the second, and moves the print's history with the grams. If Spoolman answers only the credit, the toast says so and tapping Move again sends just the charge. A move that would push a spool's used weight below zero (someone edited it in Spoolman) is refused with the bridge's words.</p>
+
+<h2>A spool's prints</h2>
+<figure><img src="img/spool-history.png" alt="The spool sheet's Prints from #8 section: Benchy · layers 1–186 · 84 g"><figcaption>History on the spool sheet.</figcaption></figure>
+<p>Open a spool (row → Weigh or archive). <strong>Prints from #8</strong> lists what it fed, newest first: "Benchy · layers 41–186 · 77% · 12 g". A print that stopped early reads "layers 1–6 of 10". A print a refill split between two slots reads, in Recent prints, "layers 1–40 from #11 · 41–186 from #12".</p>
+
+<h2>Runout and refill mid-print</h2>
+<p>With a <a href="backups.html">refill backup</a> set, the printer switches slots on its own when the first runs out. The bridge counts the layers before the switch against the first slot's spool and the layers after against the second's; the switch layer belongs to both. The totals still equal the file's planned grams. When the printer's own refill notice is missing, the bridge infers the switch from the feeding slot changing while auto-refill is on.</p>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

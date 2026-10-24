@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Daily use.">
+<title>Daily use · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Daily use</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Daily use</nav>
+<p>Most days you open the app, glance at Status, start a print from the Print tab, and look at Filament when a spool changes. Everything the bridge can do for a spool happens on the Filament tab.</p>
+
+<h2>Status</h2>
+<figure><img src="img/status-idle.png" alt="The Status tab with the printer idle: camera frame, temperatures, 3D view button and quick actions"><figcaption>Status, printer idle.</figcaption></figure>
+<ul>
+<li>The two strips at the top say whether the <strong>bridge</strong> is reachable and what the <strong>printer</strong> is doing ("Printer · Idle", "Printing"). When the app can't reach the bridge it keeps showing the last data it had and says so in a red band.</li>
+<li>The camera streams while the tab is open; <strong>Open fullscreen camera</strong> for a bigger view. "Connecting camera…" is normal for a few seconds; "Camera access rejected" means the pairing or key is wrong (Settings).</li>
+<li><strong>Print progress</strong> appears while a print runs: percent, layer, time left, and the filament line (see <a href="printing.html">Printing and charges</a>).</li>
+<li><strong>Temperatures &amp; fans</strong>, then <strong>3D view</strong> of the current or last job, then <strong>Quick actions</strong>: Pause, Resume, Stop (asks first), Skip objects when the printer supports it, Light on/off. Pause and Stop only enable while a print is running and the live connection is up.</li>
+<li>Issues from the printer (HMS codes) show in a card at the top with Bambu's wiki link; auto-refill notices show there too.</li>
+</ul>
+
+<h2>Starting a print from the phone</h2>
+<ol class="steps">
+<li>Open <strong>Print</strong>. It lists the <code>.3mf</code> files on the printer's storage, newest first; the one printing now is pinned to the top with a "printing now" tag.</li>
+<li>Pick the slot the file should print from: the tiles read <strong>External</strong> and <strong>AMS 1–4</strong>. This covers single-filament files; multi-filament jobs are started from the slicer.</li>
+<li>If the slot you picked has no spool assigned, the tab says so: "No spool in slot 3 · this print would go uncharged" with an <strong>Assign</strong> shortcut. Assign first, or the grams land as a card for you to settle after the print.</li>
+<li>Tap <strong>Print</strong> on the file. The button is disabled while the printer is busy or the live connection is down; the line under the title says why ("Printer: Printing · Connection: Live").</li>
+</ol>
+<p>Prints started from Orca or the printer's screen are picked up by the bridge too; they show on Status and are charged the same way.</p>
+
+<h2>The Filament tab</h2>
+<figure><img src="img/filament-rows.png" alt="The Filament tab: four AMS slot rows with swatch, spool name, grams left and a bar, and the external holder"><figcaption>Filament tab, every slot with its spool.</figcaption></figure>
+<figure><img src="img/slot-drawer.png" alt="Slot 4's drawer open: Read tag, Change spool, Weigh or archive #10, Backup"><figcaption>A slot's drawer.</figcaption></figure>
+<p>One row per AMS slot and one for the external holder. Each row reads, top to bottom: the slot number; the spool ("#9 · Elegoo Rapid PETG White") or, with no spool, the material the printer reports and "No spool · tap to assign"; grams left and the material; a bar for how much is left; and any status line (a backup chain, "last seen 45 s ago", "reading tag…", a tag read's result).</p>
+<ul>
+<li>The <strong>swatch</strong> is the spool's colour from Spoolman. A thin ring in another colour means the printer declares something different for that slot (a refill backup does that on purpose).</li>
+<li>The <strong>bar</strong> is Spoolman's figure for an assigned spool, and the printer's own estimate for an unassigned Bambu spool.</li>
+<li><strong>Tap a row</strong> to open its drawer: Read tag, Change spool or Assign a spool, Weigh or archive, Load, Backup. Tap again to close it; one drawer is open at a time. Empty slots have no drawer.</li>
+<li><strong>Read all tags</strong> sits above the rows. It and Read tag work only while the printer is idle.</li>
+<li>Cards at the top of the tab are things that need you: a finished print with grams nowhere to go, or a backup the printer didn't confirm.</li>
+<li><strong>Recent prints</strong> at the bottom lists the last ten prints and what they were charged, with "Wrong spool?" on each.</li>
+</ul>
+<p>How spools get into slots, by tag or by hand: <a href="spools.html">Spools and Spoolman</a>.</p>
+
+<h2>Activity</h2>
+<p>What happened, newest first: prints started and finished, errors, spools the bridge adopted from a tag ("New spool #8 · … · AMS A · slot 2 (from its RFID tag)"), refill switches, charges. Long-press an entry to dismiss it.</p>
+
+<h2>Settings</h2>
+<ul>
+<li><strong>Bridge</strong>: the remote (Tailscale) and LAN addresses, the API key, "Save &amp; probe" and the saved home networks.</li>
+<li><strong>Printers</strong>: add one, open the dashboard.</li>
+<li><strong>Spoolman</strong>: where spools live; the switch "Show Spoolman spools in Orca" with the reason it is on or off; "Open Spoolman" when the bridge knows Spoolman's web address.</li>
+<li><strong>Appearance</strong>: system, dark or light.</li>
+</ul>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

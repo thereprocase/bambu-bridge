@@ -1,0 +1,19 @@
+/* Same look as docs/index.html: grey page, white sheet, blue title bar. */
+body{margin:0;background:#c6c6c6;color:#181818;font:18px/1.6 system-ui,sans-serif}
+main{max-width:48rem;margin:3rem auto;padding:2rem;background:#fff;border:1px solid #666}
+h1{margin:-2rem -2rem 2rem;padding:1rem 2rem;background:#0000a8;color:#fff}
+h2{margin-top:2rem;border-bottom:1px solid #9a9a9a;padding-bottom:.25rem}
+h3{margin-top:1.5rem}
+a{color:#0000a8}li{margin:.5rem 0}
+nav.crumbs{font-size:.9rem;margin:-1rem 0 1.5rem}
+nav.toc ul{columns:2;column-gap:2rem}
+code{background:#e8e8e8;padding:.1rem .3rem;border:1px solid #9a9a9a;border-radius:0}
+pre{background:#e8e8e8;border:1px solid #9a9a9a;padding:1rem;overflow:auto;font-size:.9rem}
+figure{margin:1.5rem 0}figure img{max-width:20rem;width:100%;border:1px solid #666}
+figcaption{font-size:.9rem;color:#3d3d3d}
+.steps li{margin:.75rem 0}
+.note{border-left:3px solid #0000a8;padding:.5rem 1rem;background:#e8e8f8;margin:1rem 0}
+.warn{border-left:3px solid #8a5900;padding:.5rem 1rem;background:#fbf3e0;margin:1rem 0}
+dl dt{font-weight:600;margin-top:1rem}dl dd{margin:0 0 0 1rem}
+table{border-collapse:collapse;width:100%;font-size:.95rem}td,th{border:1px solid #9a9a9a;padding:.4rem .6rem;text-align:left;vertical-align:top}
+@media(max-width:40rem){main{margin:0;padding:1.5rem}h1{margin:-1.5rem -1.5rem 1.5rem}nav.toc ul{columns:1}}

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Spools and Spoolman.">
+<title>Spools and Spoolman · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Spools and Spoolman</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Spools and Spoolman</nav>
+<p>Spoolman keeps every spool, product and vendor; the bridge records which spool sits in which slot and charges that spool as prints run. Bambu Lab spools announce themselves by RFID tag; everything else you assign by hand, once, when you load it.</p>
+
+<h2>A Bambu spool with a tag: nothing to do</h2>
+<figure><img src="img/slot-adopted.png" alt="A slot row reading #8 · Bambu Lab PETG · 620 g left · PETG from the tag · added from its tag"><figcaption>A tagged spool the bridge adopted on its own.</figcaption></figure>
+<ol class="steps">
+<li>Load the spool. The AMS reads its tag (about a minute from a cold load; the row says "reading tag…" meanwhile).</li>
+<li>The bridge looks the tag up. A spool it has seen before comes back as that Spoolman spool ("#4 is back"); a new tag becomes a new Spoolman spool with the tag's vendor, material, colour, package weight and remaining percent, and is assigned to the slot.</li>
+<li>For an hour the row says "added from its tag" or "matched by its tag"; Activity keeps the line for good.</li>
+</ol>
+<div class="note">Tag links live in the bridge. Spoolman sees an ordinary spool. If Spoolman is unreachable when the tag appears, the bridge tries again on later reports and never creates the spool twice.</div>
+
+<h2>Any other spool: assign it once</h2>
+<figure><img src="img/assign-sheet.png" alt="The assign sheet for slot 3: PETG spools listed first, then other materials"><figcaption>Assign sheet.</figcaption></figure>
+<ol class="steps">
+<li>Load the spool. The row reads the printer's material ("PETG") and "No spool · tap to assign".</li>
+<li>Tap the row, then <strong>Assign a spool</strong>. Spools of the slot's material come first ("#9 · Elegoo Rapid PETG White · 159 g left"); "Other materials" follow, and picking one of those sets the slot's material on the printer first. Search by number, vendor or name.</li>
+<li>Tap the spool. The sheet closes with a toast ("#9 · Elegoo Rapid PETG White in slot 3") and the row shows it.</li>
+</ol>
+<p>Swapped one untagged spool for another of the same kind without telling the app? The bridge can't see that. Use <strong>Change spool</strong> on the row, and <strong>Wrong spool?</strong> on any print already charged to the old one.</p>
+<p>The assignment survives relabelling the slot on the printer or by the bridge (colour, product, temperatures). It ends when the slot is emptied and loaded again, when a different tag appears, when the material type changes, or when you assign another spool.</p>
+
+<h3>A spool Spoolman doesn't have yet</h3>
+<figure><img src="img/new-spool.png" alt="The New spool form: a Search products box, a Search button, Product is new to Spoolman, Filament left in grams and Create and put in this slot"><figcaption>The New spool form before a search.</figcaption></figure>
+<ol class="steps">
+<li>In the assign sheet tap <strong>Add a new spool to Spoolman</strong>.</li>
+<li>Search the product by words, in any order: "polymaker petg black" finds "Polymaker PolyLite™ PETG Black". If Spoolman has it, tap it. If it only exists in Spoolman's built-in catalog, it appears under <strong>From Spoolman's catalog</strong>; tapping it fills in vendor, name, material, colour, density, package weight and empty-spool weight.</li>
+<li>If neither has it, tap <strong>Product is new to Spoolman</strong> and fill the form; density and the package weight are required, the material fills a typical density.</li>
+<li>Enter the filament left (blank means a full spool) and tap <strong>Create and put in this slot</strong>. The alert tells you the new number: write it on the spool.</li>
+</ol>
+
+<h2>Weighing a spool</h2>
+<figure><img src="img/spool-weigh.png" alt="The spool sheet with the Weigh box: Scale reads · g (spool included)"><figcaption>Weigh.</figcaption></figure>
+<ol class="steps">
+<li>Tap the row, then <strong>Weigh or archive #9</strong>.</li>
+<li>Put the spool on the scale and type the reading into <strong>Scale reads · g (spool included)</strong>. The bridge takes the empty-spool weight off; the hint shows it. If Spoolman has no empty-spool weight for that product, tap <strong>I weighed the filament only</strong> and enter the filament alone, or set the spool weight in Spoolman first.</li>
+<li>Tap <strong>Save weight</strong>. The toast and the row show the new grams.</li>
+</ol>
+
+<h2>Archiving an empty spool</h2>
+<ol class="steps">
+<li>Tap the spool's slot, then <strong>Weigh or archive #10</strong>, then <strong>Archive in Spoolman</strong>. Opened from its slot, the sheet takes the spool out of the slot for you when it archives.</li>
+<li>Optionally weigh the bare spool and type it into <strong>Empty spool on the scale · g</strong>, then <strong>Archive</strong>. Spoolman keeps that weight on the spool. If it differs from the vendor's figure, the app asks once whether every spool of that vendor should use it; "Use it" updates the vendor in Spoolman.</li>
+</ol>
+<figure><img src="img/archive-offer.png" alt="After archiving with a measured 143 g: Polymaker spools weigh 143 g empty? Spoolman has 140 g for Polymaker. Keep as is or Use it"><figcaption>The vendor offer after archiving with a measured bare weight.</figcaption></figure>
+<p>Archived spools stay in Spoolman with their history; they stop appearing in the app's lists.</p>
+
+<h2>Read tag</h2>
+<ol class="steps">
+<li>A Bambu spool whose tag didn't register: tap the row, then <strong>Read tag</strong>; or <strong>Read all tags</strong> above the rows to do every AMS slot one after another. Both need the printer idle; while printing the card says "Read tags when the printer is idle."</li>
+<li>The row reads "Reading tag… (about a minute)". A read takes about 48 s on a P1S; the app waits up to 75 s per slot.</li>
+<li>Then: "Tag read: Bambu PETG Translucent" and the bridge adopts the spool as above; or "No tag found in slot 2 · reports PETG" for an untagged spool; or the bridge's own words with <strong>Try again</strong> if the printer refused the command.</li>
+</ol>
+
+<h2>Open Spoolman</h2>
+<p>Anything else about a record — renaming, merging vendors, deleting — is done in Spoolman's own web app. <strong>Open Spoolman</strong> in Settings, and on a spool's sheet, takes you there when the bridge is configured with Spoolman's web address.</p>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

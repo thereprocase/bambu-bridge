@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: FAQ.">
+<title>FAQ · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>FAQ</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · FAQ</nav>
+<dl>
+<dt>Do I have to assign every spool?</dt><dd>Bambu Lab spools with a tag assign themselves when the AMS reads the tag. Every other spool needs one tap in the assign sheet when you load it. A print from a slot with no spool is still printed; its grams wait on a card for you afterwards.</dd>
+<dt>What happens to grams while Spoolman is down?</dt><dd>The bridge keeps counting and keeps trying for six hours, writing only the difference each time. If Spoolman stays away past that, the print becomes a card: "40 g for #5 · Spoolman didn't answer", and you charge it when Spoolman is back.</dd>
+<dt>Can the bridge charge the wrong spool?</dt><dd>If you swap two identical untagged spools without telling the app, yes. Fix it with <strong>Wrong spool?</strong> on the print; the bridge moves the grams and the history. Tagged spools are keyed on their tag, so a swap is noticed.</dd>
+<dt>Why does a slot's swatch have a ring?</dt><dd>The fill is the spool's colour in Spoolman; the ring is what the printer declares for that slot when the two differ. A refill backup does that on purpose; a leftover declaration from an earlier spool is harmless and goes away when the bridge syncs the colour.</dd>
+<dt>Why no bar on some spools?</dt><dd>The bar is Spoolman's figure for an assigned spool. An unassigned slot shows the printer's own estimate, which only Bambu tagged spools report.</dd>
+<dt>Can I use a tagged spool in a refill backup?</dt><dd>Yes, as the one the other slot copies. The tagged slot is never written. Two tagged spools can't back each other up.</dd>
+<dt>Can a backup cross materials?</dt><dd>No. PLA and PETG never back each other up; the sheet only offers same-material slots. Product, temperatures and colour are aligned by the backup; the material type is yours to match.</dd>
+<dt>Does Read tag work during a print?</dt><dd>No. The printer reads tags when it's idle; the buttons wait and the card says so.</dd>
+<dt>What does the bridge store about spools?</dt><dd>Which spool is in which slot, which tag belongs to which spool, the per-print ledger of grams written, and any active backup. Spool records themselves are Spoolman's.</dd>
+<dt>Will an update lose anything?</dt><dd>The bridge's config, job history and spool assignments survive an update; the update script backs the database up first. A stored refill backup survives too and re-confirms from the printer's next report (see <a href="backups.html">Refill backups</a>).</dd>
+<dt>Can the app run a print from Orca's profile?</dt><dd>The Print tab starts files already on the printer's storage, single-filament. Multi-filament jobs are started from the slicer through the bridge; they show on Status and are charged the same way.</dd>
+<dt>Is anything sent to Bambu's cloud?</dt><dd>No. The printer runs in LAN-Only Mode and the bridge talks to it directly on your network.</dd>
+</dl>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

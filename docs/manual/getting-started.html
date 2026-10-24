@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Getting started.">
+<title>Getting started · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Getting started</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Getting started</nav>
+<p>Install the bridge once on a small always-on Linux box, pair the Android app with it, add the printer. After that the app is the daily remote and the web app is there for a laptop.</p>
+
+<h2>What you need</h2>
+<ul>
+<li>A Linux host for the bridge (a mini PC, a NAS, a Raspberry Pi, or a Home Assistant OS box).</li>
+<li>A Bambu Lab P1S on the same network, with <strong>LAN-Only Mode</strong> on. The bridge talks to the printer directly; it never uses Bambu's cloud.</li>
+<li>A Spoolman server if you want spool tracking. Spoolman is the only place spools live; the bridge reads and charges them there.</li>
+<li>Optional: Tailscale on the bridge host and your phone, so the app works away from home.</li>
+</ul>
+
+<h2>1. Install the bridge</h2>
+<ol class="steps">
+<li>On the bridge host, from a checkout of the project:
+<pre>python3.12 -m venv ~/bambu-bridge/.venv
+~/bambu-bridge/.venv/bin/pip install .
+bash deploy/install.sh</pre>
+The installer sets up a per-user systemd unit, generates an API key and writes it to <code>~/.config/bambu-bridge/bridge.env</code>.</li>
+<li>Read the key once; you paste it into the app in step 3:
+<pre>grep '^BRIDGE_API_KEY=' ~/.config/bambu-bridge/bridge.env</pre></li>
+<li>For spool tracking, add the Spoolman address to the same file and restart the service:
+<pre>BRIDGE_SPOOLMAN_URL=http://&lt;spoolman-host&gt;:7912
+systemctl --user restart bambu-bridge</pre></li>
+</ol>
+<p>The bridge listens on port 8080. Home Assistant OS and the full runbook: <a href="../GETTING-STARTED.md">GETTING-STARTED</a> and <code>deploy/DEPLOY.md</code> in the repository.</p>
+
+<h2>2. Prepare the printer</h2>
+<ol class="steps">
+<li>On the printer's touchscreen, turn on <strong>LAN-Only Mode</strong> in the network settings. If the firmware offers Developer Mode, turn it on too.</li>
+<li>Note the printer's <strong>IP address</strong> and its 8-digit <strong>access code</strong> (Settings ▸ WLAN ▸ Access Code).</li>
+<li>Give the printer a fixed address in your router (a DHCP reservation). If its address changes later, the bridge loses it until you update the printer's address in Settings.</li>
+</ol>
+
+<h2>3. Set up the app</h2>
+<ol class="steps">
+<li>Install the APK the owner's build pipeline produced for your phone (the app is distributed as a signed APK; there is no store listing).</li>
+<li>Open it. On first launch it lands on <strong>Settings · Connect your bridge</strong>.</li>
+<li>Tap <strong>Manual setup / compatibility</strong>, enter the bridge's address ending in <code>/api/v1</code> (for example <code>http://&lt;bridge-host&gt;:8080/api/v1</code>) and paste the API key, then tap <strong>Save &amp; probe</strong>. "Reachable" under the address means the key works. A LAN address can be added underneath; the app uses it first when you're on a saved home network and falls back to the remote one.</li>
+<li><strong>Pair with QR code</strong> is the other way in: the bridge's web app shows a one-time pairing code that the app scans; it expires, so scan it when it's shown.</li>
+<li>Tap <strong>Add a printer</strong>, enter <strong>Host (IP)</strong> and <strong>Access code</strong> (a friendly name is optional) and tap <strong>Probe &amp; connect</strong>. The bridge checks the connection and reads the serial from the printer itself; you never type a serial. "Connected to &lt;name&gt;" means it worked. The three failures the bridge names: wrong IP or printer off; wrong code or LAN-Only Mode off; connected but the printer went quiet.</li>
+<li>Tap <strong>Open dashboard</strong>. The Status tab is home.</li>
+</ol>
+
+<div class="note">The bridge refuses every request until it has an API key, and a wrong key is never saved by the app.</div>
+
+<h2>4. First look</h2>
+<p>The app has six tabs: <strong>Status</strong> (camera, progress, temperatures, quick actions), <strong>Print</strong> (files on the printer, start one), <strong>Controls</strong>, <strong>Filament</strong> (every AMS slot and the external holder, with their Spoolman spools), <strong>Activity</strong> (what happened), <strong>Advanced</strong> (raw printer commands, for when you know what you're doing). The gear opens Settings; the list icon opens the bridge's print queue.</p>
+<p>Next: <a href="daily-use.html">Daily use</a>.</p>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

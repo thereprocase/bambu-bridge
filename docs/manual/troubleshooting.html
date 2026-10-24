@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Troubleshooting.">
+<title>Troubleshooting · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Troubleshooting</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Troubleshooting</nav>
+<p>By what you see. Each entry says what it means and what to do.</p>
+
+<h2>Connection</h2>
+<dl>
+<dt>Red band "Can't reach the bridge" · "Join home Wi-Fi or turn on Tailscale — showing cached data."</dt>
+<dd>The phone can't reach the bridge's address. Check Tailscale is on, or that you're on the saved home network. The app keeps the last data it had; nothing is lost. Settings → <strong>Check connection</strong> says which address answers.</dd>
+<dt>"Bridge · Unreachable" with the printer "Unknown"</dt>
+<dd>Same cause from the top strip. If Tailscale and Wi-Fi are fine, the bridge service may be down: on the bridge host, <code>systemctl --user status bambu-bridge</code>.</dd>
+<dt>"Printer · Offline" while the bridge is connected</dt>
+<dd>The bridge can't reach the printer. Its IP may have changed (give it a DHCP reservation), LAN-Only Mode may be off, or the printer is off. Settings → the printer's address.</dd>
+<dt>Every call fails right after adding the printer</dt>
+<dd>One bridge per printer: a second bridge or another LAN client logging in kicks the first off. The bridge's TROUBLESHOOTING doc covers this first.</dd>
+</dl>
+
+<h2>Filament tab</h2>
+<dl>
+<dt>Every row is dimmed with "last seen 73 s ago"</dt>
+<dd>The printer hasn't sent a full AMS report for over 30 s. The rows show the last known slots; assigning waits ("The printer hasn't reported this slot lately. Try again in a moment."). It clears on the next report; pull down to refresh.<figure><img src="img/stale-rows.png" alt="Filament tab with every row dimmed and last seen 73 s ago under each"><figcaption>A quiet printer.</figcaption></figure></dd>
+<dt>"AMS re-scanning — slot data returns in a few seconds."</dt>
+<dd>The AMS is re-reading tags; the rows hold their last state, dimmed. Normal after loading a spool.</dd>
+<dt>"reading tag…" stays for a long time</dt>
+<dd>A tag read takes about a minute. If it never clears, the tag didn't read: take the spool out and in again, or use <strong>Read tag</strong> once the printer is idle.</dd>
+<dt>"No tag found in slot 2 · reports PETG"</dt>
+<dd>The slot holds an untagged spool, or the tag is unreadable. Assign the spool by hand.</dd>
+<dt>"The printer reads tags when it's idle" / "Fresh printer status required"</dt>
+<dd>The printer is busy, or the bridge has no fresh status yet. Wait for idle and tap <strong>Try again</strong> on the row.</dd>
+<dt>"Couldn't reach the bridge. Try again." on the Filament tab</dt>
+<dd>The app reached the bridge for the printer but the spool calls failed; pull down to refresh. If it persists, the bridge can't reach Spoolman (next section).</dd>
+<dt>The swatch is the wrong colour</dt>
+<dd>The fill is Spoolman's colour for the assigned spool. If the spool's record in Spoolman has the wrong colour, fix it there ("Open Spoolman"). A ring is the printer's declaration and is expected inside a refill backup.</dd>
+</dl>
+
+<h2>Spoolman</h2>
+<dl>
+<dt>"Spoolman didn't answer. Try again."</dt>
+<dd>The bridge couldn't reach Spoolman or its reply was lost. Nothing was sent twice. Check that Spoolman is up and that the bridge's <code>BRIDGE_SPOOLMAN_URL</code> points at it. Charges keep counting and retry on their own for six hours.</dd>
+<dt>"Spoolman rejected the change; check the values"</dt>
+<dd>Spoolman refused a record (for example a product without density). Fix the values and try again.</dd>
+<dt>"Spoolman has no such record"</dt>
+<dd>The spool, product or vendor was deleted in Spoolman. Pull down to refresh and pick again.</dd>
+<dt>"This bridge has no Spoolman address." (Settings)</dt>
+<dd>Spool tracking is off until <code>BRIDGE_SPOOLMAN_URL</code> is set in the bridge's env file and the service restarted. The printer controls work without it.</dd>
+<dt>"Remove #5 from slot 2 first" when archiving</dt>
+<dd>An assigned spool can't be archived. Open the slot → Change spool → Remove from slot, then archive.</dd>
+</dl>
+
+<h2>Charges</h2>
+<dl>
+<dt>A card says "41 g from slot 3 · no spool was assigned"</dt>
+<dd>That slot fed a print with no spool assigned. Pick the spool on the card; keep it assigned for next time.</dd>
+<dt>"#5 ran out in Spoolman" / "12 g short"</dt>
+<dd>Spoolman's remaining weight reached zero before the print's count did; the figure in Spoolman was low. Charge the rest to the right spool on the card, and weigh the spool.</dd>
+<dt>"This print is already settled"</dt>
+<dd>The card was answered from another device. Pull down to refresh.</dd>
+<dt>A print was charged to the wrong spool</dt>
+<dd><strong>Wrong spool?</strong> on the print under Recent prints.</dd>
+<dt>"Gave #5 83 g back; Spoolman didn't answer; try again"</dt>
+<dd>The credit landed but the charge didn't. Tap Move again: only the charge is sent.</dd>
+</dl>
+
+<h2>Refill backups</h2>
+<dl>
+<dt>"Backup: slot 4 · waiting for the printer to confirm" for more than a minute</dt>
+<dd>The printer regroups its slots a few seconds after the write; a longer wait means it didn't accept the declaration. Open the sheet: a needs-you card offers <strong>Try again</strong> (it re-reads the slot first) and <strong>Remove backup</strong>.</dd>
+<dt>"The spool in slot 4 was changed on the printer"</dt>
+<dd>Someone edited the slot on the printer's screen while it was a backup. Remove the backup and set it again.</dd>
+<dt>"Remove the slot 3 backup first"</dt>
+<dd>One backup per printer in this release.</dd>
+<dt>After a bridge restart the chain says "waiting"</dt>
+<dd>Expected until the printer's next full report; the bridge resends nothing on its own. If it stays waiting while the printer is on and idle, open the sheet: Try again, or Remove backup and set it again.</dd>
+<dt>Advanced → AMS filament setting says "Slot 3 is in use"</dt>
+<dd>The slot holds an assigned spool or belongs to a backup; a raw write would change what the printer declares for it. The card says what writing anyway does and where the safe way lives (Change spool, or remove the backup). <strong>Write anyway</strong> overrides, and names the assignment it ends when it ends one.</dd>
+</dl>
+
+<h2>Bridge host</h2>
+<dl>
+<dt>Updating</dt>
+<dd>On the bridge host: <code>bash deploy/bambu-bridge-update.sh</code>. It backs the database up, pulls or installs the new version, restarts the service and prints old vs new version. The app reconnects on its own.</dd>
+<dt>Rolling back</dt>
+<dd>Stop the service, restore the pre-update database backup from <code>~/.local/share/bambu-bridge/backups/</code>, install the previous version, start the service. The bridge's UPDATING doc has the exact commands.</dd>
+<dt>Logs</dt>
+<dd><code>journalctl --user -u bambu-bridge -f</code> on the bridge host.</dd>
+</dl>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

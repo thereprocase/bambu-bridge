@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Refill backups.">
+<title>Refill backups · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Refill backups</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Refill backups</nav>
+<p>A backup is one AMS slot taking over when another runs out, using the printer's own auto-refill. The printer only switches between slots that declare the same filament, so the bridge tells the backup slot it holds the same product, temperatures and colour as the first. Spoolman keeps each slot's real spool; the print is charged to whichever slot fed it. One backup per printer in this release.</p>
+
+<h2>Setting a backup</h2>
+<figure><img src="img/backup-sheet.png" alt="The backup sheet: When slot 3 runs out · Continue from · tiles No backup and Slot 4"><figcaption>Backup sheet for slot 3.</figcaption></figure>
+<ol class="steps">
+<li>Both slots loaded with the same material (PETG with PETG) and the printer idle. Tap the first slot's row, then <strong>Backup ›</strong>.</li>
+<li>Under <strong>Continue from</strong>, tap the backup slot's tile. The sheet shows <strong>What the printer will be told</strong>: each field that will change on each slot, before → after, and that removing the backup puts it back.</li>
+<li>Tap <strong>Set slot 4 as backup</strong>. The toast says "Backup set: slot 4 · waiting for the printer to confirm" while the printer regroups its slots (6–10 s on a P1S), then both rows read the chain: "Backup: slot 4 · confirmed" on the first, "Backs up slot 3 · confirmed" on the second.</li>
+</ol>
+<figure><img src="img/backup-rows.png" alt="Two slot rows showing the chain lines and the backup slot's ring in the first slot's colour"><figcaption>The chain on both rows; the backup slot shows its own spool colour with a ring in the declared colour.</figcaption></figure>
+
+<figure><img src="img/backup-standing.png" alt="The backup sheet for a standing backup: Continues from slot 4, the changed fields listed, Remove backup"><figcaption>A standing backup, with what it changed and Remove backup.</figcaption></figure>
+
+<h2>A tagged spool as the anchor</h2>
+<figure><img src="img/tagged-anchor.png" alt="Preview for a tagged anchor: Slot 2 RFID spool stays as it is; slot 3 changes profile and colour, drawn white with a brown ring"><figcaption>A tagged spool as the anchor: the untagged slot copies its declaration.</figcaption></figure>
+<p>A Bambu spool with a tag can be the slot others back up, or back up another slot, but it is never written: its tag's declaration becomes the target for the untagged slot. The untagged slot then poses as the tagged one (its row shows its own spool colour with a ring in the tag's colour). Two tagged spools can't back each other up; the sheet says so.</p>
+
+<h2>What the sheet refuses, in the bridge's words</h2>
+<ul>
+<li>"Slot 1 is PLA and slot 3 is PETG; a backup needs the same material. Load a matching spool or set the slot's material first." — a backup never switches chemistry, so the tiles only offer same-material slots.</li>
+<li>"Slot 2 is still reading its tag; try again when it's done" / "Slot 2's tag could not be read; reload the spool or read its tag again".</li>
+<li>"Slot 3 has not reported recently; try again in a moment" — a stale slot.</li>
+<li>"The printer accepts this change when it's idle" — while printing.</li>
+<li>"Remove the slot 3 backup first" — one chain per printer; the sheet shows the standing chain instead of tiles.</li>
+<li>"Physical refill sources changed; review a new preview" — a slot changed between the preview and Set; the sheet re-previews and you set again.</li>
+</ul>
+
+<h2>Removing a backup</h2>
+<ol class="steps">
+<li>Tap the first slot's row, then <strong>Backup</strong>, then <strong>Remove backup</strong> (or the <strong>No backup</strong> tile).</li>
+<li>The bridge puts every changed setting back on both slots. If the printer is busy or away, the toast says the slots go back when it's idle, and the chain line stays until then.</li>
+</ol>
+
+<h2>The raw slot write on Advanced</h2>
+<figure><img src="img/guard-card.png" alt="Advanced tab: under Set filament, a card Slot 3 is in use explaining the write and offering Write anyway or Cancel"><figcaption>The guard on a raw filament setting for a slot that holds a spool.</figcaption></figure>
+<p>Advanced → AMS — filament setting writes a slot's declaration directly. For a slot that holds an assigned spool or belongs to a backup the bridge refuses once and the app explains in place: what the write changes, whether the spool stays assigned, and the safe way to do it (Change spool on the Filament tab, or removing the backup). <strong>Write anyway</strong> sends it regardless; the button names the assignment it ends when it ends one.</p>
+
+<h2>When the printer doesn't confirm</h2>
+<p>A backup the printer never confirmed becomes a <strong>Needs you</strong> card on the Filament tab with the printer's words ("The printer has not confirmed slot 4 yet", "The spool in slot 4 was changed on the printer"). <strong>Try again</strong> re-reads the slot first: if it already shows the target the backup is adopted; if it still shows the original the write is sent once more; anything else stays a card. <strong>Remove backup</strong> puts the slots back. Nothing is resent on its own.</p>
+
+<h2>During a print</h2>
+<p>When the first slot runs out the printer switches on its own; Status shows "Switched to slot 4 at layer 140". The bridge charges each slot's spool for the layers it fed. A quiet printer does not demote a confirmed backup: the rows keep "last confirmed" wording until the printer reports again.</p>
+
+<div class="warn">After a bridge restart the chain reads "waiting for the printer to confirm" until the printer's next full report; nothing is resent. If it stays waiting, open the sheet: <strong>Try again</strong> re-reads the slots first, <strong>Remove backup</strong> puts both slots back. A safe habit before updating the bridge: remove the backup, update, set it again.</div>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

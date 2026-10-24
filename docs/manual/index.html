@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Manual.">
+<title>Manual · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Manual</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a></nav>
+<p>Bambu Bridge runs on a small Linux box next to your Bambu Lab P1S. It talks to the printer directly, serves a web app for the laptop and an Android app for the phone, and keeps your spools in Spoolman charged as prints run. This manual covers the app and the bridge as the owner uses them day to day.</p>
+<nav class="toc"><ul>
+<li><a href="getting-started.html">Getting started</a> — install the bridge, prepare the printer, set up the app.</li>
+<li><a href="daily-use.html">Daily use</a> — Status, starting a print, the Filament tab, Activity, Settings.</li>
+<li><a href="spools.html">Spools and Spoolman</a> — tagged spools, assigning by hand, the catalog, weighing, archiving, Read tag.</li>
+<li><a href="printing.html">Printing and charges</a> — live grams, the needs-you card, Wrong spool?, a spool's prints.</li>
+<li><a href="backups.html">Refill backups</a> — one slot taking over from another, what the printer is told, undoing it.</li>
+<li><a href="troubleshooting.html">Troubleshooting</a> — by what you see.</li>
+<li><a href="faq.html">FAQ</a></li>
+<li><a href="glossary.html">Glossary</a></li>
+</ul></nav>
+<h2>Three rules the bridge follows</h2>
+<ol>
+<li><strong>Spoolman is the only record of spools.</strong> The bridge reads it, charges it and writes the records you ask for; it keeps no spool list of its own. Anything the app can't do with a spool, Spoolman's own web app can.</li>
+<li><strong>Nothing is resent on its own.</strong> A write the printer or Spoolman didn't confirm becomes something you can see and retry; the bridge never guesses it went through.</li>
+<li><strong>The printer follows the spool's colour</strong>, except inside a refill backup, where two slots deliberately declare the same filament so the printer treats them as one.</li>
+</ol>
+<p>Figures in the app are whole grams. The bridge writes to Spoolman to the hundredth of a gram as the print goes.</p>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>

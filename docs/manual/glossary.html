@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Bambu Bridge user manual: Glossary.">
+<title>Glossary · Bambu Bridge manual</title>
+<link rel="stylesheet" href="manual.css">
+<main>
+<h1>Glossary</h1>
+<nav class="crumbs"><a href="../index.html">Bambu Bridge</a> · <a href="index.html">Manual</a> · Glossary</nav>
+<dl>
+<dt>AMS</dt><dd>Bambu's four-slot filament unit on the printer. Slots are numbered 1–4 in the app. A second unit would be AMS B.</dd>
+<dt>External holder</dt><dd>The spool holder on the printer's side, outside the AMS. It has no RFID reader.</dd>
+<dt>Spoolman</dt><dd>The open-source spool database the bridge uses as the only record of spools, products (filaments) and vendors. The bridge creates, weighs, archives and charges spools there; the app's "Open Spoolman" takes you to its own web page for anything else.</dd>
+<dt>Spool, product, vendor</dt><dd>Spoolman's three records: a <em>vendor</em> (Bambu Lab, Polymaker), a <em>product</em> (one filament: material, colour, density, package weight), a <em>spool</em> (one physical reel of that product, with grams left). The app shows a spool as "#12 · Polymaker PETG Galaxy Black".</dd>
+<dt>Assignment</dt><dd>The bridge's own note of which Spoolman spool sits in which slot. It is what gets charged when that slot feeds a print.</dd>
+<dt>RFID tag, tagged spool</dt><dd>Bambu Lab spools carry a tag the AMS reads: material, colour, weight and how much is left. The bridge keys a tagged spool on its tag and assigns it on its own. Other spools are <em>untagged</em>; you assign those by hand.</dd>
+<dt>Charge</dt><dd>Grams the bridge subtracts from a spool in Spoolman as the print goes, written every few seconds from the G-code's per-layer figures, and settled when the print ends.</dd>
+<dt>Needs you</dt><dd>A finished print the bridge could not charge in full (a slot with no spool, a spool that ran out in Spoolman, Spoolman unreachable past its retry budget). It waits as a card at the top of the Filament tab until you answer it.</dd>
+<dt>Shortfall</dt><dd>One uncharged part of such a print: the slot or spool and the grams.</dd>
+<dt>Wrong spool?</dt><dd>Moving a finished print's grams from the spool it was charged to onto the spool that fed it.</dd>
+<dt>Refill backup</dt><dd>One AMS slot standing in for another when it runs out. The bridge tells the printer both slots hold the same filament (product, temperatures and colour), which is what the printer's own auto-refill needs; Spoolman keeps each slot's real spool and the print is charged to whichever slot fed it.</dd>
+<dt>Anchor</dt><dd>In a backup, the slot whose declaration the other copies. A tagged slot can only ever be the anchor; it is never written.</dd>
+<dt>Tray colour, declared colour</dt><dd>What the printer says a slot holds. The bridge keeps it matched to the spool's Spoolman colour, except inside a refill backup. On a slot row the fill is the Spoolman colour and a thin ring shows the printer's declared colour when it differs.</dd>
+<dt>Read tag</dt><dd>Asking the AMS to read a slot's RFID tag again, from the app, without pulling the spool out. Idle only; about a minute.</dd>
+<dt>Stale</dt><dd>A slot the printer hasn't reported in the last 30 s. The row dims and says when it was last seen; assigning waits until the printer reports again.</dd>
+<dt>Bridge</dt><dd>The service on your Linux box between the printer, Orca/Bambu Studio, Spoolman and the app.</dd>
+<dt>Tailscale</dt><dd>The private network that lets the phone reach the bridge away from home. The app keeps a remote (Tailscale) address and an optional LAN address.</dd>
+</dl>
+
+<p><small>Bambu Bridge manual · for bridge 0.7.0b1 and app 0.21.0-beta.9. Independent community software, AGPL-3.0-only.</small></p>
+</main>
+</html>
