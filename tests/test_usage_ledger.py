@@ -97,7 +97,7 @@ async def running(tmp_path, monkeypatch, *, layer=3, **fields):
     inbox = NativeInbox(tmp_path / "inbox")
     attempt = inbox.claim_external("fixture", {"print": {"command": "project_file"}}, reserved=True)
     # The claim is stamped by SQLite's unixepoch(), not this clock. On a slow runner a second
-    # boundary can fall between Clock() and the claim, so catch up or later stamps predate the print.
+    # boundary can fall between Clock() and the claim; catch up so later stamps don't predate it.
     clock.now = max(clock.now, float(int(time.time())))
     context = manifest()
     context.update({"layer_grams": PLAN, "tool_wires": {"0": 0}, "wire_spools": {"0": 43}} | fields)
