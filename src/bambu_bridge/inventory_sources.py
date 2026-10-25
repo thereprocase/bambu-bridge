@@ -10,7 +10,11 @@ import re
 import time
 from typing import Any
 
+import structlog
+
 from bambu_bridge.service.material_inventory import inventory_view
+
+log = structlog.get_logger(__name__)
 
 # Complete-frame age accepted without asking for a new one; below the 30 s
 # limit in inventory_view so the choices outlive the request that used them.
@@ -31,14 +35,27 @@ async def refresh_source_frame(service: Any, *, wait_s: float = FULL_REPORT_WAIT
     """
     request = getattr(service, "request_full_report", None)
     if request is not None and service.connected and not _frame_fresh(service):
+        stamp = service.material_inventory.snapshot().get("ams_at")
+        seen = 0
         # The material frame is updated before the raw report is published.
         async with service.raw_bus.subscribe() as reports:
-            await request()
+            sent = await request()
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(wait_s):
                     async for _ in reports:
+                        seen += 1
                         if _frame_fresh(service):
                             break
+        if not _frame_fresh(service):
+            # A slot that stays stale for a long time is otherwise unexplained:
+            # say whether the request went out and whether anything came back.
+            log.info(
+                "inventory.ams_refresh_unanswered",
+                printer=getattr(service, "serial", None),
+                requested=sent,
+                reports_seen=seen,
+                frame_age_s=round(time.time() - stamp, 1) if stamp is not None else None,
+            )
 
 
 def declared_identity(tray: dict[str, Any]) -> str:
