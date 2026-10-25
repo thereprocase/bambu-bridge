@@ -339,6 +339,7 @@ async def close_summary(
     planned: Any,
     found: list[dict[str, Any]],
     reason: str | None,
+    notes: list[str] | None = None,
 ) -> dict[str, Any]:
     """What a closed print charged, for its log line and its Activity feed row."""
     attempt = await asyncio.to_thread(inbox.get, attempt_id)
@@ -358,6 +359,7 @@ async def close_summary(
         "planned_g": planned if isinstance(planned, int | float) else None,
         "review": bool(found),
         "reason": (reason or found[0]["kind"]) if found else None,
+        "notes": list(notes or []),
     }
 
 
@@ -404,6 +406,7 @@ async def deliver_once(
             reason: str | None = None,
             attempt_id: str = attempt_id,
             planned: Any = (event.get("manifest") or {}).get("planned_grams"),
+            notes: list[str] | None = None,
         ) -> None:
             """Record the shortfalls; review when there are any, else delivered."""
             current = await asyncio.to_thread(inbox.accounting_event, attempt_id)
@@ -418,7 +421,7 @@ async def deliver_once(
             else:
                 await asyncio.to_thread(inbox.set_delivery_state, attempt_id, "delivered")
             try:
-                summary = await close_summary(inbox, attempt_id, planned, found, reason)
+                summary = await close_summary(inbox, attempt_id, planned, found, reason, notes)
             except Exception:  # noqa: BLE001 — the print is closed; only its summary is missing
                 log.exception("inventory.usage_summary_failed", attempt=attempt_id)
                 summary = {"printer_id": None, "title": "", "total_g": None}
@@ -488,9 +491,12 @@ async def deliver_once(
                 found = shortfalls_for(manifest, layer, switches, spools, rows, give_up=True)
                 await close(found, "delivery_error")
             else:
-                await close(shortfalls_for(manifest, layer, switches, spools, rows))
+                # Notes for the one who reads the record; they are gathered before
+                # close() so the Activity row names them too.
+                notes: list[str] = []
                 with contextlib.suppress(Exception):
-                    reasons = inferred_refills(
+                    # Counted from tray_now alone, without the firmware's notice.
+                    notes += inferred_refills(
                         printer_for(attempt["printer"]),
                         _epoch(attempt.get("dispatched_at"))
                         or _epoch(attempt.get("created"))
@@ -498,26 +504,20 @@ async def deliver_once(
                         ended,
                         manifest,
                     )
-                    for reason in reasons:
-                        # Counted from tray_now alone, without the firmware's notice.
-                        await asyncio.to_thread(inbox.review_accounting, attempt_id, reason)
-                for wire in tag_changes(manifest, slots):
-                    # The spool the print was dispatched with was charged; the tag in
-                    # that slot changed before the end. The record says so, and
-                    # "Wrong spool?" moves the grams if the owner wants.
-                    with contextlib.suppress(Exception):
-                        await asyncio.to_thread(
-                            inbox.review_accounting, attempt_id, f"tag_changed_slot_{wire}"
-                        )
+                # The spool the print was dispatched with was charged; the tag in
+                # that slot changed before the end. "Wrong spool?" moves the grams
+                # if the owner wants.
+                notes += [f"tag_changed_slot_{wire}" for wire in tag_changes(manifest, slots)]
                 if over_charged:
-                    # Never taken back; the record says so for the one who reads it.
+                    # Never taken back; the record says so.
                     note = "_".join(
                         f"spool_{s}_{int(g + 0.5)}g" for s, g in sorted(over_charged.items())
                     )
+                    notes.append(("over_charged_" + note)[:80])
+                await close(shortfalls_for(manifest, layer, switches, spools, rows), notes=notes)
+                for note in notes:
                     with contextlib.suppress(Exception):
-                        await asyncio.to_thread(
-                            inbox.review_accounting, attempt_id, ("over_charged_" + note)[:80]
-                        )
+                        await asyncio.to_thread(inbox.review_accounting, attempt_id, note)
         except Exception:
             # One event must never block the ones after it.
             log.exception("inventory.usage_delivery_retry", attempt=attempt_id)

@@ -105,6 +105,13 @@ class VendorEmptyWeight(InventoryInput):
     empty_spool_weight: float = Field(gt=0, strict=True)
 
 
+SLOT_ISSUES = {
+    "ams_stale": "the printer hasn't sent a recent slot report",
+    "printer_disconnected": "the bridge isn't connected to the printer",
+    "ams_hardware_identity_unavailable": "the AMS hasn't reported its serial yet",
+}
+
+
 def slot_label(assignment: SpoolAssignment) -> str:
     """'AMS A · slot 2' or 'the external holder', from the assignment's wire slot."""
     wire = assignment.wire_slot
@@ -359,7 +366,8 @@ class InventoryService:
                     "assignment_refused",
                     {
                         "spool_id": spool_id,
-                        "slot_label": seen.get("label") or source,
+                        "slot_label": seen.get("label") or "A slot",
+                        "name": seen["spool"].filament.name if "spool" in seen else "",
                         "source": source,
                         "text": str(exc),
                     },
@@ -368,9 +376,15 @@ class InventoryService:
             raise
         if origin != "owner":
             return result
-        label = seen.get("label") or source
+        label = seen.get("label") or "A slot"
+        previous: SpoolAssignment | None = seen.get("previous")
         if spool_id is not None:
+            if previous is not None and previous.spool_id == spool_id:
+                # Linking the spool the slot already holds (a retry, a rerun
+                # script) changes nothing the owner would want a row for.
+                return result
             spool = seen["spool"]
+            moved: SpoolAssignment | None = seen.get("moved_from")
             await self.record_event(
                 printer_id,
                 "spool_assigned",
@@ -381,10 +395,10 @@ class InventoryService:
                     "slot_label": label,
                     "wire_slot": seen.get("wire_slot"),
                     "source": source,
+                    "moved_from": slot_label(moved) if moved is not None else None,
                 },
             )
-        elif seen.get("previous") is not None:
-            previous: SpoolAssignment = seen["previous"]
+        elif previous is not None:
             await self.record_event(
                 printer_id,
                 "spool_unassigned",
@@ -455,19 +469,31 @@ class InventoryService:
                     )
                 if not choice["assignable"]:
                     raise InventoryConflict(
-                        f"{choice['label']} cannot be assigned right now: "
-                        + ", ".join(i.replace("_", " ") for i in choice["issues"])
+                        f"{choice['label']} can't take a spool right now: "
+                        + "; ".join(
+                            SLOT_ISSUES.get(i, i.replace("_", " ")) for i in choice["issues"]
+                        )
+                        + (
+                            ". Check that the printer is on and online, then try again."
+                            if "printer_disconnected" in choice["issues"]
+                            else ". Try again in a moment."
+                        )
                     )
                 if spool.archived:
-                    raise InventoryConflict(f"#{spool_id} is archived.")
+                    raise InventoryConflict(
+                        f"#{spool_id} is archived. Unarchive it in Spoolman or pick another spool."
+                    )
                 material = (spool.filament.material or "").strip().upper()
                 if material != str(choice["material"] or "").strip().upper():
                     raise InventoryConflict(
                         f"{choice['label']} reports {choice['material'] or 'no material'}; "
                         f"#{spool_id} is {material or 'unknown material'}. Pick a "
-                        f"{choice['material']} spool or change the slot on the printer."
+                        f"{choice['material']} spool, change the slot on the printer, or pick "
+                        f"#{spool_id} under Other materials to set the slot to "
+                        f"{material or 'its material'}."
                     )
                 # Explicit assignment is an atomic move, not a second copy of the spool.
+                seen["moved_from"] = next((a for a in retained if a.spool_id == spool_id), None)
                 retained = [a for a in retained if a.spool_id != spool_id]
                 # Strictly later than whatever the slot held before, so a seat or
                 # an unload is never matched to the wrong assignment by its time.

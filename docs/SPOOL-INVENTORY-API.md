@@ -85,14 +85,18 @@ printer. Revision conflicts require refresh, not silent replacement.
 
 Spool changes are written to the printer's event feed
 (`GET /api/v1/printers/{serial}/events`), which the app's Activity tab shows:
-`spool_assigned` and `spool_unassigned` (owner changes), `spool_released` (the
+`spool_assigned` and `spool_unassigned` (owner changes; linking the spool a
+slot already holds writes no row), `spool_released` (the
 AMS reported the slot empty, the spool unloaded, or a different spool),
-`assignment_refused` (warn; the 409 message as sent), `slot_set` (a `set_slot`
-rewrite), `usage_charged` (a print closed: grams per spool and the planned
-total) and `usage_review` (warn; a print closed with grams it could not
+`assignment_refused` (warn, or info while the slot report is late; the 409
+message as sent; revision conflicts and Spoolman outages are not recorded), `slot_set` (a `set_slot`
+rewrite), `usage_charged` (a print closed: grams per spool, the planned total and any
+notes such as an inferred refill) and `usage_review` (warn; a print closed with grams it could not
 charge). Tag seating and colour sync keep their `spool_adopted` and
 `slot_colour_set` rows. A failed feed write is logged and never undoes the
-change it describes.
+change it describes. The feed and the assignments live in different databases,
+so the row is written after the change commits: a crash in between loses the
+row, never the change.
 
 ## Verification
 

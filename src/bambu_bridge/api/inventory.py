@@ -497,14 +497,19 @@ class AssignSpool(InventoryInput):
 
 
 async def _refused(
-    service: InventoryService, printer_id: str, body: AssignSpool, label: str, message: str
+    service: InventoryService,
+    printer_id: str,
+    body: AssignSpool,
+    label: str,
+    message: str,
+    severity: str = "warn",
 ) -> None:
     """Record a refusal the bridge made before assign() ran (stale AMS, slot rewrite)."""
     await service.record_event(
         printer_id,
         "assignment_refused",
         {"spool_id": body.spool_id, "slot_label": label, "source": body.source, "text": message},
-        "warn",
+        severity,
     )
 
 
@@ -522,7 +527,9 @@ async def _set_slot_for(
         return None  # assign() explains a missing or empty slot
     spool = await service.provider.get_spool(body.spool_id)
     if spool.archived:
-        raise InventoryConflict(f"#{body.spool_id} is archived.")
+        raise InventoryConflict(
+            f"#{body.spool_id} is archived. Unarchive it in Spoolman or pick another spool."
+        )
     material = (spool.filament.material or "").strip().upper()
     if material == choice["material"].strip().upper():
         return None
@@ -555,6 +562,7 @@ async def _set_slot_for(
         )
     return {
         "spool_id": body.spool_id,
+        "name": spool.filament.name or "",
         "slot_label": choice["label"],
         "wire_slot": choice["wire_slot"],
         "source": body.source,
@@ -637,13 +645,21 @@ async def assign_spool(
         listed = next(
             (c for c in source_choices(printer, stale_ok=True) if c["source"] == body.source), None
         )
-        label = listed["label"] if listed is not None else body.source
+        label = listed["label"] if listed is not None else "A slot"
         if listed is not None and listed["stale"]:
-            message = (
-                f"The printer hasn't reported its AMS for {int(listed['age_seconds'] or 0)} s; "
-                "try again in a moment"
-            )
-            await _refused(service, printer_id, body, label, message)
+            if "printer_disconnected" in listed["issues"]:
+                message = (
+                    "The bridge isn't connected to the printer. Check that it's on and "
+                    "online, then try again."
+                )
+            else:
+                age = int(listed["age_seconds"] or 0)
+                ago = f"{age // 60} min" if age >= 120 else f"{age} s"
+                message = (
+                    f"The printer hasn't sent a slot report for {ago}; try again in a moment."
+                )
+            # Retries while the report is late are routine; they stay out of the warnings.
+            await _refused(service, printer_id, body, label, message, "info")
             raise HTTPException(409, message)
         if body.set_slot:
             try:

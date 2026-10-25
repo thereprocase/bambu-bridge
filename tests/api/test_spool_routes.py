@@ -227,5 +227,5 @@ def test_stale_slots_are_listed_but_not_assigned(tmp_path: Path, monkeypatch) ->
         refused = client.put("/api/v1/inventory/printers/p1/assignment", json=body, headers=AUTH)
         assert refused.status_code == 409
         assert refused.json()["message"] == (
-            "The printer hasn't reported its AMS for 60 s; try again in a moment"
+            "The printer hasn't sent a slot report for 60 s; try again in a moment."
         )
