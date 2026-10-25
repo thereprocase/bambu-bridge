@@ -383,7 +383,44 @@ def _usage_review(payload: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _pair(payload: dict[str, Any]) -> tuple[str, str]:
+    """The two slots of a backup, the second without a repeated AMS unit."""
+    first = _wire_label(int(payload.get("from_wire") or 0))
+    second = _wire_label(int(payload.get("to_wire") or 0))
+    unit = first.split(" · ")[0]
+    return first, second.removeprefix(f"{unit} · ")
+
+
+_TRY_AGAIN = "Open the slot's backup spool on the Filament tab and tap Try again."
+
+
+def _backup_set(payload: dict[str, Any]) -> tuple[str, str, str]:
+    first, second = _pair(payload)
+    state = payload.get("state")
+    if state == "active":
+        detail = f"When {first} runs out, the printer continues from {second}."
+    elif state == "needs_attention":
+        detail = f"The printer didn't confirm the change. {_TRY_AGAIN}"
+    else:
+        detail = "Saved; the printer hasn't confirmed it yet."
+    return (_sentence(f"{first} backed up by {second}"), detail, "—")
+
+
+def _backup_removed(payload: dict[str, Any]) -> tuple[str, str, str]:
+    first, second = _pair(payload)
+    state = payload.get("state")
+    if state == "restoration_pending":
+        detail = "The bridge puts both slots back when the printer is idle and online."
+    elif state == "needs_attention":
+        detail = f"A slot couldn't be put back. {_TRY_AGAIN}"
+    else:
+        detail = "Both slots are back as they were."
+    return (_sentence(f"{first} backup ({second}) removed"), detail, "—")
+
+
 _SPOOL_RENDERERS = {
+    "backup_set": _backup_set,
+    "backup_removed": _backup_removed,
     "spool_assigned": _spool_assigned,
     "spool_unassigned": _spool_unassigned,
     "spool_released": _spool_released,

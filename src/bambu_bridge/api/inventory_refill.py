@@ -392,6 +392,7 @@ async def set_backup(
     """
     printer, controller = physical(request, service, printer_id)
     wires = [body.from_wire, body.to_wire]
+    retried = False
     await seat_first(service, printer, printer_id, wires)
     # A quiet idle printer's last report ages out; Try again settles a slot
     # only from a fresh one. Asked outside the write lock: it awaits the printer.
@@ -406,6 +407,7 @@ async def set_backup(
                 first = group["steps"][0]["wire"] + 1
                 raise HTTPException(409, f"Remove the slot {first} backup first")
             controller.retry(printer_id, report, revision=group["revision"])
+            retried = True
         else:
             plan = backup_plan(controller, report, printer_id, wires)
             if body.preview_digest is not None and body.preview_digest != plan_digest(
@@ -420,7 +422,29 @@ async def set_backup(
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from None
     await drive(printer_id, printer, controller)
-    return await refill_status_body(printer_id, printer, service)
+    status = await refill_status_body(printer_id, printer, service)
+    if not retried:
+        # Try again on an existing backup is not a new change for the feed.
+        chain = next((b for b in status["backups"] if b["from_wire"] == wires[0]), None)
+        state = chain["state"] if chain is not None else status["state"]
+        await _record_backup(service, printer_id, "backup_set", wires, state)
+    return status
+
+
+async def _record_backup(
+    service: InventoryService,
+    printer_id: str,
+    kind: str,
+    wires: list[int],
+    state: str,
+) -> None:
+    """One Activity row for a backup the owner set or removed, with where it stands."""
+    await service.record_event(
+        printer_id,
+        kind,
+        {"from_wire": wires[0], "to_wire": wires[-1], "state": state},
+        "warn" if state == "needs_attention" else "info",
+    )
 
 
 @router.delete("/printers/{printer_id}/refill/backup/{from_wire}")
@@ -444,6 +468,9 @@ async def remove_backup(
         group = controller.store.get(printer_id)
         if group is None or group["state"] == "disabled" or group["steps"][0]["wire"] != from_wire:
             raise HTTPException(404, f"Slot {from_wire + 1} has no backup")
+        # Only the first removal is the owner's change; later calls are Try again.
+        removing = bool(group["enabled"])
+        wires = [step["wire"] for step in group["steps"]]
         # idle comes from the last state report, so an offline printer can look idle.
         if not (report.idle and report.connected):
             if group["enabled"]:
@@ -451,7 +478,11 @@ async def remove_backup(
                     controller.disable(printer_id, revision=group["revision"])
                 except ValueError as exc:
                     raise HTTPException(409, str(exc)) from None
-            return await refill_status_body(printer_id, printer, service)
+            status = await refill_status_body(printer_id, printer, service)
+            if removing:
+                state = stored_state(controller, printer_id)
+                await _record_backup(service, printer_id, "backup_removed", wires, state)
+            return status
         try:
             if group["enabled"]:
                 group = controller.disable(printer_id, revision=group["revision"])
@@ -470,4 +501,17 @@ async def remove_backup(
             )
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
-    return await refill_status_body(printer_id, printer, service)
+    status = await refill_status_body(printer_id, printer, service)
+    if removing:
+        await _record_backup(
+            service, printer_id, "backup_removed", wires, stored_state(controller, printer_id)
+        )
+    return status
+
+
+def stored_state(controller: RefillController, printer_id: str) -> str:
+    """A removed backup's stored state: disabled once restored, restoration_pending
+    while it waits for the printer, needs_attention when a slot could not be put back.
+    The status body lists no backup to read this from once it is removed."""
+    group = controller.store.get(printer_id)
+    return group["state"] if group is not None else "disabled"
