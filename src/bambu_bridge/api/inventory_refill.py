@@ -11,6 +11,7 @@ import json
 from typing import Annotated, Any
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import Field
 
@@ -22,6 +23,8 @@ from bambu_bridge.service.inventory import InventoryInput, InventoryService
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.refill_adapter import PhysicalRefillAdapter
 from bambu_bridge.service.registry import PrinterNotFoundError
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/inventory", tags=["inventory"], dependencies=[Depends(require_auth)])
 
@@ -392,6 +395,7 @@ async def set_backup(
     """
     printer, controller = physical(request, service, printer_id)
     wires = [body.from_wire, body.to_wire]
+    retried = False
     await seat_first(service, printer, printer_id, wires)
     # A quiet idle printer's last report ages out; Try again settles a slot
     # only from a fresh one. Asked outside the write lock: it awaits the printer.
@@ -406,6 +410,7 @@ async def set_backup(
                 first = group["steps"][0]["wire"] + 1
                 raise HTTPException(409, f"Remove the slot {first} backup first")
             controller.retry(printer_id, report, revision=group["revision"])
+            retried = True
         else:
             plan = backup_plan(controller, report, printer_id, wires)
             if body.preview_digest is not None and body.preview_digest != plan_digest(
@@ -420,7 +425,37 @@ async def set_backup(
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from None
     await drive(printer_id, printer, controller)
-    return await refill_status_body(printer_id, printer, service)
+    status = await refill_status_body(printer_id, printer, service)
+    if not retried:
+        # Try again on an existing backup is not a new change for the feed.
+        await _record_backup(service, printer_id, "backup_set", wires, status)
+    return status
+
+
+async def _record_backup(
+    service: InventoryService,
+    printer_id: str,
+    kind: str,
+    wires: list[int],
+    status: dict[str, Any],
+) -> None:
+    """One Activity row for a backup the owner set or removed, with where it stands
+    and the bridge's reason when it is not settled (refill.backups() message)."""
+    # The group state status() derives: needs_attention while a step is
+    # uncertain, restoration_pending while a removal waits for the printer.
+    state = status["state"]
+    chain = next((b for b in status["backups"] if b["from_wire"] == wires[0]), None)
+    await service.record_event(
+        printer_id,
+        kind,
+        {
+            "from_wire": wires[0],
+            "to_wire": wires[-1],
+            "state": state,
+            "message": chain.get("message") if chain is not None else None,
+        },
+        "warn" if state == "needs_attention" else "info",
+    )
 
 
 @router.delete("/printers/{printer_id}/refill/backup/{from_wire}")
@@ -439,35 +474,62 @@ async def remove_backup(
     printer, controller = physical(request, service, printer_id)
     # As in set_backup: without a fresh report a restored slot stays uncertain.
     await refresh_source_frame(printer)
-    async with service.writes:
-        report = printer.refill_reports.snapshot(connected=printer.connected)
-        group = controller.store.get(printer_id)
-        if group is None or group["state"] == "disabled" or group["steps"][0]["wire"] != from_wire:
-            raise HTTPException(404, f"Slot {from_wire + 1} has no backup")
-        # idle comes from the last state report, so an offline printer can look idle.
-        if not (report.idle and report.connected):
-            if group["enabled"]:
-                try:
-                    controller.disable(printer_id, revision=group["revision"])
-                except ValueError as exc:
-                    raise HTTPException(409, str(exc)) from None
-            return await refill_status_body(printer_id, printer, service)
-        try:
-            if group["enabled"]:
-                group = controller.disable(printer_id, revision=group["revision"])
-            controller.retry(printer_id, report, revision=group["revision"])
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-    # Restore first: the drive settles emptied slots and restores a conflicted
-    # one whose fresh same-source readback still shows the alias. Releasing
-    # before it would keep that alias on the slot.
-    await drive(printer_id, printer, controller)
-    async with service.writes:
-        report = printer.refill_reports.snapshot(connected=printer.connected)
-        try:
-            controller.release_unrestorable(
-                printer_id, report, note="Backup removed; kept the printer's own setting"
-            )
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from None
-    return await refill_status_body(printer_id, printer, service)
+    # The slots once disable() has stored the removal. From then on the owner's
+    # change stands, so it gets its Activity row even if a later step is refused;
+    # the next call is a Try again (or a 404) and writes none.
+    removed: list[int] | None = None
+    try:
+        async with service.writes:
+            report = printer.refill_reports.snapshot(connected=printer.connected)
+            group = controller.store.get(printer_id)
+            if (
+                group is None
+                or group["state"] == "disabled"
+                or group["steps"][0]["wire"] != from_wire
+            ):
+                raise HTTPException(404, f"Slot {from_wire + 1} has no backup")
+            wires = [step["wire"] for step in group["steps"]]
+            # idle comes from the last state report, so an offline printer can look idle.
+            if not (report.idle and report.connected):
+                if group["enabled"]:
+                    try:
+                        controller.disable(printer_id, revision=group["revision"])
+                    except ValueError as exc:
+                        raise HTTPException(409, str(exc)) from None
+                    removed = wires
+                return await refill_status_body(printer_id, printer, service)
+            try:
+                if group["enabled"]:
+                    group = controller.disable(printer_id, revision=group["revision"])
+                    removed = wires
+                controller.retry(printer_id, report, revision=group["revision"])
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+        # Restore first: the drive settles emptied slots and restores a conflicted
+        # one whose fresh same-source readback still shows the alias. Releasing
+        # before it would keep that alias on the slot.
+        await drive(printer_id, printer, controller)
+        async with service.writes:
+            report = printer.refill_reports.snapshot(connected=printer.connected)
+            try:
+                controller.release_unrestorable(
+                    printer_id, report, note="Backup removed; kept the printer's own setting"
+                )
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+        return await refill_status_body(printer_id, printer, service)
+    finally:
+        if removed is not None:
+            await _record_removal(service, printer_id, printer, removed)
+
+
+async def _record_removal(
+    service: InventoryService, printer_id: str, printer: PrinterService, wires: list[int]
+) -> None:
+    """The backup_removed row, from the state the app is shown now."""
+    try:
+        status = await refill_status_body(printer_id, printer, service)
+    except Exception:  # noqa: BLE001 — never mask the request's own outcome
+        log.exception("inventory.event_write_failed", printer=printer_id, kind="backup_removed")
+        return
+    await _record_backup(service, printer_id, "backup_removed", wires, status)

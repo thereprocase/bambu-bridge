@@ -651,3 +651,158 @@ def test_two_tags_cannot_back_each_other_up(tmp_path, monkeypatch):
         assert refused.status_code == 422
         assert "both hold RFID spools" in refused.json()["message"]
         printer.send_raw.assert_not_awaited()
+
+
+class Feed(list):
+    """The printer's Activity feed, as the inventory service writes it."""
+
+    async def __call__(self, **row):
+        self.append(row)
+
+
+def feed_of(client):
+    feed = Feed()
+    client.app.state.inventory.events = feed
+    return feed
+
+
+def test_setting_and_removing_a_backup_each_write_one_activity_row(tmp_path, monkeypatch):
+    from bambu_bridge.api.events import _format
+
+    with inventory_app(tmp_path) as (client, _):
+        backup_fixture(client, monkeypatch)
+        feed = feed_of(client)
+        set_ = client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        assert set_.status_code == 200, set_.text
+        removed = client.delete(BACKUP + "/0", headers=AUTH)
+        assert removed.status_code == 200, removed.text
+    assert [(row["event_type"], row["severity"]) for row in feed] == [
+        ("backup_set", "info"),
+        ("backup_removed", "info"),
+    ]
+    added, gone = (row["payload"] for row in feed)
+    assert (added["from_wire"], added["to_wire"]) == (0, 1)
+    title, detail, _ = _format("backup_set", added)
+    assert title == "AMS A · slot 1 backed up by slot 2"
+    # The fixture's printer reports auto-refill on, so the backup is active.
+    assert added["state"] == "active"
+    assert detail == "When AMS A · slot 1 runs out, the printer continues from slot 2."
+    assert gone["state"] == "disabled"
+    assert _format("backup_removed", gone)[:2] == (
+        "AMS A · slot 1 no longer backed up by slot 2",
+        "Both slots are back as they were.",
+    )
+
+
+def test_try_again_on_a_backup_writes_no_second_row(tmp_path, monkeypatch):
+    from bambu_bridge.api.events import _format
+
+    with inventory_app(tmp_path) as (client, _):
+        feed = feed_of(client)
+        printer, _ = unconfirmed(client, monkeypatch)
+        observe(printer, "FF0000FF", "FF0000FF")
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+    [row] = feed
+    assert (row["event_type"], row["severity"]) == ("backup_set", "warn")
+    assert _format("backup_set", row["payload"])[:2] == (
+        "AMS A · slot 1 backup to slot 2 didn't take",
+        "The printer has not confirmed slot 2 yet. "
+        "On the Filament tab, tap Open backup on the Needs you card, then Try again.",
+    )
+
+
+def test_a_backup_removed_while_the_printer_is_away_says_it_waits(tmp_path, monkeypatch):
+    from bambu_bridge.api.events import _format
+
+    with inventory_app(tmp_path) as (client, _):
+        printer, controller, trays, report = declaration_fixture(client, monkeypatch)
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        feed = feed_of(client)
+        printer.connected = False
+        client.delete(BACKUP + "/0", headers=AUTH)
+        # Back and idle: the second call is Try again and writes no row.
+        printer.connected = True
+        printer.refill_reports.observe(report())
+        client.delete(BACKUP + "/0", headers=AUTH)
+    [row] = feed
+    assert row["event_type"] == "backup_removed"
+    assert _format("backup_removed", row["payload"])[1] == (
+        "The bridge puts both slots back when the printer is idle and online; "
+        "the slot's Backup screen shows it until then."
+    )
+
+
+def test_backup_rows_carry_the_bridges_reason() -> None:
+    from bambu_bridge.api.events import _format
+
+    pending = {
+        "from_wire": 0,
+        "to_wire": 2,
+        "state": "pending",
+        "message": "Turn on AMS auto-refill on the printer",
+    }
+    assert _format("backup_set", pending)[1] == (
+        "Saved; the printer hasn't confirmed it yet. Turn on AMS auto-refill on the printer."
+    )
+    stuck = {
+        "from_wire": 0,
+        "to_wire": 2,
+        "state": "needs_attention",
+        "message": "The printer reports a different colour on slot 3",
+    }
+    assert _format("backup_removed", stuck)[1] == (
+        "A slot couldn't be put back: the printer reports a different colour on slot 3. "
+        "On the Filament tab, tap Open backup on the Needs you card, then Try again."
+    )
+    quiet = {"from_wire": 3, "to_wire": 4, "state": "pending"}
+    assert _format("backup_set", quiet)[:2] == (
+        "AMS A · slot 4 backed up by AMS B · slot 1",
+        "Saved; the printer hasn't confirmed it yet. The slot's Backup screen shows when it does.",
+    )
+
+
+def test_a_removal_refused_after_it_was_stored_still_gets_its_row(tmp_path, monkeypatch):
+    with inventory_app(tmp_path) as (client, _):
+        backup_fixture(client, monkeypatch)
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        feed = feed_of(client)
+        controller = client.app.state.inventory.refill
+
+        def refused(*_args, **_kwargs):
+            raise ValueError("wait for the current alias readback")
+
+        monkeypatch.setattr(controller, "release_unrestorable", refused)
+        first = client.delete(BACKUP + "/0", headers=AUTH)
+        second = client.delete(BACKUP + "/0", headers=AUTH)
+    assert (first.status_code, second.status_code) == (409, 404)
+    assert [row["event_type"] for row in feed] == ["backup_removed"]
+
+
+def test_an_unconfirmed_backup_removed_while_away_is_a_warning(tmp_path, monkeypatch):
+    from bambu_bridge.api.events import _format
+
+    with inventory_app(tmp_path) as (client, _):
+        printer, _ = unconfirmed(client, monkeypatch)
+        feed = feed_of(client)
+        printer.connected = False
+        body = client.delete(BACKUP + "/0", headers=AUTH).json()
+    [row] = feed
+    assert row["payload"]["state"] == body["state"] == "needs_attention"
+    assert row["severity"] == "warn"
+    assert _format("backup_removed", row["payload"])[1].startswith("A slot couldn't be put back")
+
+
+def test_a_removal_refused_before_it_was_stored_writes_no_row(tmp_path, monkeypatch):
+    with inventory_app(tmp_path) as (client, _):
+        backup_fixture(client, monkeypatch)
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        feed = feed_of(client)
+        controller = client.app.state.inventory.refill
+
+        def refused(*_args, **_kwargs):
+            raise ValueError("wait for the current alias readback before disabling")
+
+        monkeypatch.setattr(controller, "disable", refused)
+        response = client.delete(BACKUP + "/0", headers=AUTH)
+    assert response.status_code == 409
+    assert feed == []

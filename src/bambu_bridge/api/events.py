@@ -383,7 +383,64 @@ def _usage_review(payload: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _pair(payload: dict[str, Any]) -> tuple[str, str]:
+    """The two slots of a backup, the second without a repeated AMS unit."""
+    first = _wire_label(int(payload.get("from_wire") or 0))
+    second = _wire_label(int(payload.get("to_wire") or 0))
+    unit = first.split(" · ")[0]
+    return first, second.removeprefix(f"{unit} · ")
+
+
+_TRY_AGAIN = "On the Filament tab, tap Open backup on the Needs you card, then Try again."
+
+
+def _reason(payload: dict[str, Any]) -> str:
+    """The bridge's reason, as the end of a sentence ("…: slot 3 is empty.")."""
+    message = str(payload.get("message") or "").strip().rstrip(".")
+    return f": {message[:1].lower()}{message[1:]}." if message else "."
+
+
+def _backup_set(payload: dict[str, Any]) -> tuple[str, str, str]:
+    first, second = _pair(payload)
+    state = payload.get("state")
+    if state == "needs_attention":
+        title = f"{first} backup to {second} didn't take"
+        # The title says it didn't take; the bridge's reason says why.
+        message = str(payload.get("message") or "").strip().rstrip(".")
+        why = f"{_sentence(message)}." if message else "The printer didn't confirm the change."
+        detail = f"{why} {_TRY_AGAIN}"
+    else:
+        title = f"{first} backed up by {second}"
+        if state == "active":
+            detail = f"When {first} runs out, the printer continues from {second}."
+        else:
+            message = str(payload.get("message") or "").strip().rstrip(".")
+            detail = "Saved; the printer hasn't confirmed it yet. " + (
+                f"{message}." if message else "The slot's Backup screen shows when it does."
+            )
+    return (_sentence(title), detail, "—")
+
+
+def _backup_removed(payload: dict[str, Any]) -> tuple[str, str, str]:
+    first, second = _pair(payload)
+    state = payload.get("state")
+    if state == "restoration_pending":
+        detail = (
+            "The bridge puts both slots back when the printer is idle and online; "
+            "the slot's Backup screen shows it until then."
+        )
+    elif state == "needs_attention":
+        detail = f"A slot couldn't be put back{_reason(payload)} {_TRY_AGAIN}"
+    elif state == "disabled":
+        detail = "Both slots are back as they were."
+    else:
+        detail = "The slot's Backup screen shows where it stands."
+    return (_sentence(f"{first} no longer backed up by {second}"), detail, "—")
+
+
 _SPOOL_RENDERERS = {
+    "backup_set": _backup_set,
+    "backup_removed": _backup_removed,
     "spool_assigned": _spool_assigned,
     "spool_unassigned": _spool_unassigned,
     "spool_released": _spool_released,
