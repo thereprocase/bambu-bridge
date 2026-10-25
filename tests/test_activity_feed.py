@@ -344,7 +344,7 @@ async def test_a_delivered_print_records_what_it_charged(ledger) -> None:
     assert [(row["event_type"], row["severity"]) for row in feed] == [("usage_charged", "info")]
     assert _format("usage_charged", feed[0]["payload"])[:2] == (
         "large inner diagonal cup: #10 −49.5 g",
-        "Planned 49.5 g",
+        "Planned 49.5 g.",
     )
 
 
@@ -370,8 +370,8 @@ def test_close_notes_are_shown_in_words() -> None:
         "notes": ["refill_inferred_slot_1_to_3", "tag_changed_slot_1", "over_charged_spool_11_3g"],
     }
     assert _format("usage_charged", payload)[1] == (
-        "Planned 58.3 g · AMS A · slot 1 ran out and AMS A · slot 3 finished the print. · "
-        "AMS A · slot 2 held a different tagged spool by the end. · "
+        "Planned 58.3 g. AMS A · slot 1 ran out and slot 3 finished the print. "
+        "AMS A · slot 2 had a different tagged spool by the end. "
         "Spoolman was charged more than the print used; check the spool's weight."
     )
 
@@ -451,11 +451,13 @@ def test_every_review_reason_reads_as_a_sentence(reason, text) -> None:
 
 
 def test_notes_name_slots_on_a_second_ams_and_the_external_spool() -> None:
-    payload = {"title": "cup", "charged": [], "notes": ["refill_inferred_slot_5_to_6"]}
-    assert "AMS B · slot 1 ran out and AMS B · slot 2" in _format("usage_charged", payload)[1]
+    payload = {"title": "cup", "charged": [], "notes": ["refill_inferred_slot_4_to_5"]}
+    assert _format("usage_charged", payload)[1] == (
+        "AMS A · slot 4 ran out and AMS B · slot 1 finished the print."
+    )
     payload["notes"] = ["tag_changed_slot_254"]
     assert _format("usage_charged", payload)[1] == (
-        "The external spool held a different tagged spool by the end."
+        "The external holder had a different tagged spool by the end."
     )
     payload["notes"] = None
     assert _format("usage_charged", payload)[1] == "—"

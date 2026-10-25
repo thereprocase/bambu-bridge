@@ -323,8 +323,12 @@ def _charges(payload: dict[str, Any]) -> str:
 def _wire_label(wire: int) -> str:
     """'AMS A · slot 2' for a wire slot, as slot_label() names an assignment."""
     if wire >= 254:
-        return "The external spool"
+        return "the external holder"
     return f"AMS {chr(ord('A') + wire // 4)} · slot {wire % 4 + 1}"
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def _close_note(note: str) -> str:
@@ -334,9 +338,12 @@ def _close_note(note: str) -> str:
     """
     if m := re.fullmatch(r"refill_inferred_slot_(\d+)_to_(\d+)", note):
         ran_out, took_over = _wire_label(int(m[1]) - 1), _wire_label(int(m[2]) - 1)
-        return f"{ran_out} ran out and {took_over} finished the print."
+        unit = ran_out.split(" · ")[0]
+        if took_over.startswith(f"{unit} · "):
+            took_over = took_over.removeprefix(f"{unit} · ")  # "AMS A · slot 1 … and slot 3"
+        return _sentence(f"{ran_out} ran out and {took_over} finished the print.")
     if m := re.fullmatch(r"tag_changed_slot_(\d+)", note):
-        return f"{_wire_label(int(m[1]))} held a different tagged spool by the end."
+        return _sentence(f"{_wire_label(int(m[1]))} had a different tagged spool by the end.")
     if note.startswith("over_charged_"):
         return "Spoolman was charged more than the print used; check the spool's weight."
     return note.replace("_", " ").capitalize()
@@ -345,9 +352,10 @@ def _close_note(note: str) -> str:
 def _usage_charged(payload: dict[str, Any]) -> tuple[str, str, str]:
     title = payload.get("title") or "Print"
     planned = payload.get("planned_g")
-    parts = [f"Planned {_grams(planned)}" if planned is not None else ""]
+    # Sentences: slot names already use "·".
+    parts = [f"Planned {_grams(planned)}." if planned is not None else ""]
     parts += [_close_note(str(n)) for n in payload.get("notes") or []]
-    return (f"{title}: {_charges(payload)}", " · ".join(p for p in parts if p) or "—", "—")
+    return (f"{title}: {_charges(payload)}", " ".join(p for p in parts if p) or "—", "—")
 
 
 _UNTRACED = "The bridge couldn't tell which spool fed part of it."
