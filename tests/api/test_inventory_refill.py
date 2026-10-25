@@ -684,13 +684,12 @@ def test_setting_and_removing_a_backup_each_write_one_activity_row(tmp_path, mon
     assert (added["from_wire"], added["to_wire"]) == (0, 1)
     title, detail, _ = _format("backup_set", added)
     assert title == "AMS A · slot 1 backed up by slot 2"
-    assert detail in (
-        "When AMS A · slot 1 runs out, the printer continues from slot 2.",
-        "Saved; the printer hasn't confirmed it yet.",
+    assert detail == "When AMS A · slot 1 runs out, the printer continues from slot 2." or (
+        detail.startswith("Saved; the printer hasn't confirmed it yet. ")
     )
     assert gone["state"] == "disabled"
     assert _format("backup_removed", gone)[:2] == (
-        "AMS A · slot 1 backup (slot 2) removed",
+        "AMS A · slot 1 no longer backed up by slot 2",
         "Both slots are back as they were.",
     )
 
@@ -705,9 +704,10 @@ def test_try_again_on_a_backup_writes_no_second_row(tmp_path, monkeypatch):
         client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
     [row] = feed
     assert (row["event_type"], row["severity"]) == ("backup_set", "warn")
-    assert _format("backup_set", row["payload"])[1] == (
-        "The printer didn't confirm the change. "
-        "Open the slot's backup spool on the Filament tab and tap Try again."
+    assert _format("backup_set", row["payload"])[:2] == (
+        "AMS A · slot 1 backup to slot 2 didn't take",
+        "The printer has not confirmed slot 2 yet. "
+        "On the Filament tab, tap Open backup on the Needs you card, then Try again.",
     )
 
 
@@ -727,5 +727,35 @@ def test_a_backup_removed_while_the_printer_is_away_says_it_waits(tmp_path, monk
     [row] = feed
     assert row["event_type"] == "backup_removed"
     assert _format("backup_removed", row["payload"])[1] == (
-        "The bridge puts both slots back when the printer is idle and online."
+        "The bridge puts both slots back when the printer is idle and online; "
+        "the slot's Backup screen shows it until then."
+    )
+
+
+def test_backup_rows_carry_the_bridges_reason() -> None:
+    from bambu_bridge.api.events import _format
+
+    pending = {
+        "from_wire": 0,
+        "to_wire": 2,
+        "state": "pending",
+        "message": "Turn on AMS auto-refill on the printer",
+    }
+    assert _format("backup_set", pending)[1] == (
+        "Saved; the printer hasn't confirmed it yet. Turn on AMS auto-refill on the printer."
+    )
+    stuck = {
+        "from_wire": 0,
+        "to_wire": 2,
+        "state": "needs_attention",
+        "message": "The printer reports a different colour on slot 3",
+    }
+    assert _format("backup_removed", stuck)[1] == (
+        "A slot couldn't be put back: the printer reports a different colour on slot 3. "
+        "On the Filament tab, tap Open backup on the Needs you card, then Try again."
+    )
+    quiet = {"from_wire": 3, "to_wire": 4, "state": "pending"}
+    assert _format("backup_set", quiet)[:2] == (
+        "AMS A · slot 4 backed up by AMS B · slot 1",
+        "Saved; the printer hasn't confirmed it yet. The slot's Backup screen shows when it does.",
     )

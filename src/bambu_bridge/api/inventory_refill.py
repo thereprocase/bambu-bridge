@@ -427,7 +427,7 @@ async def set_backup(
         # Try again on an existing backup is not a new change for the feed.
         chain = next((b for b in status["backups"] if b["from_wire"] == wires[0]), None)
         state = chain["state"] if chain is not None else status["state"]
-        await _record_backup(service, printer_id, "backup_set", wires, state)
+        await _record_backup(service, printer_id, "backup_set", wires, state, status)
     return status
 
 
@@ -437,12 +437,20 @@ async def _record_backup(
     kind: str,
     wires: list[int],
     state: str,
+    status: dict[str, Any],
 ) -> None:
-    """One Activity row for a backup the owner set or removed, with where it stands."""
+    """One Activity row for a backup the owner set or removed, with where it stands
+    and the bridge's reason when it is not settled (refill.backups() message)."""
+    chain = next((b for b in status["backups"] if b["from_wire"] == wires[0]), None)
     await service.record_event(
         printer_id,
         kind,
-        {"from_wire": wires[0], "to_wire": wires[-1], "state": state},
+        {
+            "from_wire": wires[0],
+            "to_wire": wires[-1],
+            "state": state,
+            "message": chain.get("message") if chain is not None else None,
+        },
         "warn" if state == "needs_attention" else "info",
     )
 
@@ -481,7 +489,7 @@ async def remove_backup(
             status = await refill_status_body(printer_id, printer, service)
             if removing:
                 state = stored_state(controller, printer_id)
-                await _record_backup(service, printer_id, "backup_removed", wires, state)
+                await _record_backup(service, printer_id, "backup_removed", wires, state, status)
             return status
         try:
             if group["enabled"]:
@@ -503,9 +511,8 @@ async def remove_backup(
             raise HTTPException(409, str(exc)) from None
     status = await refill_status_body(printer_id, printer, service)
     if removing:
-        await _record_backup(
-            service, printer_id, "backup_removed", wires, stored_state(controller, printer_id)
-        )
+        state = stored_state(controller, printer_id)
+        await _record_backup(service, printer_id, "backup_removed", wires, state, status)
     return status
 
 
