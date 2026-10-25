@@ -370,8 +370,8 @@ def test_close_notes_are_shown_in_words() -> None:
         "notes": ["refill_inferred_slot_1_to_3", "tag_changed_slot_1", "over_charged_spool_11_3g"],
     }
     assert _format("usage_charged", payload)[1] == (
-        "Planned 58.3 g · Slot 1 ran out and slot 3 finished the print. · "
-        "Slot 2 held a different tagged spool by the end. · "
+        "Planned 58.3 g · AMS A · slot 1 ran out and AMS A · slot 3 finished the print. · "
+        "AMS A · slot 2 held a different tagged spool by the end. · "
         "Spoolman was charged more than the print used; check the spool's weight."
     )
 
@@ -433,3 +433,113 @@ def _recorder(feed: Feed):
         await feed(printer_id=printer_id, event_type=kind, payload=payload, severity=severity)
 
     return record
+
+
+@pytest.mark.parametrize(
+    "reason,text",
+    [
+        ("delivery_error", "Spoolman didn't confirm the charge."),
+        ("manifest_predates_layer_plan", "The bridge couldn't tell which spool fed part of it."),
+        ("spool_empty", "A spool it used was already empty."),
+        ("something_new", "Some filament wasn't charged."),
+        (None, "Some filament wasn't charged."),
+    ],
+)
+def test_every_review_reason_reads_as_a_sentence(reason, text) -> None:
+    payload = {"title": "cup", "charged": [], "reason": reason}
+    assert _format("usage_review", payload)[1] == f"{text} Charge or skip it on the Filament tab."
+
+
+def test_notes_name_slots_on_a_second_ams_and_the_external_spool() -> None:
+    payload = {"title": "cup", "charged": [], "notes": ["refill_inferred_slot_5_to_6"]}
+    assert "AMS B · slot 1 ran out and AMS B · slot 2" in _format("usage_charged", payload)[1]
+    payload["notes"] = ["tag_changed_slot_254"]
+    assert _format("usage_charged", payload)[1] == (
+        "The external spool held a different tagged spool by the end."
+    )
+    payload["notes"] = None
+    assert _format("usage_charged", payload)[1] == "—"
+
+
+def test_a_lowercase_slot_label_starts_the_title_capitalised() -> None:
+    payload = {"spool_id": 5, "slot_label": "the external holder"}
+    assert _format("spool_unassigned", payload)[0] == "The external holder: #5 unlinked"
+    assert _format("spool_unassigned", {"spool_id": 5})[0] == "A slot: #5 unlinked"
+
+
+@pytest.mark.parametrize(
+    "age,connected,text",
+    [
+        (119, True, "The printer hasn't sent a slot report for 119 s; try again in a moment."),
+        (300, True, "The printer hasn't sent a slot report for 5 min; try again in a moment."),
+        (
+            300,
+            False,
+            "The bridge isn't connected to the printer. Check that it's on and online, "
+            "then try again.",
+        ),
+    ],
+)
+def test_the_late_slot_refusal_says_how_late_or_that_the_printer_is_offline(
+    tmp_path: Path, monkeypatch, age, connected, text
+) -> None:
+    from bambu_bridge import inventory_sources
+
+    device = sourced_printer(connected=connected)
+    now = time.time()
+    device.material_inventory.ams_at = now - age
+    monkeypatch.setattr(
+        inventory_sources, "time", SimpleNamespace(time=lambda: now, monotonic=time.monotonic)
+    )
+    with fixture(tmp_path, [_spool(43)]) as (client, _):
+        monkeypatch.setattr(client.app.state.registry, "get", lambda _: device)
+        monkeypatch.setattr(
+            "bambu_bridge.api.inventory.refresh_source_frame", AsyncMock(return_value=None)
+        )
+        rows = client.get("/api/v1/inventory/printers/p1/sources", headers=AUTH).json()
+        body = {"spool_id": 43, "source": rows[0]["source"]}
+        refused = client.put("/api/v1/inventory/printers/p1/assignment", json=body, headers=AUTH)
+    assert refused.status_code == 409
+    assert refused.json()["message"] == text
+
+
+async def test_an_archived_spool_refusal_names_the_way_out(inventory) -> None:
+    service, feed = inventory
+    service.provider.get_spool = AsyncMock(
+        return_value=SimpleNamespace(
+            archived=True, filament=SimpleNamespace(name="ASA Black", material="ASA")
+        )
+    )
+    device = sourced_printer()
+    slot = source_choices(device)[0]
+    with pytest.raises(InventoryConflict, match="Unarchive it in Spoolman or pick another spool"):
+        await service.assign(
+            spool_id=43,
+            printer_id="p1",
+            source=slot["source"],
+            observed_identity=None,
+            choices=lambda: source_choices(device),
+        )
+    assert _format("assignment_refused", feed[0]["payload"])[0] == (
+        f"{slot['label']} couldn't take #43 ASA Black"
+    )
+
+
+async def test_a_failing_tag_check_still_closes_the_print(tmp_path, monkeypatch) -> None:
+    from tests.test_usage_ledger import at_layer, running, tick
+
+    provider, service, inbox, attempt, clock = await running(tmp_path, monkeypatch, layer=9)
+
+    def broken(*_args):
+        raise RuntimeError("slot report changed shape")
+
+    monkeypatch.setattr(consumption_delivery, "tag_changes", broken)
+    feed = Feed()
+    service.events = feed
+    try:
+        at_layer(inbox, attempt, 10, "completed")
+        await tick(service, inbox)
+        assert inbox.accounting_event(attempt)["delivery_state"] == "delivered"
+    finally:
+        await service.close()
+    assert [row["event_type"] for row in feed] == ["usage_charged"]

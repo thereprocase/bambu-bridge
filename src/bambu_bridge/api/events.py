@@ -320,12 +320,23 @@ def _charges(payload: dict[str, Any]) -> str:
     return ", ".join(parts) or "nothing charged"
 
 
+def _wire_label(wire: int) -> str:
+    """'AMS A · slot 2' for a wire slot, as slot_label() names an assignment."""
+    if wire >= 254:
+        return "The external spool"
+    return f"AMS {chr(ord('A') + wire // 4)} · slot {wire % 4 + 1}"
+
+
 def _close_note(note: str) -> str:
-    """A note the bridge kept on a charged print, in words (see deliver_once)."""
+    """A note the bridge kept on a charged print, in words (see deliver_once).
+
+    Refill notes number slots from 1; tag notes carry the wire slot.
+    """
     if m := re.fullmatch(r"refill_inferred_slot_(\d+)_to_(\d+)", note):
-        return f"Slot {m[1]} ran out and slot {m[2]} finished the print."
+        ran_out, took_over = _wire_label(int(m[1]) - 1), _wire_label(int(m[2]) - 1)
+        return f"{ran_out} ran out and {took_over} finished the print."
     if m := re.fullmatch(r"tag_changed_slot_(\d+)", note):
-        return f"Slot {int(m[1]) + 1} held a different tagged spool by the end."
+        return f"{_wire_label(int(m[1]))} held a different tagged spool by the end."
     if note.startswith("over_charged_"):
         return "Spoolman was charged more than the print used; check the spool's weight."
     return note.replace("_", " ").capitalize()

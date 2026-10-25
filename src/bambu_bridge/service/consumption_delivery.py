@@ -507,7 +507,10 @@ async def deliver_once(
                 # The spool the print was dispatched with was charged; the tag in
                 # that slot changed before the end. "Wrong spool?" moves the grams
                 # if the owner wants.
-                notes += [f"tag_changed_slot_{wire}" for wire in tag_changes(manifest, slots)]
+                try:
+                    notes += [f"tag_changed_slot_{wire}" for wire in tag_changes(manifest, slots)]
+                except Exception:  # noqa: BLE001 — a note must never keep the print open
+                    log.exception("inventory.tag_check_failed", attempt=attempt_id)
                 if over_charged:
                     # Never taken back; the record says so.
                     note = "_".join(
