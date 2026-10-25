@@ -359,7 +359,7 @@ async def test_a_print_with_shortfalls_records_a_review(ledger) -> None:
     title, detail, context = _format("usage_review", feed[0]["payload"])
     assert title == "large inner diagonal cup: charge needs review"
     assert detail == "A slot it used had no spool linked. Charge or skip it on the Filament tab."
-    assert context == "Charged so far: nothing charged"
+    assert context == "Nothing charged yet."
 
 
 def test_close_notes_are_shown_in_words() -> None:
@@ -472,6 +472,7 @@ def test_a_lowercase_slot_label_starts_the_title_capitalised() -> None:
     [
         (119, True, "The printer hasn't sent a slot report for 119 s; try again in a moment."),
         (300, True, "The printer hasn't sent a slot report for 5 min; try again in a moment."),
+        (90000, True, "The printer hasn't sent a slot report for 25 h; try again in a moment."),
         (
             300,
             False,
@@ -543,3 +544,24 @@ async def test_a_failing_tag_check_still_closes_the_print(tmp_path, monkeypatch)
     finally:
         await service.close()
     assert [row["event_type"] for row in feed] == ["usage_charged"]
+
+
+async def test_a_print_the_owner_closed_mid_pass_writes_no_row(tmp_path, monkeypatch) -> None:
+    from tests.test_usage_ledger import at_layer, running, tick
+
+    provider, service, inbox, attempt, clock = await running(tmp_path, monkeypatch, layer=9)
+    feed = Feed()
+    service.events = feed
+    listed = inbox.accounting_event
+
+    def resolved_meanwhile(attempt_id):
+        # Listed as open for this pass; resolved by the owner before it closes.
+        return {**listed(attempt_id), "delivery_state": "delivered"}
+
+    try:
+        at_layer(inbox, attempt, 10, "completed")
+        monkeypatch.setattr(inbox, "accounting_event", resolved_meanwhile)
+        await tick(service, inbox)
+    finally:
+        await service.close()
+    assert feed == []

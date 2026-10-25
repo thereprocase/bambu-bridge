@@ -677,7 +677,7 @@ Query: `since=<ISO-8601>`, `until=<ISO-8601>`, `limit=` (default 50, max 200), `
 
 `kind` enum: `print_started`, `print_completed`, `print_failed`, `filament_runout`, `error`, `bed_level_passed`, `spool_low`, `firmware_update`, `connection_lost`, `connection_restored`. With spool inventory on, also `spool_assigned`, `spool_unassigned`, `spool_released`, `assignment_refused` (warn), `slot_set`, `slot_colour_set`, `spool_adopted`, `usage_charged` and `usage_review` (warn); see SPOOL-INVENTORY-API.md. Bridge derives these from the persistent events table (`db/jobs.py` EventRepo) + the in-memory bus events. **Already-emitted WS events have a row here** with `kind` matching the WS event name.
 
-`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `spool_low` / `door` / `assignment_refused` / `usage_review`, `error` for `print_failed` / thermal / `error`.
+`severity` is bridge-assigned: `info` for benign transitions, `warn` for `filament_runout` / `spool_low` / `door` / `assignment_refused` (`info` while the slot report is late) / `usage_review`, `error` for `print_failed` / thermal / `error`.
 
 `title` + `detail` + `context` are pre-formatted (English-first; i18n is v0.1). APK renders verbatim.
 

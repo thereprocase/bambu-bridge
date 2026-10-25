@@ -654,7 +654,10 @@ async def assign_spool(
                 )
             else:
                 age = int(listed["age_seconds"] or 0)
-                ago = f"{age // 60} min" if age >= 120 else f"{age} s"
+                if age >= 7200:
+                    ago = f"{age // 3600} h"
+                else:
+                    ago = f"{age // 60} min" if age >= 120 else f"{age} s"
                 message = (
                     f"The printer hasn't sent a slot report for {ago}; try again in a moment."
                 )

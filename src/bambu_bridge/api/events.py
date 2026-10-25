@@ -367,10 +367,11 @@ _REVIEW_REASONS = {
 def _usage_review(payload: dict[str, Any]) -> tuple[str, str, str]:
     title = payload.get("title") or "Print"
     reason = _REVIEW_REASONS.get(str(payload.get("reason") or ""), "Some filament wasn't charged.")
+    charged = f"Charged so far: {_charges(payload)}" if payload.get("charged") else ""
     return (
         f"{title}: charge needs review",
         f"{reason} Charge or skip it on the Filament tab.",
-        f"Charged so far: {_charges(payload)}",
+        charged or "Nothing charged yet.",
     )
 
 
