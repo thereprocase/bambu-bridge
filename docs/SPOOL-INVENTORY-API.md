@@ -30,9 +30,13 @@ controls. Viewer credentials do not grant inventory access.
 - `GET /spools/43`: current provider record, percentage and an over-capacity
   flag. Raw grams are never clamped.
 - `GET /products` and `/vendors`: paginated product/manufacturer search.
-- `GET /printers/{serial}/sources`: fresh physical sources. AMS sources require
+- `GET /printers/{serial}/sources`: physical sources. AMS sources require
   hardware identity, not just array position. Disconnected/empty/unidentified
-  sources are not assignable. This route does not request or alter printer data.
+  sources are not assignable. A complete AMS frame counts as fresh for 20 s;
+  between full reports an idle P1S sends deltas only. When the frame is older,
+  this route asks the printer for one full report (at most every 10 s) and
+  waits up to 5 s for it. It alters nothing. Without a reply the last known
+  slots are listed with `stale: true` and are not assignable.
   Each row carries an opaque `observed_identity` (the slot's declared material,
   product and tag, used for "last spool here" offers) and `spool_key` (its RFID
   tag, or `untagged`). An assignment ends only on physical evidence: an observed
