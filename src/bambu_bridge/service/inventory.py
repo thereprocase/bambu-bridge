@@ -7,13 +7,14 @@ import dataclasses
 import fcntl
 import hashlib
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import httpx
+import structlog
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bambu_bridge.display_policy import DisplayPolicy
@@ -35,6 +36,11 @@ from bambu_bridge.spoolman import (
 
 if TYPE_CHECKING:
     from bambu_bridge.service.inventory_projection import InventoryProjection
+
+log = structlog.get_logger(__name__)
+
+# Writes one row to the printer's Activity feed (EventRepo.add).
+EventSink = Callable[..., Awaitable[Any]]
 
 
 class InventoryInput(BaseModel):
@@ -124,6 +130,9 @@ class InventoryService:
         self._writes = asyncio.Lock()
         # Set from BRIDGE_INVENTORY_AUTO_DEDUCT at startup (main.py).
         self.consumption_qualified = False
+        # The printer Activity feed; set at startup (main.py). Spool changes and
+        # print charges are written there so the owner can see them in the app.
+        self.events: EventSink | None = None
         self.provider_last_ok_at: float | None = None
         self.refill: RefillController | None = None
         self.materials = MaterialMappings(journal)
@@ -297,6 +306,20 @@ class InventoryService:
             "native_overlay_enabled": False,
         }
 
+    async def record_event(
+        self, printer_id: str, kind: str, payload: dict[str, Any], severity: str = "info"
+    ) -> None:
+        """Add a row to the printer's Activity feed. The action it describes has
+        already happened, so a failed write is logged and never undoes it."""
+        if self.events is None:
+            return
+        try:
+            await self.events(
+                printer_id=printer_id, event_type=kind, payload=payload, severity=severity
+            )
+        except Exception:  # noqa: BLE001 — the feed is a record, not part of the action
+            log.exception("inventory.event_write_failed", printer=printer_id, kind=kind)
+
     async def assign(
         self,
         *,
@@ -310,7 +333,83 @@ class InventoryService:
         origin: str = "owner",
     ) -> dict[str, Any]:
         """Put a spool in a slot, or take it out. The revision is optional: an app
-        that sends none assigns against the inventory as it is now."""
+        that sends none assigns against the inventory as it is now.
+
+        The owner's changes and refusals go to the Activity feed; a tag seating a
+        spool writes its own spool_adopted row.
+        """
+        seen: dict[str, Any] = {}
+        try:
+            result = await self._assign(
+                spool_id=spool_id,
+                printer_id=printer_id,
+                source=source,
+                choices=choices,
+                provider_id=provider_id,
+                expected_revision=expected_revision,
+                origin=origin,
+                seen=seen,
+            )
+        except InventoryConflict as exc:
+            # A revision race (AssignmentConflict) is the app's to retry and is not
+            # recorded; these are the reasons the owner has to act on.
+            if spool_id is not None and origin == "owner":
+                await self.record_event(
+                    printer_id,
+                    "assignment_refused",
+                    {
+                        "spool_id": spool_id,
+                        "slot_label": seen.get("label") or source,
+                        "source": source,
+                        "text": str(exc),
+                    },
+                    "warn",
+                )
+            raise
+        if origin != "owner":
+            return result
+        label = seen.get("label") or source
+        if spool_id is not None:
+            spool = seen["spool"]
+            await self.record_event(
+                printer_id,
+                "spool_assigned",
+                {
+                    "spool_id": spool_id,
+                    "name": spool.filament.name or "",
+                    "material": (spool.filament.material or "").strip().upper(),
+                    "slot_label": label,
+                    "wire_slot": seen.get("wire_slot"),
+                    "source": source,
+                },
+            )
+        elif seen.get("previous") is not None:
+            previous: SpoolAssignment = seen["previous"]
+            await self.record_event(
+                printer_id,
+                "spool_unassigned",
+                {
+                    "spool_id": previous.spool_id,
+                    "slot_label": slot_label(previous),
+                    "wire_slot": previous.wire_slot,
+                    "source": source,
+                },
+            )
+        return result
+
+    async def _assign(
+        self,
+        *,
+        spool_id: int | None,
+        printer_id: str,
+        source: str,
+        choices: Callable[[], list[dict[str, Any]]],
+        provider_id: str | None,
+        expected_revision: int | None,
+        origin: str,
+        seen: dict[str, Any],
+    ) -> dict[str, Any]:
+        """assign() without the feed; `seen` collects what the feed row names."""
         async with self._writes:
             snapshot = await self.assignments.snapshot()
             if provider_id is None:
@@ -322,12 +421,23 @@ class InventoryService:
             retained = [
                 a for a in snapshot.assignments if (a.printer_id, a.source) != (printer_id, source)
             ]
+            seen["previous"] = next(
+                (
+                    a
+                    for a in snapshot.assignments
+                    if (a.printer_id, a.source) == (printer_id, source)
+                ),
+                None,
+            )
             if spool_id is not None:
                 spool = await self.provider.get_spool(spool_id)
+                seen["spool"] = spool
                 # The bridge reads the slot itself at commit time; what the phone
                 # saw when the list loaded is not compared (observed_identity is
                 # accepted from older apps and ignored).
                 choice = next((c for c in choices() if c["source"] == source), None)
+                if choice is not None:
+                    seen["label"], seen["wire_slot"] = choice["label"], choice["wire_slot"]
                 if choice is None:
                     raise InventoryConflict(
                         "The printer is not reporting this slot right now. Check that it is "

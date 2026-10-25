@@ -236,8 +236,100 @@ def _format(event_type: str, payload: dict[str, Any]) -> tuple[str, str, str]:
             else f"Spool #{spool} · {name} · {slot} (matched by its RFID tag)"
         )
         return (text, "—", "—")
+    if event_type in _SPOOL_RENDERERS:
+        return _SPOOL_RENDERERS[event_type](payload)
     # Catch-all
     return (event_type.replace("_", " ").title(), "—", "—")
+
+
+# --------------------------------------------------------------------------- #
+# Spool activity: which spool sits in which slot, and what each print charged
+# --------------------------------------------------------------------------- #
+
+
+def _spool(payload: dict[str, Any]) -> str:
+    spool = payload.get("spool_id")
+    return f"#{spool}" if spool is not None else "a spool"
+
+
+def _slot(payload: dict[str, Any]) -> str:
+    return str(payload.get("slot_label") or "A slot")
+
+
+def _grams(value: Any) -> str:
+    return f"{float(value):.1f} g" if isinstance(value, int | float) else "—"
+
+
+def _spool_assigned(payload: dict[str, Any]) -> tuple[str, str, str]:
+    name = str(payload.get("name") or "").strip()
+    title = f"{_slot(payload)}: {_spool(payload)}" + (f" {name}" if name else "")
+    return (title, "Linked from the app", payload.get("material") or "—")
+
+
+def _spool_unassigned(payload: dict[str, Any]) -> tuple[str, str, str]:
+    return (f"{_slot(payload)}: {_spool(payload)} removed", "Unlinked from the app", "—")
+
+
+def _spool_released(payload: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        f"{_slot(payload)}: {_spool(payload)} released",
+        payload.get("reason") or "The AMS no longer holds it.",
+        "—",
+    )
+
+
+def _assignment_refused(payload: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        f"{_slot(payload)} couldn't take {_spool(payload)}",
+        payload.get("text") or "The bridge refused the assignment.",
+        "—",
+    )
+
+
+def _slot_set(payload: dict[str, Any]) -> tuple[str, str, str]:
+    material = payload.get("material") or "?"
+    before = payload.get("previous_material")
+    detail = f"Was {before}" if before else "—"
+    return (f"{_slot(payload)} set to {material} for {_spool(payload)}", detail, "—")
+
+
+def _charges(payload: dict[str, Any]) -> str:
+    charged = payload.get("charged") or []
+    parts = [
+        f"#{c.get('spool_id')} −{_grams(c.get('grams'))}"
+        for c in charged
+        if isinstance(c, dict)
+    ]
+    return ", ".join(parts) or "nothing charged"
+
+
+def _usage_charged(payload: dict[str, Any]) -> tuple[str, str, str]:
+    title = payload.get("title") or "Print"
+    planned = payload.get("planned_g")
+    detail = f"Planned {_grams(planned)}" if planned is not None else "—"
+    return (f"{title}: {_charges(payload)}", detail, "—")
+
+
+def _usage_review(payload: dict[str, Any]) -> tuple[str, str, str]:
+    title = payload.get("title") or "Print"
+    reason = str(payload.get("reason") or "").replace("_", " ").strip()
+    detail = f"Charged so far: {_charges(payload)}"
+    return (
+        f"{title}: charge needs review",
+        reason.capitalize() if reason else "Some filament could not be charged.",
+        detail,
+    )
+
+
+_SPOOL_RENDERERS = {
+    "spool_assigned": _spool_assigned,
+    "spool_unassigned": _spool_unassigned,
+    "spool_released": _spool_released,
+    "assignment_refused": _assignment_refused,
+    "slot_set": _slot_set,
+    "usage_charged": _usage_charged,
+    "usage_review": _usage_review,
+}
 
 
 def _layer_context(payload: dict[str, Any]) -> str:

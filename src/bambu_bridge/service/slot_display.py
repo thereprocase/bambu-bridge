@@ -25,6 +25,7 @@ import structlog
 from bambu_bridge.inventory_journal import InventoryConflict
 from bambu_bridge.inventory_sources import same_spool, source_choices
 from bambu_bridge.native_spools import NativeSpoolOverlay, VirtualSpool, physical_identity
+from bambu_bridge.service.inventory import slot_label
 from bambu_bridge.service.slot_colour import ColourSync
 from bambu_bridge.service.tagged_spools import EventSink, TagAdopter
 
@@ -222,11 +223,24 @@ class InventoryDisplay:
 SEATING_INTERVAL_S = 2.0
 
 
+def release_reason(
+    assignment: Any, choices: list[dict[str, Any]], unloaded: dict[int, float]
+) -> str:
+    """Why the AMS ended an assignment, in words for the Activity feed."""
+    choice = next((c for c in choices if c["source"] == assignment.source), None)
+    if choice is not None and "source_empty" in choice["issues"]:
+        return "The AMS reported the slot empty."
+    if assignment.wire_slot is not None and assignment.wire_slot in unloaded:
+        return "The AMS reported the spool unloaded."
+    return "The AMS reported a different spool in the slot."
+
+
 async def release_unseated(
     printers: Callable[[], Iterable[Any]],
     inventory: Any,
     adopter: TagAdopter | None = None,
     colours: ColourSync | None = None,
+    events: EventSink | None = None,
 ) -> None:
     while True:
         for printer in list(printers()):
@@ -243,12 +257,30 @@ async def release_unseated(
                 log.exception("inventory.seating_failed", printer=printer.serial)
                 continue
             for assignment in dropped:
+                reason = release_reason(assignment, choices, unloaded)
                 log.info(
                     "inventory.assignment_released",
                     printer=assignment.printer_id,
                     wire_slot=assignment.wire_slot,
                     spool_id=assignment.spool_id,
+                    reason=reason,
                 )
+                if events is not None:
+                    try:
+                        await events(
+                            printer_id=assignment.printer_id,
+                            event_type="spool_released",
+                            payload={
+                                "spool_id": assignment.spool_id,
+                                "slot_label": slot_label(assignment),
+                                "wire_slot": assignment.wire_slot,
+                                "source": assignment.source,
+                                "reason": reason,
+                            },
+                            severity="info",
+                        )
+                    except Exception:  # noqa: BLE001 — the release stands without its feed row
+                        log.exception("inventory.event_write_failed", printer=printer.serial)
             # The same frame, after the releases: a new RFID tag seats its spool.
             if adopter is not None and choices:
                 try:
@@ -280,6 +312,7 @@ async def seating_worker(
             inventory,
             TagAdopter(inventory, events),
             ColourSync(inventory, events, inbox),
+            events,
         )
     )
     try:

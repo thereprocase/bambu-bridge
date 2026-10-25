@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import math
 import time
 from collections.abc import AsyncIterator, Callable
@@ -332,6 +333,46 @@ async def settle_running(
                 )
 
 
+async def close_summary(
+    inbox: Any,
+    attempt_id: str,
+    planned: Any,
+    found: list[dict[str, Any]],
+    reason: str | None,
+) -> dict[str, Any]:
+    """What a closed print charged, for its log line and its Activity feed row."""
+    attempt = await asyncio.to_thread(inbox.get, attempt_id)
+    rows = await asyncio.to_thread(usage_ledger.rows, inbox, attempt_id)
+    command = json.loads(attempt.get("command") or "{}").get("print") or {}
+    charged = [
+        {"spool_id": spool, "grams": round(row["written_g"], 2)}
+        for spool, row in sorted(rows.items())
+        if row["written_g"] > 0
+    ]
+    return {
+        "attempt_id": attempt_id,
+        "printer_id": attempt.get("printer"),
+        "title": attempt.get("title") or command.get("subtask_name") or "",
+        "charged": charged,
+        "total_g": round(sum(c["grams"] for c in charged), 2),
+        "planned_g": planned if isinstance(planned, int | float) else None,
+        "review": bool(found),
+        "reason": (reason or found[0]["kind"]) if found else None,
+    }
+
+
+async def _record_close(inventory: Any, summary: dict[str, Any]) -> None:
+    """One Activity feed row per closed print: what it charged, or why it waits."""
+    record = getattr(inventory, "record_event", None)
+    if record is None or not summary["printer_id"]:
+        return
+    payload = {k: v for k, v in summary.items() if k != "printer_id"}
+    if summary["review"]:
+        await record(summary["printer_id"], "usage_review", payload, "warn")
+    else:
+        await record(summary["printer_id"], "usage_charged", payload)
+
+
 async def deliver_once(
     inventory: Any,
     inbox: Any,
@@ -359,7 +400,10 @@ async def deliver_once(
         attempt_id = event["attempt_id"]
 
         async def close(
-            found: list[dict[str, Any]], reason: str | None = None, attempt_id: str = attempt_id
+            found: list[dict[str, Any]],
+            reason: str | None = None,
+            attempt_id: str = attempt_id,
+            planned: Any = (event.get("manifest") or {}).get("planned_grams"),
         ) -> None:
             """Record the shortfalls; review when there are any, else delivered."""
             current = await asyncio.to_thread(inbox.accounting_event, attempt_id)
@@ -373,7 +417,24 @@ async def deliver_once(
                 await asyncio.to_thread(inbox.set_delivery_state, attempt_id, "review")
             else:
                 await asyncio.to_thread(inbox.set_delivery_state, attempt_id, "delivered")
-            log.info("inventory.usage_closed", attempt=attempt_id, reason=reason, shortfalls=found)
+            try:
+                summary = await close_summary(inbox, attempt_id, planned, found, reason)
+            except Exception:  # noqa: BLE001 — the print is closed; only its summary is missing
+                log.exception("inventory.usage_summary_failed", attempt=attempt_id)
+                summary = {"printer_id": None, "title": "", "total_g": None}
+            log.info(
+                "inventory.usage_closed",
+                attempt=attempt_id,
+                printer=summary["printer_id"],
+                title=summary["title"],
+                charged_g=summary["total_g"],
+                reason=reason,
+                shortfalls=found,
+            )
+            try:
+                await _record_close(inventory, summary)
+            except Exception:  # noqa: BLE001 — the print is closed whether or not the feed took it
+                log.exception("inventory.event_write_failed", attempt=attempt_id)
 
         attempt = dict(await asyncio.to_thread(inbox.get, attempt_id))
         manifest = event["manifest"]
