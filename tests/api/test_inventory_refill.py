@@ -684,9 +684,9 @@ def test_setting_and_removing_a_backup_each_write_one_activity_row(tmp_path, mon
     assert (added["from_wire"], added["to_wire"]) == (0, 1)
     title, detail, _ = _format("backup_set", added)
     assert title == "AMS A · slot 1 backed up by slot 2"
-    assert detail == "When AMS A · slot 1 runs out, the printer continues from slot 2." or (
-        detail.startswith("Saved; the printer hasn't confirmed it yet. ")
-    )
+    # The fixture's printer reports auto-refill on, so the backup is active.
+    assert added["state"] == "active"
+    assert detail == "When AMS A · slot 1 runs out, the printer continues from slot 2."
     assert gone["state"] == "disabled"
     assert _format("backup_removed", gone)[:2] == (
         "AMS A · slot 1 no longer backed up by slot 2",
@@ -759,3 +759,34 @@ def test_backup_rows_carry_the_bridges_reason() -> None:
         "AMS A · slot 4 backed up by AMS B · slot 1",
         "Saved; the printer hasn't confirmed it yet. The slot's Backup screen shows when it does.",
     )
+
+
+def test_a_removal_refused_after_it_was_stored_still_gets_its_row(tmp_path, monkeypatch):
+    with inventory_app(tmp_path) as (client, _):
+        backup_fixture(client, monkeypatch)
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        feed = feed_of(client)
+        controller = client.app.state.inventory.refill
+
+        def refused(*_args, **_kwargs):
+            raise ValueError("wait for the current alias readback")
+
+        monkeypatch.setattr(controller, "release_unrestorable", refused)
+        first = client.delete(BACKUP + "/0", headers=AUTH)
+        second = client.delete(BACKUP + "/0", headers=AUTH)
+    assert (first.status_code, second.status_code) == (409, 404)
+    assert [row["event_type"] for row in feed] == ["backup_removed"]
+
+
+def test_an_unconfirmed_backup_removed_while_away_is_a_warning(tmp_path, monkeypatch):
+    from bambu_bridge.api.events import _format
+
+    with inventory_app(tmp_path) as (client, _):
+        printer, _ = unconfirmed(client, monkeypatch)
+        feed = feed_of(client)
+        printer.connected = False
+        body = client.delete(BACKUP + "/0", headers=AUTH).json()
+    [row] = feed
+    assert row["payload"]["state"] == body["state"] == "needs_attention"
+    assert row["severity"] == "warn"
+    assert _format("backup_removed", row["payload"])[1].startswith("A slot couldn't be put back")

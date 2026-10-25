@@ -431,8 +431,10 @@ def _backup_removed(payload: dict[str, Any]) -> tuple[str, str, str]:
         )
     elif state == "needs_attention":
         detail = f"A slot couldn't be put back{_reason(payload)} {_TRY_AGAIN}"
-    else:
+    elif state == "disabled":
         detail = "Both slots are back as they were."
+    else:
+        detail = "The slot's Backup screen shows where it stands."
     return (_sentence(f"{first} no longer backed up by {second}"), detail, "—")
 
 
