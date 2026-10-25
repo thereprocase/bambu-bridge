@@ -346,7 +346,7 @@ def _close_note(note: str) -> str:
         return _sentence(f"{_wire_label(int(m[1]))} had a different tagged spool by the end.")
     if note.startswith("over_charged_"):
         return "Spoolman was charged more than the print used; check the spool's weight."
-    return note.replace("_", " ").capitalize()
+    return note.replace("_", " ").capitalize() + "."
 
 
 def _usage_charged(payload: dict[str, Any]) -> tuple[str, str, str]:

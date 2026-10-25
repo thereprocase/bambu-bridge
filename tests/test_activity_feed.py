@@ -459,6 +459,10 @@ def test_notes_name_slots_on_a_second_ams_and_the_external_spool() -> None:
     assert _format("usage_charged", payload)[1] == (
         "The external holder had a different tagged spool by the end."
     )
+    payload["notes"] = ["some_new_note", "tag_changed_slot_0"]
+    assert _format("usage_charged", payload)[1] == (
+        "Some new note. AMS A · slot 1 had a different tagged spool by the end."
+    )
     payload["notes"] = None
     assert _format("usage_charged", payload)[1] == "—"
 
