@@ -496,23 +496,43 @@ class AssignSpool(InventoryInput):
     set_slot: bool = False
 
 
+async def _refused(
+    service: InventoryService,
+    printer_id: str,
+    body: AssignSpool,
+    label: str,
+    message: str,
+    severity: str = "warn",
+) -> None:
+    """Record a refusal the bridge made before assign() ran (stale AMS, slot rewrite)."""
+    await service.record_event(
+        printer_id,
+        "assignment_refused",
+        {"spool_id": body.spool_id, "slot_label": label, "source": body.source, "text": message},
+        severity,
+    )
+
+
 async def _set_slot_for(
     service: InventoryService, printer: Any, body: AssignSpool, request: Request
-) -> bool:
+) -> dict[str, Any] | None:
     """Make an untagged slot report the spool's material before it is assigned.
 
-    True when the slot was rewritten.
+    The Activity feed row describing the rewrite when the slot was rewritten,
+    else None.
     """
     assert body.spool_id is not None
     choice = next((c for c in source_choices(printer) if c["source"] == body.source), None)
     if choice is None or "source_empty" in choice["issues"]:
-        return False  # assign() explains a missing or empty slot
+        return None  # assign() explains a missing or empty slot
     spool = await service.provider.get_spool(body.spool_id)
     if spool.archived:
-        raise InventoryConflict(f"#{body.spool_id} is archived.")
+        raise InventoryConflict(
+            f"#{body.spool_id} is archived. Unarchive it in Spoolman or pick another spool."
+        )
     material = (spool.filament.material or "").strip().upper()
     if material == choice["material"].strip().upper():
-        return False
+        return None
     if choice["tagged"]:
         raise InventoryConflict(
             f"{choice['label']} holds an RFID spool that reads {choice['material']}; the tag "
@@ -540,7 +560,16 @@ async def _set_slot_for(
             f"The printer did not confirm {choice['label']} as {setting['tray_type']}; "
             "nothing was assigned. Check the printer, then try again."
         )
-    return True
+    return {
+        "spool_id": body.spool_id,
+        "name": spool.filament.name or "",
+        "slot_label": choice["label"],
+        "wire_slot": choice["wire_slot"],
+        "source": body.source,
+        "material": setting["tray_type"],
+        "previous_material": choice["material"].strip().upper(),
+        "color": setting["tray_color"][:6],
+    }
 
 
 @router.get("/printers/{printer_id}/usage")
@@ -616,16 +645,37 @@ async def assign_spool(
         listed = next(
             (c for c in source_choices(printer, stale_ok=True) if c["source"] == body.source), None
         )
+        label = listed["label"] if listed is not None else "A slot"
         if listed is not None and listed["stale"]:
-            raise HTTPException(
-                409,
-                f"The printer hasn't reported its AMS for {int(listed['age_seconds'] or 0)} s; "
-                "try again in a moment",
-            )
-        if body.set_slot and await _call(_set_slot_for(service, printer, body, request)):
-            # The rewrite changed the slot's chemistry, which ends its old
-            # assignment (same_spool); assign against the inventory as it is now.
-            expected_revision = (await service.assignments.snapshot()).revision
+            if "printer_disconnected" in listed["issues"]:
+                message = (
+                    "The bridge isn't connected to the printer. Check that it's on and "
+                    "online, then try again."
+                )
+            else:
+                age = int(listed["age_seconds"] or 0)
+                if age >= 7200:
+                    ago = f"{age // 3600} h"
+                else:
+                    ago = f"{age // 60} min" if age >= 120 else f"{age} s"
+                message = (
+                    f"The printer hasn't sent a slot report for {ago}; try again in a moment."
+                )
+            # Retries while the report is late are routine; they stay out of the warnings.
+            await _refused(service, printer_id, body, label, message, "info")
+            raise HTTPException(409, message)
+        if body.set_slot:
+            try:
+                rewritten = await _call(_set_slot_for(service, printer, body, request))
+            except HTTPException as exc:
+                if exc.status_code == 409:
+                    await _refused(service, printer_id, body, label, str(exc.detail))
+                raise
+            if rewritten:
+                await service.record_event(printer_id, "slot_set", rewritten)
+                # The rewrite changed the slot's chemistry, which ends its old
+                # assignment (same_spool); assign against the inventory as it is now.
+                expected_revision = (await service.assignments.snapshot()).revision
 
     def choices() -> list[dict[str, Any]]:
         return source_choices(printer) if printer is not None else []

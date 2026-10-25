@@ -79,7 +79,8 @@ class Printer:
 
 def service(material="PET-GF"):
     spool = SimpleNamespace(
-        archived=False, filament=SimpleNamespace(material=material, color_hex="000000")
+        archived=False,
+        filament=SimpleNamespace(name=f"{material} Black", material=material, color_hex="000000"),
     )
 
     async def get_spool(_spool_id):

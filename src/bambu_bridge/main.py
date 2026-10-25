@@ -272,6 +272,7 @@ def create_app(
                 )
             )
             app.state.inventory.consumption_qualified = settings.bridge_inventory_auto_deduct
+            app.state.inventory.events = EventRepo(db).add
             if settings.bridge_inventory_auto_deduct:
                 await restorer.enter_async_context(
                     delivery_worker(

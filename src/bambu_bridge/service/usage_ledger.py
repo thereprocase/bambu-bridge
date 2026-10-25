@@ -338,7 +338,8 @@ def _settle_witness(inbox: Any, row: dict[str, Any], after: ProviderSpool) -> di
         # The spool moved by something else: that edit is the truth now, and
         # `use` is relative, so the later deltas stay right.
         fields["record"] = json.dumps(after.model_dump(mode="json"))
-    log.info(
+    # A running print writes every WRITE_INTERVAL_S; the print's close logs the total.
+    log.debug(
         "inventory.usage_written",
         attempt=row["attempt_id"],
         spool=row["spool_id"],

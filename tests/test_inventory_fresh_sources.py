@@ -94,3 +94,36 @@ async def test_full_report_requests_are_spaced_and_need_a_connection(monkeypatch
     clock[0] += FULL_REPORT_INTERVAL_S
     assert await service.request_full_report() is False
     assert service.send_raw.await_count == 2
+
+
+async def test_an_unanswered_refresh_is_logged_with_what_went_out(monkeypatch) -> None:
+    service = printer(4620)
+    service.serial = "P1"
+    logged: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        inventory_sources.log, "info", lambda event, **kw: logged.append((event, kw))
+    )
+    assert await fresh_after_refresh(service, wait_s=0.05) is False
+    assert [event for event, _ in logged] == ["inventory.ams_refresh_unanswered"]
+    fields = logged[0][1]
+    assert fields["printer"] == "P1" and fields["requested"] is True
+    assert fields["reports_seen"] == 0 and fields["frame_age_s"] >= 4620
+
+
+async def test_an_answered_refresh_logs_nothing(monkeypatch) -> None:
+    service = printer(120)
+    logged: list[str] = []
+    monkeypatch.setattr(inventory_sources.log, "info", lambda event, **kw: logged.append(event))
+
+    async def reply() -> bool:
+        async def arrive() -> None:
+            await asyncio.sleep(0.02)
+            service.material_inventory.ams_at = time.time()
+            service.raw_bus.publish(Event("snapshot", {"print": {"ams": {}}}))
+
+        asyncio.get_running_loop().create_task(arrive())
+        return True
+
+    service.request_full_report.side_effect = reply
+    assert await fresh_after_refresh(service) is True
+    assert logged == []

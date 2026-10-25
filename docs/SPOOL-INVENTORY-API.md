@@ -30,9 +30,13 @@ controls. Viewer credentials do not grant inventory access.
 - `GET /spools/43`: current provider record, percentage and an over-capacity
   flag. Raw grams are never clamped.
 - `GET /products` and `/vendors`: paginated product/manufacturer search.
-- `GET /printers/{serial}/sources`: fresh physical sources. AMS sources require
+- `GET /printers/{serial}/sources`: physical sources. AMS sources require
   hardware identity, not just array position. Disconnected/empty/unidentified
-  sources are not assignable. This route does not request or alter printer data.
+  sources are not assignable. A complete AMS frame counts as fresh for 20 s;
+  between full reports an idle P1S sends deltas only. When the frame is older,
+  this route asks the printer for one full report (at most every 10 s) and
+  waits up to 5 s for it. It alters nothing. Without a reply the last known
+  slots are listed with `stale: true` and are not assignable.
   Each row carries an opaque `observed_identity` (the slot's declared material,
   product and tag, used for "last spool here" offers) and `spool_key` (its RFID
   tag, or `untagged`). An assignment ends only on physical evidence: an observed
@@ -64,12 +68,35 @@ request was sent but the reply was lost — check Spoolman before trying again;
 the bridge never retries a write on its own. Creation does not also assign a
 source.
 
-`PUT /printers/{serial}/assignment` accepts provider UUID, expected global
-revision, source, spool ID and observed physical fingerprint. It atomically
-moves the spool from its previous source. Chemistry must match the physical
-printer declaration. Use a null spool ID to remove an assignment; this remains
-possible after the printer has been deleted. Assigning does not write Spoolman
-or the printer. Revision conflicts require refresh, not silent replacement.
+`PUT /printers/{serial}/assignment` accepts source and spool ID, plus optional
+provider UUID, expected global revision and `set_slot`. It atomically moves the
+spool from its previous source. Before assigning it refreshes the slot as
+`GET /sources` does; a slot still stale returns 409 ("The printer hasn't
+reported its AMS for N s; try again in a moment"). Chemistry must match the
+printer's declaration for the slot, else 409 names both materials. With
+`set_slot: true` the bridge first rewrites an untagged slot's declaration to the
+spool's material and colour and waits for the printer to confirm it; tagged
+slots, refill-backup slots and slots in the running print are refused. Use a
+null spool ID to remove an assignment; this remains possible after the printer
+has been deleted. Without `set_slot`, assigning does not write Spoolman or the
+printer. Revision conflicts require refresh, not silent replacement.
+
+### Activity feed
+
+Spool changes are written to the printer's event feed
+(`GET /api/v1/printers/{serial}/events`), which the app's Activity tab shows:
+`spool_assigned` and `spool_unassigned` (owner changes; linking the spool a
+slot already holds writes no row), `spool_released` (the
+AMS reported the slot empty, the spool unloaded, or a different spool),
+`assignment_refused` (warn, or info while the slot report is late; the 409
+message as sent; revision conflicts and Spoolman outages are not recorded), `slot_set` (a `set_slot`
+rewrite), `usage_charged` (a print closed: grams per spool, the planned total and any
+notes such as an inferred refill) and `usage_review` (warn; a print closed with grams it could not
+charge). Tag seating and colour sync keep their `spool_adopted` and
+`slot_colour_set` rows. A failed feed write is logged and never undoes the
+change it describes. The feed and the assignments live in different databases,
+so the row is written after the change commits: a crash in between loses the
+row, never the change.
 
 ## Verification
 

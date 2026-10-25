@@ -18,6 +18,7 @@ context derived from event_type + payload so the APK renders verbatim.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -236,8 +237,161 @@ def _format(event_type: str, payload: dict[str, Any]) -> tuple[str, str, str]:
             else f"Spool #{spool} · {name} · {slot} (matched by its RFID tag)"
         )
         return (text, "—", "—")
+    if event_type in _SPOOL_RENDERERS:
+        return _SPOOL_RENDERERS[event_type](payload)
     # Catch-all
     return (event_type.replace("_", " ").title(), "—", "—")
+
+
+# --------------------------------------------------------------------------- #
+# Spool activity: which spool sits in which slot, and what each print charged
+# --------------------------------------------------------------------------- #
+
+
+def _spool(payload: dict[str, Any]) -> str:
+    spool = payload.get("spool_id")
+    return f"#{spool}" if spool is not None else "a spool"
+
+
+def _slot(payload: dict[str, Any]) -> str:
+    # Titles start with the slot; slot_label() reads "the external holder".
+    label = str(payload.get("slot_label") or "A slot")
+    return label[:1].upper() + label[1:]
+
+
+def _spool_named(payload: dict[str, Any]) -> str:
+    name = str(payload.get("name") or "").strip()
+    return _spool(payload) + (f" {name}" if name else "")
+
+
+def _grams(value: Any) -> str:
+    return f"{float(value):.1f} g" if isinstance(value, int | float) else "—"
+
+
+def _spool_assigned(payload: dict[str, Any]) -> tuple[str, str, str]:
+    # The app and the owner's scripts send the same request, so "by hand" is all
+    # the bridge can say about who made the link.
+    detail = " · ".join(
+        part
+        for part in (
+            "Linked by hand",
+            payload.get("material") or "",
+            f"moved from {payload['moved_from']}" if payload.get("moved_from") else "",
+        )
+        if part
+    )
+    return (f"{_slot(payload)}: {_spool_named(payload)} linked", detail, "—")
+
+
+def _spool_unassigned(payload: dict[str, Any]) -> tuple[str, str, str]:
+    return (f"{_slot(payload)}: {_spool(payload)} unlinked", "Unlinked by hand", "—")
+
+
+def _spool_released(payload: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        f"{_slot(payload)}: {_spool(payload)} released",
+        payload.get("reason") or "The AMS no longer holds it.",
+        "—",
+    )
+
+
+def _assignment_refused(payload: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        f"{_slot(payload)} couldn't take {_spool_named(payload)}",
+        payload.get("text") or "The bridge refused the assignment.",
+        "—",
+    )
+
+
+def _slot_set(payload: dict[str, Any]) -> tuple[str, str, str]:
+    material = payload.get("material") or "?"
+    before = payload.get("previous_material")
+    detail = f"Was {before}" if before else "—"
+    return (f"{_slot(payload)} set to {material} for {_spool_named(payload)}", detail, "—")
+
+
+def _charges(payload: dict[str, Any]) -> str:
+    charged = payload.get("charged") or []
+    parts = [
+        f"#{c.get('spool_id')} −{_grams(c.get('grams'))}"
+        for c in charged
+        if isinstance(c, dict)
+    ]
+    return ", ".join(parts) or "nothing charged"
+
+
+def _wire_label(wire: int) -> str:
+    """'AMS A · slot 2' for a wire slot, as slot_label() names an assignment."""
+    if wire >= 254:
+        return "the external holder"
+    return f"AMS {chr(ord('A') + wire // 4)} · slot {wire % 4 + 1}"
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _close_note(note: str) -> str:
+    """A note the bridge kept on a charged print, in words (see deliver_once).
+
+    Refill notes number slots from 1; tag notes carry the wire slot.
+    """
+    if m := re.fullmatch(r"refill_inferred_slot_(\d+)_to_(\d+)", note):
+        ran_out, took_over = _wire_label(int(m[1]) - 1), _wire_label(int(m[2]) - 1)
+        unit = ran_out.split(" · ")[0]
+        if took_over.startswith(f"{unit} · "):
+            took_over = took_over.removeprefix(f"{unit} · ")  # "AMS A · slot 1 … and slot 3"
+        return _sentence(f"{ran_out} ran out and {took_over} finished the print.")
+    if m := re.fullmatch(r"tag_changed_slot_(\d+)", note):
+        return _sentence(f"{_wire_label(int(m[1]))} had a different tagged spool by the end.")
+    if note.startswith("over_charged_"):
+        return "Spoolman was charged more than the print used; check the spool's weight."
+    return note.replace("_", " ").capitalize() + "."
+
+
+def _usage_charged(payload: dict[str, Any]) -> tuple[str, str, str]:
+    title = payload.get("title") or "Print"
+    planned = payload.get("planned_g")
+    # Sentences: slot names already use "·".
+    parts = [f"Planned {_grams(planned)}." if planned is not None else ""]
+    parts += [_close_note(str(n)) for n in payload.get("notes") or []]
+    return (f"{title}: {_charges(payload)}", " ".join(p for p in parts if p) or "—", "—")
+
+
+_UNTRACED = "The bridge couldn't tell which spool fed part of it."
+_REVIEW_REASONS = {
+    "unassigned_slot": "A slot it used had no spool linked.",
+    "spool_archived": "A spool it used is archived in Spoolman.",
+    "spool_missing": "A spool it used is missing from Spoolman.",
+    "spool_empty": "A spool it used was already empty.",
+    "unmapped_filament": _UNTRACED,
+    "unweighed_filament": _UNTRACED,
+    "no_layer_plan": _UNTRACED,
+    "manifest_predates_layer_plan": _UNTRACED,
+    "delivery_error": "Spoolman didn't confirm the charge.",
+}
+
+
+def _usage_review(payload: dict[str, Any]) -> tuple[str, str, str]:
+    title = payload.get("title") or "Print"
+    reason = _REVIEW_REASONS.get(str(payload.get("reason") or ""), "Some filament wasn't charged.")
+    charged = f"Charged so far: {_charges(payload)}" if payload.get("charged") else ""
+    return (
+        f"{title}: charge needs review",
+        f"{reason} Charge or skip it on the Filament tab.",
+        charged or "Nothing charged yet.",
+    )
+
+
+_SPOOL_RENDERERS = {
+    "spool_assigned": _spool_assigned,
+    "spool_unassigned": _spool_unassigned,
+    "spool_released": _spool_released,
+    "assignment_refused": _assignment_refused,
+    "slot_set": _slot_set,
+    "usage_charged": _usage_charged,
+    "usage_review": _usage_review,
+}
 
 
 def _layer_context(payload: dict[str, Any]) -> str:

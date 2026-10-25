@@ -311,8 +311,16 @@ async def test_an_inferred_switch_is_charged_and_the_print_is_flagged(tmp_path, 
     at_layer(inbox, attempt, 100, "completed")
     device = printer()
     device.auto_refill = history
+    rows = []
+
+    async def feed(**row):
+        rows.append(row)
+
+    service.events = feed
     try:
         await tick(service, inbox, device)
+        # The Activity row names the inferred refill too.
+        assert [row["payload"]["notes"] for row in rows] == [["refill_inferred_slot_3_to_4"]]
         slot3, slot4 = provider.spools[43]["used_weight"], provider.spools[44]["used_weight"]
         assert slot3 + slot4 == pytest.approx(PLANNED, abs=0.01)
         assert slot3 == pytest.approx(

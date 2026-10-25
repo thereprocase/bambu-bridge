@@ -138,7 +138,7 @@ async def test_assignment_is_decided_by_the_bridge_at_commit_time(tmp_path) -> N
     [
         ("empty", "as empty"),
         ("material", "reports PETG"),
-        ("disconnected", "cannot be assigned"),
+        ("disconnected", "isn't connected to the printer. Check that the printer is on"),
     ],
 )
 async def test_assignment_refusals_say_what_to_do(tmp_path, change, message) -> None:
