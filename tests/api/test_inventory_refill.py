@@ -790,3 +790,19 @@ def test_an_unconfirmed_backup_removed_while_away_is_a_warning(tmp_path, monkeyp
     assert row["payload"]["state"] == body["state"] == "needs_attention"
     assert row["severity"] == "warn"
     assert _format("backup_removed", row["payload"])[1].startswith("A slot couldn't be put back")
+
+
+def test_a_removal_refused_before_it_was_stored_writes_no_row(tmp_path, monkeypatch):
+    with inventory_app(tmp_path) as (client, _):
+        backup_fixture(client, monkeypatch)
+        client.put(BACKUP, json={"from_wire": 0, "to_wire": 1}, headers=AUTH)
+        feed = feed_of(client)
+        controller = client.app.state.inventory.refill
+
+        def refused(*_args, **_kwargs):
+            raise ValueError("wait for the current alias readback before disabling")
+
+        monkeypatch.setattr(controller, "disable", refused)
+        response = client.delete(BACKUP + "/0", headers=AUTH)
+    assert response.status_code == 409
+    assert feed == []
