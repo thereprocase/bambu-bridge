@@ -3,6 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Text } from "react-native";
 
 import * as api from "../../api/inventory";
+import { BridgeError } from "../../api/errors";
 import { Button } from "../../components/Button";
 import { useLiveStore } from "../../store/live";
 import { usePrintersStore } from "../../store/printers";
@@ -10,6 +11,7 @@ import { usePrintersStore } from "../../store/printers";
 jest.setTimeout(20_000);
 
 const mockPush = jest.fn();
+const mockToast = jest.fn();
 jest.mock("expo-router", () => ({
   useRouter: () => ({ push: mockPush }),
   useFocusEffect: (callback: () => void) => jest.requireActual("react").useEffect(callback, [callback]),
@@ -33,13 +35,13 @@ jest.mock("../../lib/kv", () => {
 });
 jest.mock("../../lib/qalog", () => ({ qaLog: jest.fn() }));
 jest.mock("../../ws/live", () => ({ LiveConnection: jest.fn(), applyDelta: jest.fn() }));
-jest.mock("../../components/Toast", () => ({ useToastStore: () => jest.fn() }));
+jest.mock("../../components/Toast", () => ({ useToastStore: (pick: any) => pick({ show: mockToast }) }));
 jest.mock("../../components/NeedsYouCard", () => ({ NeedsYouCard: () => null }));
 jest.mock("../../components/RecentPrints", () => ({ RecentPrints: () => null }));
 jest.mock("../../api/control", () => ({ amsChange: jest.fn(), amsRfidRead: jest.fn(), unloadFilament: jest.fn() }));
 jest.mock("../../api/inventory", () => ({
   inventoryStatus: jest.fn(), inventorySources: jest.fn(), inventorySpools: jest.fn(),
-  inventoryAccounting: jest.fn(), refillStatus: jest.fn(), archiveSpool: jest.fn(),
+  inventoryAccounting: jest.fn(), refillStatus: jest.fn(), archiveSpool: jest.fn(), inventoryAssign: jest.fn(),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -53,7 +55,7 @@ const source = (wire: number, last: number | null = null): api.InventorySource =
   observed_identity: "a".repeat(64), observed_at: 1, assignable: true, issues: [], tagged: false, last_spool_id: last,
 });
 const spool = (id: number, over: Partial<api.InventorySpool> = {}): api.InventorySpool => ({
-  id, archived: false, remaining_weight: 120 + id, initial_weight: 1000, spool_weight: null,
+  id, archived: false, remaining_weight: 620 + id, initial_weight: 1000, spool_weight: null,
   filament: { id, name: `PETG Colour ${id}`, vendor: { id: 1, name: "Bambu", empty_spool_weight: null }, material: "PETG", color_hex: "1A1A1A", weight: 1000, spool_weight: null, density: null, diameter: 1.75 },
   ...over,
 });
@@ -66,7 +68,10 @@ async function mount() { await act(async () => { tree = create(<FilamentScreen /
 const texts = () => tree.root.findAllByType(Text).map((n) => String(Array.isArray(n.props.children) ? n.props.children.join("") : n.props.children));
 const buttons = () => tree.root.findAllByType(Button).map((n) => n.props.label as string);
 const button = (label: string) => tree.root.findAllByType(Button).find((n) => n.props.label === label)!;
-const shelfRows = () => tree.root.findAll((n) => typeof n.props.onPress === "function" && / weigh or archive$/.test(String(n.props.accessibilityLabel ?? "")));
+// Stored rows' labels start with the spool number; slot rows' with "Slot".
+const shelfRows = () => tree.root.findAll((n) => typeof n.props.onPress === "function" && /^#\d+ .*, (open|close) actions$/.test(String(n.props.accessibilityLabel ?? "")));
+const shelfRow = (id: number) => shelfRows().find((n) => String(n.props.accessibilityLabel).startsWith(`#${id} `))!;
+const shelfLabels = () => shelfRows().map((n) => String(n.props.accessibilityLabel).replace(/, open actions$/, ""));
 async function press(node: any) { await act(async () => { await node.props.onPress(); }); }
 
 beforeEach(() => {
@@ -86,22 +91,98 @@ beforeEach(() => {
   mocked.inventoryAccounting.mockResolvedValue({ attempts: [] });
   mocked.refillStatus.mockResolvedValue({ backups: [], printer_auto_refill: true, printer_connected: true });
   mocked.archiveSpool.mockResolvedValue(spool(8, { archived: true }));
+  mocked.inventoryAssign.mockResolvedValue({ provider_id: "prov", revision: 2, assignments: [] });
 });
 
 describe("Off the AMS", () => {
-  it("lists the unarchived spools in no slot, with number, product and grams", async () => {
+  const pla = (id: number, remaining: number | null, name = `PLA Colour ${id}`) =>
+    spool(id, { remaining_weight: remaining, filament: { ...spool(id).filament, name, material: "PLA" } });
+
+  it("lists the unarchived spools in no slot by material, with number, product and grams", async () => {
+    mocked.inventorySpools.mockResolvedValue([spool(1), spool(8), pla(21, 640), spool(3), spool(4, { archived: true }), pla(22, 150, "PLA Colour 21")]);
     await mount();
     expect(texts()).toContain("Off the AMS");
-    expect(shelfRows().map((n) => n.props.accessibilityLabel)).toEqual([
-      "#8 · Bambu PETG Colour 8, 128 g left, weigh or archive",
-      "#3 · Bambu PETG Colour 3, 123 g left, weigh or archive",
+    expect(texts()).toContain("4 spools · 2,041 g");
+    expect(texts()).toEqual(expect.arrayContaining(["PETG · 2", "PLA · 2"]));
+    expect(shelfLabels()).toEqual([
+      "#3 · Bambu PETG Colour 3, 623 g left",
+      "#8 · Bambu PETG Colour 8, 628 g left",
+      "#21 · Bambu PLA Colour 21, 640 g left",
+      "#22 · Bambu PLA Colour 21, 150 g left",
     ]);
+  });
+
+  it("says a spool is running low, like the slot rows do under 15 %", async () => {
+    mocked.inventorySpools.mockResolvedValue([spool(1), spool(8, { remaining_weight: 97 }), spool(3, { remaining_weight: null })]);
+    await mount();
+    expect(shelfLabels()).toEqual(["#3 · Bambu PETG Colour 3, weight unknown", "#8 · Bambu PETG Colour 8, 97 g left, running low"]);
+    expect(texts()).toContain("97 g left · running low");
+    expect(texts()).toContain("2 spools");
+  });
+
+  it("opens a drawer with the slots the spool can go into, and weigh or archive", async () => {
+    // Slot 1 holds #1 (PETG); slot 2 has PETG and no spool; slot 3 is PLA, untagged; slot 4 is tagged PLA.
+    mocked.inventorySources.mockResolvedValue([source(0), source(1), { ...source(2), material: "PLA" }, { ...source(3), material: "PLA", tagged: true }]);
+    await mount();
+    expect(buttons()).not.toContain("Weigh or archive");
+    await press(shelfRow(8));
+    expect(buttons()).toEqual(expect.arrayContaining([
+      "Into slot 1 · replaces #1",
+      "Into slot 2 · no spool there yet",
+      "Into slot 3 · sets it from PLA",
+      "Weigh or archive",
+    ]));
+    expect(buttons()).not.toContain(expect.stringContaining("slot 4"));
+    expect(shelfRow(8).props.accessibilityLabel).toMatch(/close actions$/);
   });
 
   it("opens the weigh-or-archive sheet without a slot, so it never unassigns one", async () => {
     await mount();
-    await press(shelfRows()[0]);
+    await press(shelfRow(8));
+    await press(button("Weigh or archive"));
     expect(mockPush).toHaveBeenCalledWith({ pathname: "/spool", params: { id: "8" } });
+  });
+
+  it("assigns the spool to the tapped slot with the slot's identity, tells the owner, and refreshes", async () => {
+    await mount();
+    await press(shelfRow(8));
+    const calls = mocked.inventoryStatus.mock.calls.length;
+    await press(button("Into slot 2 · no spool there yet"));
+    expect(mocked.inventoryAssign).toHaveBeenCalledWith("P1", { source: "ams:abc:tray:1", spool_id: 8, observed_identity: "a".repeat(64) });
+    expect(mockToast).toHaveBeenCalledWith("#8 · Bambu PETG Colour 8 in slot 2", { severity: "success" });
+    expect(mocked.inventoryStatus.mock.calls.length).toBeGreaterThan(calls);
+    expect(buttons()).not.toContain("Weigh or archive"); // the drawer closed
+  });
+
+  it("sets an untagged slot to the spool's material first", async () => {
+    mocked.inventorySources.mockResolvedValue([source(0), { ...source(1), material: "PLA" }]);
+    await mount();
+    await press(shelfRow(8));
+    await press(button("Into slot 2 · sets it from PLA"));
+    expect(mocked.inventoryAssign).toHaveBeenCalledWith("P1", { source: "ams:abc:tray:1", spool_id: 8, observed_identity: "a".repeat(64), set_slot: true });
+  });
+
+  it("shows the bridge's refusal and keeps the drawer open", async () => {
+    mocked.inventoryAssign.mockRejectedValue(new BridgeError({ message: "Slot 2 changed since you looked. Refresh and try again." } as any, 409));
+    await mount();
+    await press(shelfRow(8));
+    await press(button("Into slot 2 · no spool there yet"));
+    expect(mockToast).toHaveBeenCalledWith("Slot 2 changed since you looked. Refresh and try again.", { severity: "danger" });
+    expect(buttons()).toContain("Weigh or archive");
+  });
+
+  it("says so when no slot can take the spool", async () => {
+    mocked.inventorySources.mockResolvedValue([source(0), { ...source(1), issues: ["source_empty"] }]);
+    mocked.inventorySpools.mockResolvedValue([spool(1), pla(21, 640)]);
+    await mount();
+    await press(shelfRows()[0]);
+    expect(buttons()).toContain("Into slot 1 · replaces #1"); // slot 1 is untagged PETG: offered with set_slot
+    mocked.inventorySources.mockResolvedValue([{ ...source(0), tagged: true }, { ...source(1), issues: ["source_empty"] }]);
+    await act(async () => { tree.unmount(); });
+    await mount();
+    await press(shelfRows()[0]);
+    expect(buttons().filter((b) => b.startsWith("Into "))).toEqual([]);
+    expect(texts()).toContain("No slot can take it right now. Put it in a slot; that row then offers to assign it.");
   });
 
   it("reads every page, so a spool past the first hundred is listed too", async () => {
@@ -111,7 +192,7 @@ describe("Off the AMS", () => {
     await mount();
     expect(mocked.inventorySpools).toHaveBeenCalledWith("", 0, undefined, 100);
     expect(mocked.inventorySpools).toHaveBeenCalledWith("", 100, undefined, 100);
-    expect(shelfRows().map((n) => n.props.accessibilityLabel)).toEqual(["#8 · Bambu PETG Colour 8, 128 g left, weigh or archive"]);
+    expect(shelfLabels()).toEqual(["#8 · Bambu PETG Colour 8, 628 g left"]);
   });
 
   it("is hidden when every unarchived spool sits in a slot", async () => {
@@ -150,7 +231,7 @@ describe("a spool that came out of a slot", () => {
     await act(async () => { tree.unmount(); });
     await mount();
     expect(texts()).not.toContain("#8 · Bambu PETG Colour 8 came out of this slot");
-    expect(shelfRows().map((n) => n.props.accessibilityLabel)).toContain("#8 · Bambu PETG Colour 8, 128 g left, weigh or archive");
+    expect(shelfLabels()).toContain("#8 · Bambu PETG Colour 8, 628 g left");
   });
 
   it("asks again once the spool has been back in a slot", async () => {
