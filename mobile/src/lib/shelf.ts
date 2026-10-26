@@ -11,7 +11,7 @@
 
 import type { InventorySpool, InventoryStatus } from "../api/inventory";
 import { kv } from "./kv";
-import type { SlotView } from "./slotInventory";
+import { sameMaterial, staleLine, type SlotView } from "./slotInventory";
 
 const KV_SHELVED = "filament.shelved";
 const KV_SEEN = "filament.seen";
@@ -45,6 +45,90 @@ function seatedIds(status: InventoryStatus | null): Set<number> {
 export function offAmsSpools(spools: InventorySpool[], status: InventoryStatus | null): InventorySpool[] {
   const seated = seatedIds(status);
   return spools.filter((s) => !s.archived && !seated.has(s.id));
+}
+
+/** One material's stored spools, for the browser's grouped list. */
+export interface StoredGroup {
+  /** "PLA", "PETG", …; "Other" for spools whose product names no material. */
+  material: string;
+  spools: InventorySpool[];
+}
+
+const UNGROUPED = "Other";
+
+/**
+ * The stored spools by material, alphabetical with "Other" last. Inside a
+ * group the same product's spools sit together (vendor then name), fullest
+ * first, and spools of unknown weight close the group. The owner reads the
+ * shelf by material ("which PLA do I have"), and two spools of one product
+ * differ only by what is left on them.
+ */
+export function storedGroups(spools: InventorySpool[]): StoredGroup[] {
+  const byMaterial = new Map<string, InventorySpool[]>();
+  for (const spool of spools) {
+    const material = (spool.filament.material ?? "").trim().toUpperCase() || UNGROUPED;
+    byMaterial.set(material, [...(byMaterial.get(material) ?? []), spool]);
+  }
+  const product = (s: InventorySpool) => `${s.filament.vendor?.name ?? ""} ${s.filament.name ?? ""}`.trim().toLowerCase();
+  const grams = (s: InventorySpool) => (s.remaining_weight == null ? -1 : s.remaining_weight);
+  return [...byMaterial.keys()]
+    .sort((a, b) => (a === UNGROUPED ? 1 : b === UNGROUPED ? -1 : a.localeCompare(b)))
+    .map((material) => ({
+      material,
+      spools: [...byMaterial.get(material)!].sort(
+        (a, b) => product(a).localeCompare(product(b)) || grams(b) - grams(a) || a.id - b.id,
+      ),
+    }));
+}
+
+/** "8 spools · 3,105 g" for the browser's header; grams only when every spool has a weight. */
+export function storedSummary(spools: InventorySpool[]): string {
+  const count = `${spools.length} ${spools.length === 1 ? "spool" : "spools"}`;
+  if (spools.length === 0 || spools.some((s) => s.remaining_weight == null)) return count;
+  const total = Math.round(spools.reduce((sum, s) => sum + (s.remaining_weight ?? 0), 0));
+  return `${count} · ${total.toLocaleString("en-US")} g`;
+}
+
+/** The slot rows show a warn-tone bar under this; the stored rows read the same line. */
+export const LOW_PERCENT = 15;
+
+/**
+ * Remaining filament as a percent of the package weight, for a stored row's
+ * bar: Spoolman's figure, else remaining over initial or package weight. Null
+ * when the spool has no weight to show.
+ */
+export function storedPercent(spool: InventorySpool): number | null {
+  if (spool.remaining_percent != null) return Math.max(0, Math.min(100, spool.remaining_percent));
+  const full = spool.initial_weight ?? spool.filament.weight;
+  if (spool.remaining_weight != null && full && full > 0) return Math.max(0, Math.min(100, Math.round((spool.remaining_weight / full) * 100)));
+  return null;
+}
+
+/** Where a stored spool can go now, and whether the slot must be set to its material first. */
+export interface SlotOffer {
+  view: SlotView;
+  /** The slot is untagged and reports another material; the bridge writes the spool's before assigning. */
+  setSlot: boolean;
+}
+
+/**
+ * The slots this spool can be assigned to from the shelf: the printer reports
+ * a spool in them, the report is fresh, and the material agrees or the slot
+ * is untagged (then the bridge sets the slot's material). A tagged slot of
+ * another material is left out: the tag decides that slot's material, and the
+ * bridge would refuse. In wire order, the external holder last.
+ */
+export function slotsFor(spool: InventorySpool, views: SlotView[]): SlotOffer[] {
+  const offers: SlotOffer[] = [];
+  for (const view of views) {
+    const source = view.source;
+    if (source.issues.includes("source_empty") || staleLine(source) || source.tag_reading) continue;
+    if (view.assignment?.spool_id === spool.id) continue;
+    const same = sameMaterial(spool, source);
+    if (!same && (source.tagged || !spool.filament.material)) continue;
+    offers.push({ view, setSlot: !same });
+  }
+  return offers;
 }
 
 export function shelfKey(printerId: string, source: string, spoolId: number): string {

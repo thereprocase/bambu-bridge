@@ -1,5 +1,5 @@
 import type { InventorySource, InventorySpool, InventoryStatus } from "../../api/inventory";
-import { answered, cameOutOf, everySpool, offAmsSpools, pruneShelved, readMemory, readShelved, remember, shelfKey, spoolColor, writeMemory, writeShelved } from "../shelf";
+import { answered, cameOutOf, everySpool, offAmsSpools, pruneShelved, readMemory, readShelved, remember, shelfKey, slotsFor, spoolColor, storedGroups, storedPercent, storedSummary, writeMemory, writeShelved } from "../shelf";
 import type { SlotView } from "../slotInventory";
 
 const mockStore: Record<string, string> = {};
@@ -134,5 +134,81 @@ describe("slot memory", () => {
     expect(readMemory()).toEqual({ a: { seen: null, out: 3 } });
     mockStore["filament.seen"] = "[";
     expect(readMemory()).toEqual({});
+  });
+});
+
+describe("the stored browser", () => {
+  const product = (id: number, vendor: string, name: string, material: string | null, remaining: number | null, over: Partial<InventorySpool> = {}) =>
+    spool(id, {
+      remaining_weight: remaining,
+      filament: { id, name, vendor: vendor ? { id: 1, name: vendor, empty_spool_weight: null } : null, material, color_hex: "1a2b3c", weight: 1000, spool_weight: null, density: null, diameter: 1.75 },
+      ...over,
+    });
+  // Today's shelf: two Galaxy Blacks, a near-empty one among them, three PolyTerras, a PC, and one with no material.
+  const shelf = [
+    product(7, "Polymaker", "PETG Galaxy Black", "PETG", 97),
+    product(14, "Polymaker", "PETG Galaxy Black", "PETG", 886),
+    product(9, "Elegoo", "Rapid PETG Grey", "petg", 830),
+    product(15, "Polymaker", "PolyTerra PLA Army Red", "PLA", 154),
+    product(17, "Polymaker", "Panchroma PLA Black", "PLA", 675),
+    product(16, "Polymaker", "PolyTerra PLA+ Black", "PLA", null),
+    product(6, "Polymaker", "PolyLite PC Transparent", "PC", 845),
+    product(30, "", "Mystery", null, 500),
+  ];
+
+  it("groups by material alphabetically with no-material last, one product's spools together fullest first, unknown weight closing the group", () => {
+    expect(storedGroups(shelf).map((g) => [g.material, g.spools.map((s) => s.id)])).toEqual([
+      ["PC", [6]],
+      ["PETG", [9, 14, 7]],
+      ["PLA", [17, 15, 16]],
+      ["Other", [30]],
+    ]);
+    expect(storedGroups([])).toEqual([]);
+  });
+
+  it("sums the header only when every spool has a weight", () => {
+    expect(storedSummary(shelf.filter((s) => s.id !== 16))).toBe("7 spools · 3,987 g");
+    expect(storedSummary(shelf)).toBe("8 spools");
+    expect(storedSummary([shelf[0]])).toBe("1 spool · 97 g");
+    expect(storedSummary([])).toBe("0 spools");
+  });
+
+  it("reads the bar from Spoolman's percent, else remaining over the initial or package weight", () => {
+    expect(storedPercent(product(7, "P", "x", "PETG", 97))).toBe(10);
+    expect(storedPercent(product(7, "P", "x", "PETG", 97, { remaining_percent: 12 }))).toBe(12);
+    expect(storedPercent(product(7, "P", "x", "PETG", 250, { initial_weight: 500 }))).toBe(50);
+    expect(storedPercent(product(7, "P", "x", "PETG", 1200))).toBe(100);
+    expect(storedPercent(product(7, "P", "x", "PETG", null))).toBeNull();
+  });
+
+  describe("slotsFor", () => {
+    const slot = (wire: number, over: Partial<InventorySource> = {}, assigned: number | null = null): SlotView => {
+      const source: InventorySource = {
+        printer_id: "P1", source: `ams:abc:tray:${wire}`, wire_slot: wire, label: `AMS A · slot ${wire + 1}`, material: "PETG", color: "FF0000FF",
+        observed_identity: "a".repeat(64), observed_at: 1, assignable: true, issues: [], tagged: false, ...over,
+      };
+      return { source, assignment: assigned == null ? null : { printer_id: "P1", source: source.source, spool_id: assigned, assigned_at: 1, observed_identity: null, wire_slot: wire }, spool: null };
+    };
+    const pla = product(15, "Polymaker", "PolyTerra PLA Army Red", "PLA", 154);
+
+    it("offers same-material slots as they are, and untagged slots of another material with the slot set first", () => {
+      const views = [slot(0, { material: "PLA" }), slot(1), slot(2, { material: "PLA" }, 12), slot(3, { tagged: true })];
+      expect(slotsFor(pla, views).map((o) => [o.view.source.wire_slot, o.setSlot])).toEqual([[0, false], [1, true], [2, false]]);
+    });
+
+    it("skips empty, stale and still-reading slots, and the one holding this spool", () => {
+      const views = [
+        slot(0, { material: "PLA", issues: ["source_empty"] }),
+        slot(1, { material: "PLA", stale: true, age_seconds: 200 }),
+        slot(2, { material: "PLA", tag_reading: true }),
+        slot(3, { material: "PLA" }, 15),
+      ];
+      expect(slotsFor(pla, views)).toEqual([]);
+    });
+
+    it("offers a spool with no material nowhere, even to a slot whose material is blank", () => {
+      const mystery = product(30, "", "Mystery", null, 500);
+      expect(slotsFor(mystery, [slot(0), slot(1, { material: "" })])).toEqual([]);
+    });
   });
 });
