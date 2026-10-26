@@ -43,6 +43,7 @@ import { Button } from "../../src/components/Button";
 import { NeedsYouCard } from "../../src/components/NeedsYouCard";
 import { ProgressBar } from "../../src/components/ProgressBar";
 import { RecentPrints } from "../../src/components/RecentPrints";
+import { SpoolRow } from "../../src/components/SpoolRow";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
 import {
@@ -64,7 +65,6 @@ import {
   answered,
   cameOutOf,
   everySpool,
-  LOW_PERCENT,
   offAmsSpools,
   pruneShelved,
   readMemory,
@@ -72,9 +72,7 @@ import {
   remember,
   shelfKey,
   slotsFor,
-  spoolColor,
   storedGroups,
-  storedPercent,
   storedSummary,
   writeMemory,
   writeShelved,
@@ -97,8 +95,6 @@ import { useTheme } from "../../src/theme/ThemeProvider";
  */
 const SWATCH = 32;
 const CHEVRON_W = 16;
-/** Stored rows are denser than slot rows; the swatch still has to tell two dark greys apart. */
-const STORED_SWATCH = 24;
 
 export default function FilamentScreen() {
   const { c, space, type } = useTheme();
@@ -708,68 +704,41 @@ export default function FilamentScreen() {
               </Text>
               {group.spools.map((spool, index) => {
                 const open = openStored === spool.id;
-                const percent = storedPercent(spool);
-                const low = percent != null && percent < LOW_PERCENT;
-                const grams = gramsLeft(spool);
                 const offers = open ? slotsFor(spool, views) : [];
                 return (
-                  <View
+                  <SpoolRow
                     key={spool.id}
+                    spool={spool}
+                    expandable
+                    open={open}
+                    onPress={() => { setOpenStored(open ? null : spool.id); setOpenWire(null); }}
                     style={{ borderTopWidth: index ? 1 : 0, borderTopColor: c.borderSoft, paddingTop: index ? space.sm : 0 }}
                   >
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${spoolLabel(spool)}, ${grams}${low ? ", running low" : ""}, ${open ? "close" : "open"} actions`}
-                      accessibilityState={{ expanded: open }}
-                      onPress={() => { setOpenStored(open ? null : spool.id); setOpenWire(null); }}
-                      style={{ flexDirection: "row", alignItems: "flex-start", gap: space.md }}
-                    >
-                      <View
-                        style={{
-                          width: STORED_SWATCH, height: STORED_SWATCH, borderRadius: STORED_SWATCH / 2, marginTop: 1,
-                          backgroundColor: spoolColor(spool) ?? c.surface3, borderWidth: 1, borderColor: c.border,
-                        }}
+                    {offers.map((offer) => (
+                      <Button
+                        key={offer.view.source.source}
+                        label={offerLabel(offer)}
+                        variant="secondary"
+                        size="small"
+                        disabled={assigningId != null}
+                        loading={assigningId === spool.id}
+                        onPress={() => void assignStored(spool, offer)}
                       />
-                      <View style={{ flex: 1, gap: 2 }}>
-                        <Text style={[type.body, { color: c.text }]} numberOfLines={1}>{spoolLabel(spool)}</Text>
-                        <Text style={[type.small, { color: low ? c.warn : c.muted }]} numberOfLines={1}>
-                          {low ? `${grams} · running low` : grams}
-                        </Text>
-                        {percent != null && <ProgressBar value={percent} tone={low ? "warn" : "accent"} />}
-                      </View>
-                      <View style={{ width: CHEVRON_W, alignItems: "center", paddingTop: space.xs }}>
-                        <Ionicons name={open ? "chevron-up" : "chevron-down"} size={CHEVRON_W} color={c.muted} />
-                      </View>
-                    </Pressable>
-                    {open && (
-                      <View style={{ marginLeft: STORED_SWATCH + space.md, marginTop: space.sm, gap: space.xs, alignItems: "flex-start" }}>
-                        {offers.map((offer) => (
-                          <Button
-                            key={offer.view.source.source}
-                            label={offerLabel(offer)}
-                            variant="secondary"
-                            size="small"
-                            disabled={assigningId != null}
-                            loading={assigningId === spool.id}
-                            onPress={() => void assignStored(spool, offer)}
-                          />
-                        ))}
-                        {offers.length === 0 && (
-                          <Text style={[type.small, { color: c.muted }]}>
-                            No slot can take it right now. Put it in a slot; that row then offers to assign it.
-                          </Text>
-                        )}
-                        <Button
-                          label="Weigh or archive"
-                          variant="secondary"
-                          size="small"
-                          disabled={assigningId != null}
-                          // Opened without a printer or source: the sheet weighs or archives and leaves every slot alone.
-                          onPress={() => router.push({ pathname: "/spool", params: { id: String(spool.id) } })}
-                        />
-                      </View>
+                    ))}
+                    {offers.length === 0 && (
+                      <Text style={[type.small, { color: c.muted }]}>
+                        No slot can take it right now. Put it in a slot; that row then offers to assign it.
+                      </Text>
                     )}
-                  </View>
+                    <Button
+                      label="Weigh or archive"
+                      variant="secondary"
+                      size="small"
+                      disabled={assigningId != null}
+                      // Opened without a printer or source: the sheet weighs or archives and leaves every slot alone.
+                      onPress={() => router.push({ pathname: "/spool", params: { id: String(spool.id) } })}
+                    />
+                  </SpoolRow>
                 );
               })}
             </View>
