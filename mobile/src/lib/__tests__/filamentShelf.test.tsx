@@ -116,7 +116,7 @@ describe("Off the AMS", () => {
     mocked.inventorySpools.mockResolvedValue([spool(1), spool(8, { remaining_weight: 97 }), spool(3, { remaining_weight: null })]);
     await mount();
     expect(shelfLabels()).toEqual(["#3 · Bambu PETG Colour 3, weight unknown", "#8 · Bambu PETG Colour 8, 97 g left, running low"]);
-    expect(texts()).toContain("97 g left · running low");
+    expect(texts()).toContain("running low · 97 g left");
     expect(texts()).toContain("2 spools");
   });
 

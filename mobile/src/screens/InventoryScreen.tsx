@@ -268,8 +268,8 @@ export default function InventoryScreen() {
         </Surface>
       )}
 
-      {/* Summary */}
-      {status && (
+      {/* Summary; while the list couldn't be read there is nothing to sum. */}
+      {status && !(error && spools.length === 0) && (
         <Surface padded style={{ gap: space.md }}>
           <View style={{ flexDirection: "row", alignItems: "baseline", gap: space.sm }}>
             <Text style={[type.display, { color: c.text }]}>{summary.count}</Text>

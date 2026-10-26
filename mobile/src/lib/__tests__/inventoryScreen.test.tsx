@@ -130,7 +130,7 @@ describe("the list", () => {
     await press(chip("Sort: Left"));
     expect(rowLabels().map((l) => l.slice(0, 3))).toEqual(["#7 ", "#15", "#9 ", "#6 ", "#14"]);
     expect(texts()).not.toContain("PETG · 3");
-    expect(texts()).toContain("97 g of 1,000 g · PETG · lot A7533841419 · running low");
+    expect(texts()).toContain("running low · 97 g of 1,000 g · PETG · lot A7533841419");
     await press(chip("Sort: Colour"));
     expect(rowLabels()[0]).toMatch(/^#15 /); // the red leads
     await press(chip("Sort: Recent"));
@@ -207,6 +207,7 @@ describe("when Spoolman is not there", () => {
     mocked.inventorySpools.mockRejectedValue(new BridgeError({ message: "Spoolman: timeout" } as any, 503));
     await mount();
     expect(texts()).toContain("Spoolman didn't answer. Try again.");
+    expect(texts()).not.toContain("spools"); // no summary over an empty, failed list
     mocked.inventorySpools.mockResolvedValue(shelf);
     await press(button("Try again"));
     expect(texts()).not.toContain("Spoolman didn't answer. Try again.");

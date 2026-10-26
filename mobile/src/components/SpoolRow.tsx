@@ -74,7 +74,7 @@ export function SpoolRow({ spool, detail, ring, badge, swatchSize = SPOOL_ROW_SW
             )}
           </View>
           <Text style={[type.small, { color: low ? c.warn : c.muted }]} numberOfLines={1}>
-            {low ? `${line} · running low` : line}
+            {low ? `running low · ${line}` : line}
           </Text>
           {percent != null && !spool.archived && <ProgressBar value={percent} tone={low ? "warn" : "accent"} />}
         </View>
