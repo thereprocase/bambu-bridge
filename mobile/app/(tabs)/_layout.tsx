@@ -1,7 +1,7 @@
 /**
- * Bottom tabs. Six per the design (Status / Print / Files / Controls /
- * Filament / Activity); Settings sits at the top-right of each tab as
- * a gear icon → /settings modal.
+ * Bottom tabs: Status / Print / Controls / Filament / Inventory / Activity /
+ * Advanced; Settings sits at the top-right of each tab as a gear icon →
+ * /settings modal.
  *
  * We trigger a printers.refresh + WS connection here on mount so the
  * tabs all read from the same live store without each one having to
@@ -125,6 +125,13 @@ export default function TabsLayout() {
           title: "Filament",
           tabBarBadge: reviewCount > 0 ? reviewCount : undefined,
           tabBarIcon: ({ color }) => <Ionicons name="layers-outline" color={color} size={22} />,
+        }}
+      />
+      <Tabs.Screen
+        name="inventory"
+        options={{
+          title: "Inventory",
+          tabBarIcon: ({ color }) => <Ionicons name="cube-outline" color={color} size={22} />,
         }}
       />
       <Tabs.Screen
