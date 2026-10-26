@@ -37,10 +37,13 @@ import { BridgeError } from "../src/api/errors";
 import { Button } from "../src/components/Button";
 import { Field } from "../src/components/Field";
 import { PartPicture } from "../src/components/PartPicture";
+import { SpoolRecord } from "../src/components/SpoolRecord";
 import { Surface } from "../src/components/Surface";
 import { useToastStore } from "../src/components/Toast";
 import { historyLine, whenText } from "../src/lib/heldPrints";
-import { gramsLeft, inventoryErrorText, spoolLabel } from "../src/lib/slotInventory";
+import { slotsFor, type SlotOffer } from "../src/lib/shelf";
+import { gramsLeft, inventoryErrorText, slotTitle, slotViews, spoolLabel, type SlotView } from "../src/lib/slotInventory";
+import { usePrintersStore } from "../src/store/printers";
 import { useTheme } from "../src/theme/ThemeProvider";
 
 function firstParam(v: string | string[] | undefined): string | undefined {
@@ -75,6 +78,9 @@ export default function SpoolScreen() {
   const [status, setStatus] = useState<InventoryStatus | null>(null);
   const [spool, setSpool] = useState<InventorySpool | null>(null);
   const [history, setHistory] = useState<SpoolPrint[] | null>(null);
+  // The shown printer's slots, so a stored spool can be put into one from here.
+  const selectedPrinter = usePrintersStore((s) => s.selectedId);
+  const [slots, setSlots] = useState<SlotView[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const generation = useRef(0);
@@ -110,20 +116,23 @@ export default function SpoolScreen() {
     const current = ++generation.current;
     setError("");
     try {
-      const [state, record, prints] = await Promise.all([
+      const [state, record, prints, sources] = await Promise.all([
         inventoryStatus(),
         creating ? Promise.resolve(null) : inventorySpool(spoolId),
         // An older bridge has no history route; the section simply stays away.
         creating ? Promise.resolve(null) : spoolHistory(spoolId).catch(() => null),
+        // Slots are a convenience here; a printer that doesn't answer leaves the card away.
+        creating || !selectedPrinter ? Promise.resolve([]) : inventorySources(selectedPrinter).catch(() => []),
       ]);
       if (current !== generation.current) return;
       setStatus(state);
       setSpool(record);
       setHistory(prints);
+      setSlots(selectedPrinter ? slotViews(selectedPrinter, sources, state, record ? [record] : []) : []);
     } catch (e) {
       if (current === generation.current) setError(inventoryErrorText(e));
     }
-  }, [creating, spoolId]);
+  }, [creating, spoolId, selectedPrinter]);
   useEffect(() => {
     void load();
     return () => {
@@ -186,6 +195,31 @@ export default function SpoolScreen() {
 
   const body = [type.body, { color: c.text }];
   const small = [type.small, { color: c.muted }];
+
+  /** Where this spool sits on the shown printer, if anywhere; a stored spool gets the slot offers. */
+  const seatedIn = spool ? slots.find((v) => v.assignment?.spool_id === spool.id) ?? null : null;
+  const offers = spool && !spool.archived && !seatedIn && selectedPrinter ? slotsFor(spool, slots) : [];
+  function offerLabel(offer: SlotOffer): string {
+    const where = `Into ${slotTitle(offer.view.source).toLowerCase()}`;
+    if (offer.view.assignment) return `${where} · replaces #${offer.view.assignment.spool_id}`;
+    const material = offer.view.source.material.trim();
+    return offer.setSlot && material ? `${where} · sets it from ${material.toUpperCase()}` : `${where} · no spool there yet`;
+  }
+  async function putInSlot(offer: SlotOffer) {
+    if (!spool || !selectedPrinter) return;
+    const source = offer.view.source;
+    await run(async () => {
+      await inventoryAssign(selectedPrinter, {
+        source: source.source,
+        spool_id: spool.id,
+        observed_identity: source.observed_identity,
+        ...(offer.setSlot ? { set_slot: true } : {}),
+      });
+      showToast(`${spoolLabel(spool)} in ${slotTitle(source).toLowerCase()}`, { severity: "success" });
+      await load();
+    });
+  }
+
   const url = status?.spoolman_web_url ?? null;
   const openInSpoolman = url ? (
     <Button
@@ -222,6 +256,20 @@ export default function SpoolScreen() {
           )}
         </View>
         {!!error && <Text accessibilityRole="alert" style={[type.body, { color: c.danger }]}>{error}</Text>}
+        {spool && <SpoolRecord spool={spool} />}
+        {spool && (seatedIn || offers.length > 0) && (
+          <Surface padded style={{ gap: space.sm }}>
+            <Text style={[type.h2, { color: c.text }]}>{seatedIn ? `In ${slotTitle(seatedIn.source).toLowerCase()}` : "Put it in a slot"}</Text>
+            {!seatedIn && <Text style={small}>The slot you put it in; the bridge then charges prints from there to this spool.</Text>}
+            {!seatedIn && (
+              <View style={{ gap: space.xs, alignItems: "flex-start" }}>
+                {offers.map((offer) => (
+                  <Button key={offer.view.source.source} label={offerLabel(offer)} variant="secondary" size="small" disabled={busy} onPress={() => void putInSlot(offer)} />
+                ))}
+              </View>
+            )}
+          </Surface>
+        )}
         {spool && !spool.archived && (
           <Surface padded style={{ gap: space.md }}>
             <Text style={[type.h2, { color: c.text }]}>Weigh</Text>
