@@ -33,6 +33,12 @@ jest.mock("../../api/inventory", () => ({
   setVendorEmptyWeight: jest.fn(),
 }));
 jest.mock("../../components/PartPicture", () => ({ PartPicture: () => null }));
+// The sheet reads the shown printer from the printers store, which opens device storage as it loads.
+jest.mock("../../lib/kv", () => ({ kv: { getString: jest.fn(() => undefined), set: jest.fn(), remove: jest.fn(), getBoolean: jest.fn() } }));
+jest.mock("../../lib/qalog", () => ({ qaLog: jest.fn() }));
+jest.mock("../../ws/live", () => ({ LiveConnection: jest.fn(), applyDelta: jest.fn() }));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { usePrintersStore } = require("../../store/printers");
 const mocked = api as jest.Mocked<typeof api>;
 const status = { configured: true, api_version: 2, provider_id: "prov", revision: 7, assignments: [], accounting_mode: "automatic", native_overlay_enabled: false, spoolman_web_url: "http://spoolman.test" } as api.InventoryStatus;
 const spool = (over: Partial<api.InventorySpool> = {}): api.InventorySpool => ({
@@ -51,6 +57,8 @@ async function type(node: any, text: string) { await act(async () => { node.prop
 
 beforeEach(() => {
   jest.clearAllMocks();
+  usePrintersStore.setState({ selectedId: null, list: [] });
+  mocked.inventorySources.mockResolvedValue([]);
   mockParams = { id: "5" };
   mocked.inventoryStatus.mockResolvedValue(status);
   mocked.inventorySpool.mockResolvedValue(spool());
@@ -209,4 +217,64 @@ it("shows the refusal when the sheet was opened without a slot", async () => {
   await press(button("Archive"));
   expect(mocked.inventoryAssign).not.toHaveBeenCalled();
   expect(texts()).toContain("Remove #5 from AMS A · slot 4 first");
+});
+
+describe("the record card", () => {
+  it("shows what Spoolman holds, in rows, and only the fields that came", async () => {
+    mocked.inventorySpool.mockResolvedValue(spool({
+      lot_nr: "A7536361758", used_weight: 588, first_used: "2026-10-23T18:00:00Z", last_used: "2026-10-26T13:25:29Z", comment: "Weighed 996 g gross on 2026-10-23",
+      filament: { ...spool().filament, article_number: "FL02001" },
+    }));
+    await mount();
+    const all = texts();
+    for (const expected of ["Record", "#222222", "Bambu Lab", "PET-GF15 Black", "PET-GF", "FL02001", "A7536361758", "412 g of 1,000 g", "588 g", "250 g", "1.75 mm", "1.3 g/cm³", "Weighed 996 g gross on 2026-10-23"]) {
+      expect(all).toContain(expected);
+    }
+    expect(all.filter((t) => t === "Last used")).toHaveLength(1);
+    expect(all).not.toContain("Location");
+    expect(all).not.toContain("Price");
+  });
+
+  it("leaves out SKU, lot, dates and comment when the bridge didn't send them", async () => {
+    await mount();
+    const all = texts();
+    for (const absent of ["SKU", "Lot", "First used", "Last used", "Comment", "Used"]) expect(all).not.toContain(absent);
+    expect(all).toContain("Vendor");
+  });
+});
+
+describe("put it in a slot", () => {
+  const slot = (wire: number, over: Partial<api.InventorySource> = {}): api.InventorySource => ({
+    printer_id: "P1", source: `ams:abc:tray:${wire}`, wire_slot: wire, label: `AMS A · slot ${wire + 1}`, material: "PET-GF", color: "222222FF",
+    observed_identity: "a".repeat(64), observed_at: 1, assignable: true, issues: [], tagged: false, ...over,
+  });
+
+  it("offers a stored spool the shown printer's slots and assigns on tap", async () => {
+    usePrintersStore.setState({ selectedId: "P1", list: [{ serial: "P1", friendly_name: "P1S", model: "P1S", connected: true }] });
+    mocked.inventorySources.mockResolvedValue([slot(0), slot(1, { material: "PLA" }), slot(2, { issues: ["source_empty"] })]);
+    mocked.inventoryAssign.mockResolvedValue({ provider_id: "prov", revision: 8, assignments: [] });
+    await mount();
+    expect(texts()).toContain("Put it in a slot");
+    expect(button("Into slot 1 · no spool there yet")).toBeTruthy();
+    expect(button("Into slot 2 · sets it from PLA")).toBeTruthy();
+    expect(button(/slot 3/)).toBeUndefined();
+    await press(button("Into slot 2 · sets it from PLA"));
+    expect(mocked.inventoryAssign).toHaveBeenCalledWith("P1", { source: "ams:abc:tray:1", spool_id: 5, observed_identity: "a".repeat(64), set_slot: true });
+    expect(mockToast).toHaveBeenCalledWith("#5 · Bambu Lab PET-GF15 Black in slot 2", { severity: "success" });
+  });
+
+  it("says where a seated spool is instead, and offers nothing without a printer", async () => {
+    usePrintersStore.setState({ selectedId: "P1", list: [] });
+    mocked.inventoryStatus.mockResolvedValue({ ...status, assignments: [{ printer_id: "P1", source: "ams:abc:tray:0", spool_id: 5, assigned_at: 1, observed_identity: null, wire_slot: 0 }] });
+    mocked.inventorySources.mockResolvedValue([slot(0), slot(1)]);
+    await mount();
+    expect(texts()).toContain("In slot 1");
+    expect(button(/^Into /)).toBeUndefined();
+    await act(async () => { tree.unmount(); });
+    usePrintersStore.setState({ selectedId: null, list: [] });
+    mocked.inventoryStatus.mockResolvedValue(status);
+    await mount();
+    expect(texts()).not.toContain("Put it in a slot");
+    expect(mocked.inventorySources).toHaveBeenCalledTimes(1);
+  });
 });

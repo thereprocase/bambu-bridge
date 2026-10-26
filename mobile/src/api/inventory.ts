@@ -16,6 +16,9 @@ export interface InventoryProduct {
   spool_weight: number | null;
   density: number | null;
   diameter: number | null;
+  /** The vendor's SKU as Spoolman holds it. Absent on bridges that don't pass it through. */
+  article_number?: string | null;
+  price?: number | null;
 }
 export interface InventorySpool {
   id: number;
@@ -24,6 +27,15 @@ export interface InventorySpool {
   initial_weight: number | null;
   spool_weight: number | null;
   archived: boolean;
+  /* Spoolman record fields the bridge passes through unchanged; absent on bridges that don't. */
+  used_weight?: number | null;
+  lot_nr?: string | null;
+  comment?: string | null;
+  location?: string | null;
+  /** ISO 8601 from Spoolman. */
+  first_used?: string | null;
+  last_used?: string | null;
+  price?: number | null;
   remaining_percent?: number | null;
   weight_basis?: string;
   weight_observed_at?: number | null;
@@ -81,9 +93,10 @@ export interface InventorySource {
 export const inventoryStatus = () => request<InventoryStatus>("/inventory");
 export const inventorySpool = (id: number) =>
   request<InventorySpool>(`/inventory/spools/${id}`);
-export const inventorySpools = (query = "", offset = 0, material?: string, limit = 50) =>
+/** Archived spools are left out unless asked for; the bridge then lists them after the active ones. */
+export const inventorySpools = (query = "", offset = 0, material?: string, limit = 50, includeArchived = false) =>
   request<InventorySpool[]>("/inventory/spools", {
-    query: { query, offset, limit, ...(material ? { material } : {}) },
+    query: { query, offset, limit, ...(material ? { material } : {}), ...(includeArchived ? { include_archived: "true" } : {}) },
   });
 export const inventoryProducts = (query = "", offset = 0) =>
   request<InventoryProduct[]>("/inventory/products", {

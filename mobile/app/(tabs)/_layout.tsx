@@ -1,7 +1,9 @@
 /**
- * Bottom tabs. Six per the design (Status / Print / Files / Controls /
- * Filament / Activity); Settings sits at the top-right of each tab as
- * a gear icon → /settings modal.
+ * Bottom tabs: Status / Print / Filament / Inventory — what the owner does
+ * from the phone daily. Controls, Activity and Advanced keep their routes
+ * but leave the bar (href: null); they, the bridge queue and Settings sit
+ * behind the gear at the top right of every tab → /more (see
+ * src/lib/moreMenu). A folded tab's header carries a back arrow to Status.
  *
  * We trigger a printers.refresh + WS connection here on mount so the
  * tabs all read from the same live store without each one having to
@@ -9,7 +11,7 @@
  */
 
 import { Ionicons } from "@expo/vector-icons";
-import { Link, Redirect, Tabs } from "expo-router";
+import { Link, Redirect, Tabs, useRouter } from "expo-router";
 import { useEffect } from "react";
 import { Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -25,6 +27,7 @@ import { useTheme } from "../../src/theme/ThemeProvider";
 
 export default function TabsLayout() {
   const { c } = useTheme();
+  const router = useRouter();
   const baseUrl = useBridgeStore((s) => s.baseUrl);
   const bearer = useBridgeStore((s) => s.bearer);
   const baseUrlLan = useBridgeStore((s) => s.baseUrlLan);
@@ -63,6 +66,17 @@ export default function TabsLayout() {
 
   if (!baseUrl || !bearer) return <Redirect href="/settings" />;
 
+  /** A tab hidden from the bar: reached from the menu, left by the header's back arrow. */
+  const folded = () => ({
+    href: null,
+    headerLeft: () => (
+      <Pressable accessibilityRole="button" accessibilityLabel="Back to Status" hitSlop={12}
+        onPress={() => router.navigate("/(tabs)/status")} style={{ paddingHorizontal: 12 }}>
+        <Ionicons name="chevron-back" size={26} color={c.onTitle} />
+      </Pressable>
+    ),
+  });
+
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: c.surface2 }}>
       <ConnectionStrip />
@@ -82,15 +96,10 @@ export default function TabsLayout() {
         tabBarActiveTintColor: c.onTitle,
         tabBarActiveBackgroundColor: c.title,
         tabBarInactiveTintColor: c.muted,
+        // One button, the same on every tab: the gear opens the menu (folded screens, queue, Settings).
         headerRight: () => <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <Link href="/native-recovery" asChild>
-            <Pressable accessibilityRole="button" accessibilityLabel="Bridge queue" hitSlop={12}
-              style={{ paddingHorizontal: 12 }}>
-              <Ionicons name="list-outline" size={24} color={c.onTitle} />
-            </Pressable>
-          </Link>
-          <Link href="/settings" asChild>
-            <Pressable accessibilityRole="button" accessibilityLabel="Settings" hitSlop={12}
+          <Link href="/more" asChild>
+            <Pressable accessibilityRole="button" accessibilityLabel="Menu" hitSlop={12}
               style={{ paddingHorizontal: 16 }}>
               <Ionicons name="settings-outline" size={22} color={c.onTitle} />
             </Pressable>
@@ -112,13 +121,7 @@ export default function TabsLayout() {
           tabBarIcon: ({ color }) => <Ionicons name="play-circle" color={color} size={22} />,
         }}
       />
-      <Tabs.Screen
-        name="controls"
-        options={{
-          title: "Controls",
-          tabBarIcon: ({ color }) => <Ionicons name="options-outline" color={color} size={22} />,
-        }}
-      />
+      <Tabs.Screen name="controls" options={{ title: "Controls", ...folded() }} />
       <Tabs.Screen
         name="filament"
         options={{
@@ -128,19 +131,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="activity"
+        name="inventory"
         options={{
-          title: "Activity",
-          tabBarIcon: ({ color }) => <Ionicons name="time-outline" color={color} size={22} />,
+          title: "Inventory",
+          tabBarIcon: ({ color }) => <Ionicons name="cube-outline" color={color} size={22} />,
         }}
       />
-      <Tabs.Screen
-        name="advanced"
-        options={{
-          title: "Advanced",
-          tabBarIcon: ({ color }) => <Ionicons name="flask-outline" color={color} size={22} />,
-        }}
-      />
+      <Tabs.Screen name="activity" options={{ title: "Activity", ...folded() }} />
+      <Tabs.Screen name="advanced" options={{ title: "Advanced", ...folded() }} />
     </Tabs>
     </SafeAreaView>
   );

@@ -50,6 +50,9 @@ class Product(ProviderEntity):
     color_hex: str | None = None
     weight: float | None = Field(default=None, gt=0)
     spool_weight: float | None = Field(default=None, ge=0)
+    # Passed through to the app's record card as Spoolman holds them; never read here.
+    article_number: str | None = None
+    price: float | None = Field(default=None, ge=0)
 
 
 class ProviderSpool(ProviderEntity):
@@ -63,6 +66,13 @@ class ProviderSpool(ProviderEntity):
     initial_weight: float | None = Field(default=None, ge=0)
     spool_weight: float | None = Field(default=None, ge=0)
     archived: bool = False
+    # Passed through to the app's record card as Spoolman holds them (ISO 8601
+    # dates as strings); the bridge reads none of them.
+    lot_nr: str | None = None
+    location: str | None = None
+    price: float | None = Field(default=None, ge=0)
+    first_used: str | None = None
+    last_used: str | None = None
 
     @property
     def remaining_percent(self) -> int | None:

@@ -5,8 +5,9 @@
  * bridge has Spoolman, each row also carries the assigned spool from the
  * bridge's assignment table and the spool's record, and tapping a row opens
  * the assign sheet (`/assign-spool`). Load/unload stays here as before.
- * Under the slots, "Off the AMS" lists the unarchived spools in no slot, and a
- * slot whose last spool left without a word asks whether it was empty.
+ * Under the slots, "Off the AMS" lists the unarchived spools in no slot by
+ * material, each a drawer that offers the slots it can go into, and a slot
+ * whose last spool left without a word asks whether it was empty.
  */
 
 import { amsEnvironmentLabel } from "../../src/lib/amsEnvironment";
@@ -27,6 +28,7 @@ import { BridgeError } from "../../src/api/errors";
 import {
   archiveSpool,
   inventoryAccounting,
+  inventoryAssign,
   inventorySources,
   inventorySpools,
   inventoryStatus,
@@ -41,6 +43,7 @@ import { Button } from "../../src/components/Button";
 import { NeedsYouCard } from "../../src/components/NeedsYouCard";
 import { ProgressBar } from "../../src/components/ProgressBar";
 import { RecentPrints } from "../../src/components/RecentPrints";
+import { SpoolRow } from "../../src/components/SpoolRow";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
 import {
@@ -49,6 +52,7 @@ import {
   inventoryErrorText,
   materialLine,
   percentFor,
+  slotTitle,
   slotViews,
   swatchFor,
   sourceColor,
@@ -67,10 +71,13 @@ import {
   readShelved,
   remember,
   shelfKey,
-  spoolColor,
+  slotsFor,
+  storedGroups,
+  storedSummary,
   writeMemory,
   writeShelved,
   type SlotMemory,
+  type SlotOffer,
 } from "../../src/lib/shelf";
 import { AmsSlot, viewOf } from "../../src/lib/snapshot";
 import { useLiveStore } from "../../src/store/live";
@@ -110,6 +117,10 @@ export default function FilamentScreen() {
   const [refill, setRefill] = useState<RefillStatus | null>(null);
   // The one slot whose drawer is open (by wire slot); null when all are collapsed.
   const [openWire, setOpenWire] = useState<number | null>(null);
+  // The one stored spool whose drawer is open (by spool id); null when all are collapsed.
+  const [openStored, setOpenStored] = useState<number | null>(null);
+  // The stored spool whose "Into slot" is in flight, so a second tap waits.
+  const [assigningId, setAssigningId] = useState<number | null>(null);
   // Manual RFID reads, by wire slot. Nothing starts on its own.
   const [readings, setReadings] = useState<Record<number, Reading | undefined>>({});
   // "Back on the shelf" answers, kept on this device only (see src/lib/shelf).
@@ -311,6 +322,42 @@ export default function FilamentScreen() {
   }
 
   const offAms = inventoryOn ? offAmsSpools(spools, status) : [];
+  const stored = storedGroups(offAms);
+
+  /** "Into slot 2": the owner put this stored spool in that slot; the bridge records it (and sets the slot's material when the slot was untagged and differed). */
+  async function assignStored(spool: InventorySpool, offer: SlotOffer) {
+    if (!selectedId || assigningId != null) return;
+    const source = offer.view.source;
+    setAssigningId(spool.id);
+    try {
+      await inventoryAssign(selectedId, {
+        source: source.source,
+        spool_id: spool.id,
+        observed_identity: source.observed_identity,
+        ...(offer.setSlot ? { set_slot: true } : {}),
+      });
+      if (!mounted.current) return;
+      setOpenStored(null);
+      showToast(`${spoolLabel(spool)} in ${slotTitle(source).toLowerCase()}`, { severity: "success" });
+      void refresh();
+    } catch (e) {
+      // The bridge's reason (a slot that changed under us, a refused material); the list is reloaded so the offers match.
+      showToast(inventoryErrorText(e), { severity: "danger" });
+      void refresh();
+    } finally {
+      if (mounted.current) setAssigningId(null);
+    }
+  }
+
+  /** The button for one slot a stored spool can go into: what is there now, and what the tap changes. */
+  function offerLabel(offer: SlotOffer): string {
+    const { view, setSlot } = offer;
+    const where = `Into ${slotTitle(view.source).toLowerCase()}`;
+    if (view.assignment) return `${where} · replaces #${view.assignment.spool_id}`;
+    const material = view.source.material.trim();
+    if (setSlot && material) return `${where} · sets it from ${material.toUpperCase()}`;
+    return `${where} · no spool there yet`;
+  }
   const cameOut = (slot: SlotView | null) => (slot && inventoryOn && !rescanning ? cameOutOf(slot, spools, status, shelved, memory) : null);
 
   function openAssign(slot: SlotView) {
@@ -378,7 +425,7 @@ export default function FilamentScreen() {
         accessibilityRole={tappable ? "button" : undefined}
         accessibilityLabel={tappable ? `${opts.title}, ${primary}, ${open ? "close" : "open"} actions` : undefined}
         accessibilityState={tappable ? { expanded: open } : undefined}
-        onPress={tappable ? () => setOpenWire(open ? null : wire) : undefined}
+        onPress={tappable ? () => { setOpenWire(open ? null : wire); setOpenStored(null); } : undefined}
         disabled={!tappable}
         style={{
           flexDirection: "row",
@@ -646,27 +693,55 @@ export default function FilamentScreen() {
 
       {selectedId && offAms.length > 0 && (
         <Surface padded style={{ gap: space.sm }}>
-          <Text style={[type.h2, { color: c.text }]}>Off the AMS</Text>
-          {offAms.map((spool, index) => (
-            <Pressable
-              key={spool.id}
-              accessibilityRole="button"
-              accessibilityLabel={`${spoolLabel(spool)}, ${gramsLeft(spool)}, weigh or archive`}
-              // Opened without a printer or source: the sheet weighs or archives and leaves every slot alone.
-              onPress={() => router.push({ pathname: "/spool", params: { id: String(spool.id) } })}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: space.sm,
-                borderTopWidth: index ? 1 : 0,
-                borderTopColor: c.borderSoft,
-                paddingTop: index ? space.sm : 0,
-              }}
-            >
-              <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: spoolColor(spool) ?? c.surface3, borderWidth: 1, borderColor: c.border }} />
-              <Text style={[type.body, { color: c.text, flex: 1 }]} numberOfLines={1}>{spoolLabel(spool)}</Text>
-              <Text style={[type.small, { color: c.muted }]}>{gramsLeft(spool)}</Text>
-            </Pressable>
+          <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: space.sm }}>
+            <Text style={[type.h2, { color: c.text }]}>Off the AMS</Text>
+            <Text style={[type.small, { color: c.muted }]}>{storedSummary(offAms)}</Text>
+          </View>
+          {stored.map((group) => (
+            <View key={group.material} style={{ gap: space.sm }}>
+              <Text style={[type.caption, { color: c.muted, textTransform: "uppercase", marginTop: space.xs }]}>
+                {`${group.material} · ${group.spools.length}`}
+              </Text>
+              {group.spools.map((spool, index) => {
+                const open = openStored === spool.id;
+                const offers = open ? slotsFor(spool, views) : [];
+                return (
+                  <SpoolRow
+                    key={spool.id}
+                    spool={spool}
+                    expandable
+                    open={open}
+                    onPress={() => { setOpenStored(open ? null : spool.id); setOpenWire(null); }}
+                    style={{ borderTopWidth: index ? 1 : 0, borderTopColor: c.borderSoft, paddingTop: index ? space.sm : 0 }}
+                  >
+                    {offers.map((offer) => (
+                      <Button
+                        key={offer.view.source.source}
+                        label={offerLabel(offer)}
+                        variant="secondary"
+                        size="small"
+                        disabled={assigningId != null}
+                        loading={assigningId === spool.id}
+                        onPress={() => void assignStored(spool, offer)}
+                      />
+                    ))}
+                    {offers.length === 0 && (
+                      <Text style={[type.small, { color: c.muted }]}>
+                        No slot can take it right now. Put it in a slot; that row then offers to assign it.
+                      </Text>
+                    )}
+                    <Button
+                      label="Weigh or archive"
+                      variant="secondary"
+                      size="small"
+                      disabled={assigningId != null}
+                      // Opened without a printer or source: the sheet weighs or archives and leaves every slot alone.
+                      onPress={() => router.push({ pathname: "/spool", params: { id: String(spool.id) } })}
+                    />
+                  </SpoolRow>
+                );
+              })}
+            </View>
           ))}
         </Surface>
       )}
