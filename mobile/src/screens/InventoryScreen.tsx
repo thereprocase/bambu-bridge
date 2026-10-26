@@ -232,6 +232,9 @@ export default function InventoryScreen() {
   }
 
   const caption = [type.caption, { color: c.muted, textTransform: "uppercase" as const }];
+  // The summary bar's segments, largest material first; past five they share the last tone.
+  const tones = [c.accent, c.warn, c.text, c.accentDim, c.muted];
+  const tone = (i: number) => ({ backgroundColor: tones[Math.min(i, tones.length - 1)], opacity: i === 2 ? 0.7 : 1 });
 
   // Spoolman off, or the bridge couldn't be asked: one card, never a blank tab.
   if (status && !inventoryOn) {
@@ -279,7 +282,7 @@ export default function InventoryScreen() {
             <>
               <View accessibilityLabel={`Filament by material: ${summary.byMaterial.map((m) => `${m.material} ${weightText(m.grams)}`).join(", ")}`} style={{ flexDirection: "row", height: 10, gap: 2 }}>
                 {summary.byMaterial.map((m, i) => (
-                  <View key={m.material} style={{ flex: Math.max(m.share, 0.02), backgroundColor: c.accent, opacity: 1 - Math.min(i, 4) * 0.18 }} />
+                  <View key={m.material} style={{ flex: Math.max(m.share, 0.02), ...tone(i) }} />
                 ))}
               </View>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
@@ -293,7 +296,7 @@ export default function InventoryScreen() {
                       onPress={() => setFilter((f) => ({ ...f, material: on ? null : m.material }))}
                       style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2 }}
                     >
-                      <View style={{ width: 10, height: 10, backgroundColor: c.accent, opacity: 1 - Math.min(i, 4) * 0.18 }} />
+                      <View style={{ width: 10, height: 10, ...tone(i) }} />
                       <Text style={[type.small, { color: c.text, textDecorationLine: on ? "underline" : "none" }]}>{m.material}</Text>
                       <Text style={[type.small, { color: c.muted }]}>{weightText(m.grams)}</Text>
                     </Pressable>

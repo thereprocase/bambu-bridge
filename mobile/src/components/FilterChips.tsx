@@ -1,10 +1,11 @@
 /**
- * FilterChips — one horizontal row of single-select chips with an "All"
- * chip first. Each chip can carry a count. Used by the Inventory tab's find
- * bar for material, vendor and place; also as the sort control (no "All").
+ * FilterChips — single-select chips with an "All" chip first, wrapping onto
+ * as many lines as they need so none hides off-screen. Each chip can carry
+ * a count. Used by the Inventory tab's find bar for material, vendor and
+ * place; also as the sort control (no "All").
  */
 
-import { Pressable, ScrollView, Text } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { useTheme } from "../theme/ThemeProvider";
 
@@ -28,7 +29,7 @@ export function FilterChips({ label, chips, value, onSelect, allLabel = "All" }:
   const { c, space, type } = useTheme();
   const all: Chip[] = allLabel ? [{ id: "", label: allLabel }] : [];
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} accessibilityLabel={label} contentContainerStyle={{ gap: space.xs }}>
+    <View accessibilityLabel={label} style={{ flexDirection: "row", flexWrap: "wrap", gap: space.xs }}>
       {[...all, ...chips].map((chip) => {
         const selected = chip.id === "" ? value == null : value === chip.id;
         return (
@@ -57,6 +58,6 @@ export function FilterChips({ label, chips, value, onSelect, allLabel = "All" }:
           </Pressable>
         );
       })}
-    </ScrollView>
+    </View>
   );
 }
