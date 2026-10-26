@@ -239,7 +239,6 @@ export default function SettingsScreen() {
     >
       {baseUrl && bearer && <>
         <Link href="/(tabs)/status" dismissTo asChild><Button label="Open dashboard" onPress={() => {}} fullWidth /></Link>
-        <Link href="/native-recovery" asChild><Button label="Bridge queue and recovery" variant="secondary" onPress={() => {}} fullWidth /></Link>
         <ViewingSettings />
       </>}
       {/* Bridge connection ------------------------------------------------ */}

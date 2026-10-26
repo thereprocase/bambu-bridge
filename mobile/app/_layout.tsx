@@ -78,6 +78,7 @@ function Bootstrap() {
         }}
       >
         <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="more" options={{ title: "Menu", presentation: "modal" }} />
         <Stack.Screen name="settings" options={{ title: "Settings", presentation: "modal" }} />
         <Stack.Screen name="add-printer" options={{ title: "Add printer", presentation: "modal" }} />
         <Stack.Screen name="config" options={{ title: "Config", presentation: "modal" }} />

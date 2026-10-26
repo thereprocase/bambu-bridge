@@ -10,7 +10,7 @@ jest.mock("expo-router", () => {
   const Screen = (props: any) => { captured[props.name] = props.options; return null; };
   const Tabs = ({ children }: any) => children ?? null;
   (Tabs as any).Screen = Screen;
-  return { Tabs, Link: ({ children }: any) => children, Redirect: () => null };
+  return { Tabs, Link: ({ children }: any) => children, Redirect: () => null, useRouter: () => ({ navigate: jest.fn() }) };
 });
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: ({ children }: any) => children }));
