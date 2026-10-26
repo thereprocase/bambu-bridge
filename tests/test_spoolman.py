@@ -125,3 +125,37 @@ def test_percent_rounding_and_extreme_overcapacity() -> None:
         ).remaining_percent
         == 100
     )
+
+
+def test_record_fields_pass_through_and_stay_absent_when_spoolman_omits_them() -> None:
+    from pydantic import ValidationError
+
+    from bambu_bridge.spoolman import ProviderSpool
+
+    full = ProviderSpool.model_validate(
+        {
+            **SPOOL,
+            "lot_nr": "A7533841419",
+            "location": "Shelf B",
+            "price": 24.9,
+            "first_used": "2026-10-20T08:00:00Z",
+            "last_used": "2026-10-26T13:25:29Z",
+            "filament": {**SPOOL["filament"], "article_number": "PD01011", "price": 22.5},
+        }
+    )
+    dumped = full.model_dump(mode="json")
+    assert dumped["lot_nr"] == "A7533841419"
+    assert dumped["location"] == "Shelf B"
+    assert dumped["price"] == 24.9
+    assert dumped["first_used"] == "2026-10-20T08:00:00Z"
+    assert dumped["last_used"] == "2026-10-26T13:25:29Z"
+    assert dumped["filament"]["article_number"] == "PD01011"
+    assert dumped["filament"]["price"] == 22.5
+
+    bare = ProviderSpool.model_validate(SPOOL).model_dump(mode="json")
+    for key in ("lot_nr", "location", "price", "first_used", "last_used"):
+        assert bare[key] is None
+    assert bare["filament"]["article_number"] is None
+    assert bare["filament"]["price"] is None
+    with pytest.raises(ValidationError):
+        ProviderSpool.model_validate({**SPOOL, "price": -1})
