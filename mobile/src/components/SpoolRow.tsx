@@ -66,7 +66,7 @@ export function SpoolRow({ spool, detail, ring, badge, swatchSize = SPOOL_ROW_SW
         </View>
         <View style={{ flex: 1, gap: 2 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-            <Text style={[type.body, { color: c.text, flex: 1 }]} numberOfLines={1}>{spoolLabel(spool)}</Text>
+            <Text style={[type.body, { color: c.text, flex: 1 }]} numberOfLines={2}>{spoolLabel(spool)}</Text>
             {badge && (
               <Text style={[type.caption, { color: c.accent, borderWidth: 1, borderColor: c.accent, paddingHorizontal: 4, paddingVertical: 1 }]}>
                 {badge}
