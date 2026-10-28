@@ -28,7 +28,7 @@ deadline, so a missed, dropped or reordered event cannot strand it:
 * print_error / HMS codes never end a job (a pause is resumable); they only
   feed notifications (Orca StatusPanel::update_error_message).
 
-A ``submitted`` job the printer does not accept within 60 s fails. The
+A ``submitted`` job the printer does not accept within 300 s fails. The
 FED_NO_PROGRESS watchdog (default 1800 s from RUNNING) stops a print that
 never progresses. Cancel, FED_NO_PROGRESS and spaghetti share one stop
 path: ``print stop`` is retried until delivered, and the job ends only
@@ -70,7 +70,12 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-_RUNNING_TIMEOUT_S = 60  # started -> printing deadline (spec 8)
+# started -> accepted (PREPARE/RUNNING/PAUSE) deadline. Spec 8 said 60 s; on 2026-10-27 a P1S
+# sitting in FINISH took 68 s to report PREPARE for a new project_file, so the row failed while
+# the print ran, the watcher logged it as an external print, and cancelling the failed row
+# stopped nothing.
+_RUNNING_TIMEOUT_S = 300
+_NOT_ACCEPTED = "printer_did_not_accept"
 
 # Job states that mean "a print is actively in flight for this printer."
 # Mirrors db/jobs._LIVE_JOB_STATES — kept here to avoid importing a private
@@ -150,6 +155,8 @@ class JobManager:
         self._feed_deadline_s = feed_deadline_s
         self._viz_cache = viz_cache
         self._runs: dict[str, JobRun] = {}
+        # Rows without a JobRun that cancel() stopped; the reconciler closes them as canceled.
+        self._orphan_cancels: set[str] = set()
         # Printers with a job between submit() and the end of its run: one at a
         # time. Checked and claimed with no await in between (asyncio-atomic).
         self._busy: set[str] = set()
@@ -220,12 +227,36 @@ class JobManager:
         return job
 
     async def cancel(self, job_id: str) -> Job:
+        """Stop the job's print, or say why there is nothing to stop.
+
+        A row with a JobRun stops through it. A live row without one (an external print, or a
+        bridge job left by a restart) stops the printer only when the printer is printing that
+        row's file, and the reconciler then records the row as canceled. An ended row raises
+        JobEndedError instead of answering as if it stopped.
+        """
         job = await self._jobs.get(job_id)
         if job is None:
             raise JobNotFoundError(job_id)
+        if job.state.terminal:
+            raise JobEndedError(job)
         run = self._runs.get(job_id)
-        if run is not None and not job.state.terminal:
+        if run is not None:
             await run.request_cancel()
+            return await self._jobs.get(job_id) or job
+        service = self._registry.get(job.printer_id)
+        view = service.print_view()
+        if view["gcode_state"] not in ("PREPARE", "RUNNING", "PAUSE") or view.get(
+            "subtask_name"
+        ) != subtask_name(job.file_name):
+            raise JobNotPrintingError(job, view.get("gcode_state"), view.get("subtask_name"))
+        await service.send_command("print", "stop")
+        self._orphan_cancels.add(job.id)
+        await self._events.add(
+            printer_id=job.printer_id,
+            job_id=job.id,
+            event_type="stop_sent",
+            payload={"reason": "user_cancel"},
+        )
         return await self._jobs.get(job_id) or job
 
     async def get(self, job_id: str) -> Job | None:
@@ -404,9 +435,12 @@ class JobManager:
                 if active:
                     await self._close_row(job, JobState.PREPARING, "printer_preparing")
                 elif time.time() - (job.started_at or 0) > _RUNNING_TIMEOUT_S:
-                    await self._close_row(job, JobState.FAILED, "no_running_within_60s")
+                    await self._close_row(job, JobState.FAILED, _NOT_ACCEPTED)
                 continue
-            if gs == "FINISH":
+            if job.id in self._orphan_cancels and (gs in ("FINISH", "FAILED", "IDLE") or lost):
+                self._orphan_cancels.discard(job.id)
+                await self._close_row(job, JobState.CANCELED, "user_cancel")
+            elif gs == "FINISH":
                 await self._close_row(job, JobState.COMPLETED, "gcode_finish")
             elif gs == "FAILED":
                 await self._close_row(job, JobState.FAILED, "printer_error")
@@ -447,6 +481,25 @@ class JobManager:
 
 class JobNotFoundError(KeyError):
     """No job with that id."""
+
+
+class JobEndedError(RuntimeError):
+    """The job already ended, so cancelling it would stop nothing."""
+
+    def __init__(self, job: Job) -> None:
+        super().__init__(f"job {job.id} already ended: {job.state.value} ({job.error_code})")
+        self.job = job
+
+
+class JobNotPrintingError(RuntimeError):
+    """A live row with no run whose file is not the printer's current print."""
+
+    def __init__(self, job: Job, gcode_state: str | None, current: str | None) -> None:
+        super().__init__(
+            f"job {job.id} has no active run and the printer is not printing it "
+            f"(printer: {gcode_state}, {current or 'no job'})"
+        )
+        self.job = job
 
 
 class PrinterBusyError(RuntimeError):
@@ -624,7 +677,7 @@ class JobRun:
                         await self._fail("printer_error")
                         return
                     elif now >= ack_by:
-                        await self._fail("no_running_within_60s")
+                        await self._fail(_NOT_ACCEPTED)
                         return
                 elif gs is not None:
                     done = (

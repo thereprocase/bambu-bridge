@@ -961,7 +961,7 @@ async def test_restarted_rows_reconcile_against_the_printer(database):
     await manager._close_orphans(SERIAL, _view("IDLE", lost=True), structlog.get_logger())
     assert (await jobs.get("active")).state is JobState.INTERRUPTED
     assert (await jobs.get("fresh")).state is JobState.SUBMITTED
-    assert (await jobs.get("stale")).error_code == "no_running_within_60s"
+    assert (await jobs.get("stale")).error_code == "printer_did_not_accept"
     await manager._close_orphans(SERIAL, _view("PREPARE"), structlog.get_logger())
     assert (await jobs.get("fresh")).state is JobState.PREPARING
 
@@ -1005,3 +1005,70 @@ async def test_stale_live_row_is_not_the_printers_current_print(database):
     await manager._close_orphans(SERIAL, _view("FINISH", subtask="TW09-tweezer"), log_)
     assert (await jobs.get("current")).state is JobState.COMPLETED  # type: ignore[union-attr]
     assert (await jobs.get("stale")).state is JobState.INTERRUPTED  # type: ignore[union-attr]
+
+
+class _StoppablePrinter:
+    """print_view plus a recorded send_command, for cancelling rows that have no JobRun."""
+
+    def __init__(self, gcode_state: str, subtask: str | None) -> None:
+        self.view = _view(gcode_state, subtask=subtask)
+        self.sent: list[tuple[str, str]] = []
+
+    def print_view(self) -> dict[str, Any]:
+        return self.view
+
+    async def send_command(self, kind: str, action: str) -> None:
+        self.sent.append((kind, action))
+
+
+class _OnePrinterRegistry:
+    def __init__(self, printer: _StoppablePrinter) -> None:
+        self.printer = printer
+
+    def get(self, serial: str) -> _StoppablePrinter:  # noqa: ARG002
+        return self.printer
+
+
+async def test_cancel_stops_the_printer_for_a_live_row_without_a_run(database):
+    """2026-10-27: a bridge job failed its acceptance deadline while the printer ran it; the
+    watcher logged the print as external. Cancelling that live row must stop the printer, and the
+    row then ends as canceled."""
+    import structlog
+
+    from bambu_bridge.service.jobs import JobNotPrintingError
+
+    await _seed_printer(database)
+    jobs = JobRepo(database)
+    printer = _StoppablePrinter("RUNNING", "lens-v3")
+    manager = JobManager(jobs, EventRepo(database), _OnePrinterRegistry(printer))  # type: ignore[arg-type]
+    await jobs.create(Job(id="ext", printer_id=SERIAL, file_name="lens-v3", state=JobState.PRINTING,
+                          queued_at=1, started_at=1,
+                          metadata_json=json.dumps({"origin": "external"})))
+    await manager.cancel("ext")
+    assert printer.sent == [("print", "stop")]
+    printer.view = _view("FAILED", subtask="lens-v3")
+    await manager._close_orphans(SERIAL, printer.view, structlog.get_logger())
+    row = await jobs.get("ext")
+    assert row.state is JobState.CANCELED and row.error_code == "user_cancel"
+
+    # A live row whose file is not the printer's current print sends nothing.
+    await jobs.create(Job(id="other", printer_id=SERIAL, file_name="old", state=JobState.PRINTING,
+                          queued_at=1, started_at=1))
+    printer.view, printer.sent = _view("RUNNING", subtask="lens-v4"), []
+    with pytest.raises(JobNotPrintingError):
+        await manager.cancel("other")
+    assert printer.sent == []
+
+
+async def test_cancel_of_an_ended_job_refuses_instead_of_answering_ok(database):
+    from bambu_bridge.service.jobs import JobEndedError
+
+    await _seed_printer(database)
+    jobs = JobRepo(database)
+    printer = _StoppablePrinter("RUNNING", "lens-v3")
+    manager = JobManager(jobs, EventRepo(database), _OnePrinterRegistry(printer))  # type: ignore[arg-type]
+    await jobs.create(Job(id="gone", printer_id=SERIAL, file_name="lens-v3", state=JobState.FAILED,
+                          queued_at=1, started_at=1, error_code="printer_did_not_accept"))
+    with pytest.raises(JobEndedError, match="already ended"):
+        await manager.cancel("gone")
+    assert printer.sent == []
