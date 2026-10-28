@@ -20,6 +20,14 @@ log = structlog.get_logger(__name__)
 # limit in inventory_view so the choices outlive the request that used them.
 FRESH_FRAME_S = 20.0
 FULL_REPORT_WAIT_S = 5.0
+# A present AMS with no serial: ask for version info up to VERSION_ATTEMPTS times. Each wait
+# is three times the printer's last measured get_version round trip (owner, 2026-10-28), so a
+# missed reply recovers quickly; VERSION_WAIT_S applies until a reply has been timed.
+VERSION_ATTEMPTS = 3
+VERSION_WAIT_S = 3.0
+VERSION_RTT_FACTOR = 3.0
+VERSION_WAIT_MIN_S = 0.5
+_version_rtt_s: dict[str, float] = {}
 
 
 def _frame_fresh(service: Any) -> bool:
@@ -56,6 +64,83 @@ async def refresh_source_frame(service: Any, *, wait_s: float = FULL_REPORT_WAIT
                 reports_seen=seen,
                 frame_age_s=round(time.time() - stamp, 1) if stamp is not None else None,
             )
+    # A present AMS with no serial makes every slot in it unassignable; ask for it.
+    await ensure_ams_serials(service)
+
+
+def ams_units_without_serial(service: Any) -> list[str]:
+    """AMS unit ids the printer reports as present but with no hardware serial yet.
+
+    The serial comes from the unit itself or from the ``ams/<id>`` module in the
+    printer's version info. Without it every slot in that unit is unassignable.
+    """
+    units = (service.material_inventory.snapshot().get("ams") or {}).get("ams", [])
+    modules = (service.native_snapshot().get("info") or {}).get("module", [])
+    if not isinstance(modules, list):
+        modules = []
+    missing = []
+    for unit in units if isinstance(units, list) else []:
+        if not isinstance(unit, dict):
+            continue
+        aid = str(unit.get("id"))
+        if unit.get("sn") or any(
+            isinstance(m, dict) and m.get("name") == f"ams/{aid}" and m.get("sn") for m in modules
+        ):
+            continue
+        missing.append(aid)
+    return missing
+
+
+def version_wait_s(key: str) -> float:
+    """How long to wait for a get_version reply from this printer before asking again."""
+    rtt = _version_rtt_s.get(key)
+    return VERSION_WAIT_S if rtt is None else max(VERSION_WAIT_MIN_S, VERSION_RTT_FACTOR * rtt)
+
+
+async def ensure_ams_serials(
+    service: Any, *, attempts: int = VERSION_ATTEMPTS, wait_s: float | None = None
+) -> None:
+    """Ask for version info when a present AMS has no serial, until it arrives.
+
+    The bridge sends ``get_version`` once on connect, fire-and-forget. On
+    2026-10-27/28 that reply never arrived across a reconnect and a printer power
+    cycle, so every AMS slot stayed unassignable until a manual get_version. This
+    sends only when a connected printer reports an AMS unit without a serial: up to
+    ``attempts`` requests, each waiting ``wait_s`` for the reply, stopping as soon as
+    every present unit has one. A disconnected printer or a complete set sends nothing.
+    """
+    send = getattr(service, "send_command", None)
+    native = getattr(service, "native_snapshot", None)
+    if send is None or native is None:
+        return
+    key = str(getattr(service, "serial", id(service)))
+    for attempt in range(1, attempts + 1):
+        if not service.connected or not ams_units_without_serial(service):
+            return
+        wait = version_wait_s(key) if wait_s is None else wait_s
+        replied_s: float | None = None
+        async with service.raw_bus.subscribe() as reports:
+            sent_at = time.monotonic()
+            try:
+                await send("info", "get_version")
+            except Exception as exc:  # noqa: BLE001 - link down: the issue stays reported
+                log.info("inventory.ams_serial_request_failed", printer=key, error=str(exc))
+                return
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(wait):
+                    async for _ in reports:
+                        if not ams_units_without_serial(service):
+                            replied_s = time.monotonic() - sent_at
+                            _version_rtt_s[key] = replied_s
+                            break
+        log.info(
+            "inventory.ams_serial_requested",
+            printer=key,
+            attempt=attempt,
+            wait_s=round(wait, 3),
+            reply_s=None if replied_s is None else round(replied_s, 3),
+            still_missing=ams_units_without_serial(service),
+        )
 
 
 def declared_identity(tray: dict[str, Any]) -> str:

@@ -28,7 +28,13 @@ from bambu_bridge.api.printers import get_registry
 from bambu_bridge.api.uploads import read_upload
 from bambu_bridge.db.jobs import JobState
 from bambu_bridge.protocol.commands import AmsMapping
-from bambu_bridge.service.jobs import JobManager, JobNotFoundError, PrinterBusyError
+from bambu_bridge.service.jobs import (
+    JobEndedError,
+    JobManager,
+    JobNotFoundError,
+    JobNotPrintingError,
+    PrinterBusyError,
+)
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 from bambu_bridge.slicedoc import validate as slice_validate
 
@@ -175,4 +181,7 @@ async def cancel_job(job_id: str, jobs: JobManager = Depends(get_jobs)) -> dict[
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"job {job_id} not found"
         ) from exc
+    except (JobEndedError, JobNotPrintingError) as exc:
+        # 409: nothing was sent to the printer; the caller must not assume the print stopped.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return job.model_dump(mode="json")

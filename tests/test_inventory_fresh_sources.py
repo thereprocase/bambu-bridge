@@ -127,3 +127,86 @@ async def test_an_answered_refresh_logs_nothing(monkeypatch) -> None:
     service.request_full_report.side_effect = reply
     assert await fresh_after_refresh(service) is True
     assert logged == []
+
+
+class AmsFrame(Frame):
+    def __init__(self, units: list[dict]) -> None:
+        super().__init__(5)
+        self.units = units
+
+    def snapshot(self) -> dict:
+        return {**super().snapshot(), "ams": {"ams": self.units}}
+
+
+def ams_printer(units: list[dict], modules: list[dict] | None = None, *, connected: bool = True):
+    info = {"module": modules or []}
+    service = SimpleNamespace(
+        serial="SN-" + str(id(units)),
+        connected=connected,
+        material_inventory=AmsFrame(units),
+        raw_bus=EventBus(),
+        request_full_report=AsyncMock(return_value=True),
+        native_snapshot=lambda: {"info": info},
+        send_command=AsyncMock(),
+    )
+    return service, info
+
+
+async def test_present_ams_without_a_serial_asks_for_version_and_uses_the_reply() -> None:
+    """2026-10-28: every AMS slot was unassignable after a power cycle until a manual
+    get_version; the refresh now asks when a present AMS has no serial."""
+    service, info = ams_printer([{"id": "0"}])
+
+    async def reply(*_args) -> None:
+        async def arrive() -> None:
+            await asyncio.sleep(0.05)
+            info["module"] = [{"name": "ams/0", "sn": "19C06A3C1300000"}]
+            service.raw_bus.publish(Event("snapshot", {"info": {"command": "get_version"}}))
+
+        asyncio.get_running_loop().create_task(arrive())
+
+    service.send_command.side_effect = reply
+    await inventory_sources.refresh_source_frame(service, wait_s=2)
+    service.send_command.assert_awaited_once_with("info", "get_version")
+    assert inventory_sources.ams_units_without_serial(service) == []
+
+
+async def test_serials_known_or_no_ams_send_nothing() -> None:
+    with_serial, _ = ams_printer([{"id": "0"}], [{"name": "ams/0", "sn": "X"}])
+    unit_serial, _ = ams_printer([{"id": "0", "sn": "Y"}])
+    no_ams, _ = ams_printer([])
+    for service in (with_serial, unit_serial, no_ams):
+        await inventory_sources.refresh_source_frame(service, wait_s=0.1)
+        service.send_command.assert_not_awaited()
+
+
+async def test_missing_serial_is_not_asked_while_disconnected() -> None:
+    offline, _ = ams_printer([{"id": "0"}], connected=False)
+    await inventory_sources.ensure_ams_serials(offline, wait_s=0.05)
+    offline.send_command.assert_not_awaited()
+
+
+async def test_unanswered_version_request_is_retried_three_times_then_stops() -> None:
+    silent, _ = ams_printer([{"id": "0"}])  # the printer never answers
+    started = time.monotonic()
+    await inventory_sources.ensure_ams_serials(silent, wait_s=0.05)
+    assert silent.send_command.await_count == 3
+    assert time.monotonic() - started < 2
+
+
+async def test_measured_reply_time_sets_the_next_wait_to_three_times_it() -> None:
+    service, info = ams_printer([{"id": "0"}])
+
+    async def reply(*_args) -> None:
+        async def arrive() -> None:
+            await asyncio.sleep(0.2)
+            info["module"] = [{"name": "ams/0", "sn": "S"}]
+            service.raw_bus.publish(Event("snapshot", {"info": {}}))
+
+        asyncio.get_running_loop().create_task(arrive())
+
+    service.send_command.side_effect = reply
+    await inventory_sources.ensure_ams_serials(service)
+    measured = inventory_sources.version_wait_s(service.serial)
+    assert 0.55 <= measured <= 1.5  # 3 x ~0.2 s, with scheduling slack
+    assert inventory_sources.version_wait_s("never-seen") == inventory_sources.VERSION_WAIT_S
