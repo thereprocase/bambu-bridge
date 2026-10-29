@@ -23,6 +23,42 @@ def test_external_holder_envelope_matches_orca():
     assert "slot_id" not in ams["print"] and ams["print"]["tray_info_idx"] == "GFG99"
 
 
+def _stock_generic_ids():
+    import json
+    from pathlib import Path
+
+    import bambu_bridge
+
+    data = json.loads(
+        (Path(bambu_bridge.__file__).parent / "data" / "stock_materials_v242.json").read_text()
+    )
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            name = node.get("name")
+            if isinstance(name, str) and name.startswith("Generic ") and node.get("material_id"):
+                found[name.removeprefix("Generic ").upper()] = node["material_id"]
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    return found
+
+
+def test_every_slot_material_with_a_stock_generic_preset_gets_its_id():
+    # A PCTG slot written with an empty tray_info_idx vanished from Orca's AMS list (2026-10-28).
+    from bambu_bridge.slot_setting import GENERIC_TRAY_INFO_IDX, MATERIAL_NOZZLE_C
+
+    stock = _stock_generic_ids()
+    expected = {m: stock[m] for m in MATERIAL_NOZZLE_C if m in stock}
+    assert expected == GENERIC_TRAY_INFO_IDX
+    assert slot_setting("pctg", "F2D7DC")["tray_info_idx"] == "GFG97"
+
+
 @pytest.mark.parametrize("material", ["", "PEEK", "wood"])
 def test_materials_the_printer_cannot_hold_are_refused(material):
     with pytest.raises(ValueError):
