@@ -49,15 +49,9 @@ def rig():
     "path,body",
     [
         ("xcam", {"module_name": "spaghetti_detector", "enabled": True}),
-        ("calibration", {"option": 4}),
         ("ams/drying", {}),
         ("set_accessories/nozzle", {"nozzle_type": "hardened_steel", "nozzle_diameter": 0.4}),
-        ("home", {}),
-        ("move", {"axis": "Z", "distance_mm": -10}),
-        ("extrude", {"distance_mm": 10}),
         ("steppers/off", {}),
-        ("ams/change", {"target_tray": 0}),
-        ("filament/unload", {}),
         ("skip_objects", {"obj_list": [0]}),
         ("work_light", {"mode": "on"}),
         ("print_option", {"sound_enable": True}),
@@ -68,6 +62,61 @@ def test_unqualified_controls_are_withheld(rig, path, body):
     client, service, _ = rig
     assert client.post(f"/printers/p/{path}", json=body).status_code == 409
     service.send_raw.assert_not_awaited()
+
+
+IDLE_ONLY = [
+    ("home", {}),
+    ("move", {"axis": "Z", "distance_mm": 10}),
+    ("extrude", {"distance_mm": 10}),
+    ("calibration", {"option": 4}),
+    ("ams/change", {"target_tray": 0}),
+    ("filament/unload", {}),
+]
+
+
+@pytest.mark.parametrize("path,body", IDLE_ONLY)
+def test_motion_and_filament_controls_wait_for_an_idle_printer(rig, path, body):
+    """Orca greys these out while a print runs; the rig's printer is RUNNING."""
+    client, service, _ = rig
+    service._state = {"gcode_state": "RUNNING"}
+    assert client.post(f"/printers/p/{path}", json=body).status_code == 409
+    service.send_raw.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("home", {}),
+        ("calibration", {"option": 4}),
+        ("ams/change", {"target_tray": 0}),
+        ("filament/unload", {}),
+    ],
+)
+def test_verified_controls_publish_when_idle(rig, path, body):
+    """Home, bed/vibration calibration, AMS change and unload match Orca's open builders."""
+    client, service, snapshot = rig
+    snapshot["_raw"]["gcode_state"] = "IDLE"
+    snapshot["_raw"]["ams"] = {"ams": [{"id": "0", "tray": [{"id": "0"}]}]}
+    service._state = {"gcode_state": "IDLE", "ams": {"tray_now": "255"}}
+    service.reset_motion_state = lambda *_args, **_kwargs: None
+    response = client.post(f"/printers/p/{path}", json=body)
+    assert response.status_code == 200, response.text
+    service.send_raw.assert_awaited_once()
+
+
+@pytest.mark.parametrize("path", ["xcam", "set_accessories/nozzle"])
+def test_features_the_p1s_lacks_say_so(rig, path):
+    """Orca's C12.json: support_ai_monitoring and enable_set_nozzle_info are false."""
+    client, _, snapshot = rig
+    snapshot["_raw"]["gcode_state"] = "IDLE"
+    body = (
+        {"module_name": "spaghetti_detector", "enabled": True}
+        if path == "xcam"
+        else {"nozzle_type": "hardened_steel", "nozzle_diameter": 0.4}
+    )
+    response = client.post(f"/printers/p/{path}", json=body)
+    assert response.status_code == 409
+    assert response.json()["detail"]["message"] == "Not available on P1S"
 
 
 @pytest.mark.parametrize("model", [None, "X1 Carbon", "P2S", "A1 mini", "H2D", "P1S lookalike"])

@@ -364,23 +364,47 @@ def ams_control(action: str) -> Envelope:
     return build_command("print", "ams_control", param=action)
 
 
+EXTERNAL_SPOOL = 255
+
+
 def ams_change_filament(
     target_tray: int, *, cur_temp: int = 220, tar_temp: int = 220
 ) -> Envelope:
-    """Switch the active AMS tray (0-based protocol index)."""
+    """Load an AMS tray (0-based protocol index) or the external spool (254 or 255).
+
+    The wire form is Orca's MachineObject::command_ams_change_filament: ``target``
+    is the flat tray index (ams_id * 4 + slot), ``ams_id`` and ``slot_id`` carry
+    the same choice for newer firmware, and 254 for the external spool is sent
+    as 255.
+    """
     if target_tray < 0:
         raise ValueError("target tray must be >= 0")
+    if target_tray in (254, EXTERNAL_SPOOL):
+        ams_id = slot_id = target = EXTERNAL_SPOOL
+    else:
+        ams_id, slot_id, target = target_tray // 4, target_tray % 4, target_tray
     return build_command(
         "print",
         "ams_change_filament",
-        target=target_tray,
+        target=target,
         curr_temp=cur_temp,
         tar_temp=tar_temp,
+        ams_id=ams_id,
+        slot_id=slot_id,
     )
 
 
-def unload_filament() -> Envelope:
-    return build_command("print", "unload_filament")
+def unload_filament(*, cur_temp: int = 220, tar_temp: int = 220) -> Envelope:
+    """Unload the loaded filament: Orca sends ams_change_filament with target and slot 255."""
+    return build_command(
+        "print",
+        "ams_change_filament",
+        target=EXTERNAL_SPOOL,
+        curr_temp=cur_temp,
+        tar_temp=tar_temp,
+        ams_id=EXTERNAL_SPOOL,
+        slot_id=EXTERNAL_SPOOL,
+    )
 
 
 # --------------------------------------------------------------------------- #

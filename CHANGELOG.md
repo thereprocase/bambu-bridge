@@ -7,6 +7,30 @@ Current work includes durable print-start recovery, queue review tools,
 connection/status reporting, model-aware feature availability, and shared
 Gridline branding. Hardware qualification and further bug fixes remain active.
 
+## Unreleased
+
+### Bridge
+
+- Lift the control gate for home, jog, extrude, bed/vibration calibration, AMS
+  change and unload on the P1S: they match OrcaSlicer's open DeviceManager
+  builders or are plain G-code the P1S already runs. Home, jog, extrude and
+  calibration wait for an idle printer, as in Orca. AMS change and unload now
+  use Orca's wire form (`ams_change_filament` with `ams_id`/`slot_id`; unload is
+  target and slot 255).
+- Report "Not available on P1S" for xcam modules and the nozzle accessory
+  command, per Orca's `C12.json` (`support_ai_monitoring`,
+  `enable_set_nozzle_info` both false). The AMS drying cycle, M84 and
+  skip-objects (the P1S reports no `fun` flags) stay withheld.
+- Prune the bridge's own job files from the printer's storage (hourly, idle
+  only, keeping the current file, in-flight uploads and the newest three
+  settled ones); a refused root listing is a 503, never an empty card.
+- Give every slot material with a stock Generic preset its tray_info_idx
+  (PCTG = GFG97), so Orca's AMS sync lists it.
+
+### Android app 0.21.0-beta.13 (code 63)
+
+- Movement, load/unload and calibration controls enable on a P1S.
+
 ## 0.7.0b1 - 2026-10-22 (spool inventory beta build; not published)
 
 Built on the camera warm-stream line (5f60bf7) that the bridge LXC runs.

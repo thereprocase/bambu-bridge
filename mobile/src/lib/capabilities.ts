@@ -37,8 +37,9 @@ export function printerCapabilities(snapshot: any, registeredModel?: string | nu
       }
       case "workLight": return known && Array.isArray(raw.lights_report) && raw.lights_report.some((l: any) => l.node === "work_light") ? yes : raw.lights_report == null ? unknown : known ? unavailable : unknown;
       case "nozzleSetup": return known ? unavailable : verifiedProtocol;
-      case "calibration": return verifiedProtocol;
-      case "motion": case "filamentMotion": return verifiedProtocol;
+      // Bed/vibration calibration, jog/home/extrude and AMS load/unload match
+      // Orca's open DeviceManager builders (bridge gate lifted 2026-10-29).
+      case "calibration": case "motion": case "filamentMotion": return known ? yes : unknown;
       case "camera": return known ? yes : { available: false, reason: "Camera support under review" };
       case "autoRecovery": return known ? yes : unknown;
     }
