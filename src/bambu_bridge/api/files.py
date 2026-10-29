@@ -14,6 +14,8 @@ which resolves to "/" via PurePosixPath("/") / "" / name == "/name".
 
 from __future__ import annotations
 
+import asyncio
+import ftplib
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -103,6 +105,39 @@ async def upload_file(
     return {"path": path, "name": name}
 
 
+# Pause before the one retry of a refused listing. The P1S answers LIST with a
+# bare 550 for a few seconds while it opens a freshly uploaded job.
+_LIST_RETRY_DELAY = 1.5
+
+
+async def _list_entries(ftps: Any, remote_dir: str) -> list[FileEntry]:
+    """List ``remote_dir`` with one retry; a refused root listing is a 503.
+
+    Root always exists, so a 550 there means the printer is busy, and callers
+    deleting by listing must see an error rather than an empty card. Optional
+    directories (cache, timelapse) keep degrading to empty.
+    """
+    strict = remote_dir == UPLOAD_DIR_PERSISTENT
+    for attempt in (1, 2):
+        try:
+            return await ftps.list_dir_with_timestamps(remote_dir, strict=strict)
+        except ftplib.error_perm as exc:
+            if attempt == 1:
+                await asyncio.sleep(_LIST_RETRY_DELAY)
+                continue
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="printer storage refused the listing; retry in a few seconds",
+                headers={"Retry-After": "5"},
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"FTPS list failed: {exc!s}",
+            ) from exc
+    raise AssertionError("unreachable")
+
+
 def _iso(dt: datetime | None) -> str | None:
     """Format a UTC datetime as ISO-8601 with trailing Z, or return None."""
     if dt is None:
@@ -155,13 +190,7 @@ async def list_files(
     """
     remote_dir = _check_dir(dir)
     ftps = _ftps_for(request, registry, printer_id)
-    try:
-        entries = await ftps.list_dir_with_timestamps(remote_dir)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"FTPS list failed: {exc!s}",
-        ) from exc
+    entries = await _list_entries(ftps, remote_dir)
 
     # Pull the sliced-date memo from app state if available.
     memo: SlicedDateMemo | None = getattr(request.app.state, "sliced_date_memo", None)

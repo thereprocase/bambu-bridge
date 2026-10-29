@@ -48,6 +48,7 @@ async def test_delivered_upload_without_start_skips_readiness():
         service=lambda: None,
         ensure_idle=AsyncMock(),
         recover_lost_start=AsyncMock(),
+        prune_printer_storage=AsyncMock(),
     )
     loop = asyncio.get_running_loop()
     inbox.status = lambda: (loop.call_soon_threadsafe(completed.set), [row])[1]

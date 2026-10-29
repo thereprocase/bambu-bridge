@@ -50,7 +50,7 @@ subdirectory, never logs or source control. Capacity is conservatively bounded
 at 512 MiB / 128 retained payloads. Redundant, delivered, terminal local copies
 expire after seven days; receipt metadata expires after ninety days once its
 payload has been released. Pending/uncertain jobs are never automatically pruned.
-Printer copies are not automatically deleted. On capacity rejection, the owner
+Printer copies are pruned by the gateway at most once an hour while the printer is idle: a delivered upload's `beluga-<id>` file goes once its start is terminal (or it never started), it is older than a day, and it is not among the newest three settled uploads; the file the printer reports as current and any upload still being delivered or still owning a start are always kept, and bridge files with no inbox row at all (older than the ninety-day receipt expiry) go. The local copy is untouched; the row's code becomes `BBFTP_REMOTE_PRUNED`. A refused listing or delete just waits for the next hour. On capacity rejection, the owner
 can explicitly discard eligible local cached copies; failed partial uploads are
 never presented as complete receipts.
 

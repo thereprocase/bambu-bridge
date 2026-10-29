@@ -579,9 +579,13 @@ class FtpsTransfer:
         return [PurePosixPath(n).name for n in names]
 
     async def list_dir_with_timestamps(
-        self, remote_dir: str = UPLOAD_DIR_PERSISTENT
+        self, remote_dir: str = UPLOAD_DIR_PERSISTENT, *, strict: bool = False
     ) -> list[FileEntry]:
         """List files under ``/<remote_dir>/`` with timestamp metadata.
+
+        ``strict`` raises the LIST tier's 550 instead of degrading to empty;
+        root always exists, so a 550 there is the printer refusing, and an
+        empty answer would be mistaken for an empty card.
 
         Uses the three-tier fallback ladder (MLSD → LIST → MDTM) described in
         this module's docstring.  Returns :class:`FileEntry` objects with
@@ -592,7 +596,7 @@ class FtpsTransfer:
         sort.
         """
         base = str(PurePosixPath("/") / remote_dir)
-        entries = await asyncio.to_thread(self._list_with_facts, base)
+        entries = await asyncio.to_thread(self._list_with_facts, base, strict)
         # Normalise names (strip any leading path components the server returns).
         return [
             FileEntry(

@@ -734,6 +734,7 @@ All under `/api/v1/printers/{printer_id}/files/`. **Tier:** v0.1 (APK doesn't ex
 **Error mapping (PR B fixes):**
 - FTPS auth failure → `401 ftps_auth_failed` (NOT 502 with bare `str(exc)` — design review CRIT)
 - FTPS network/protocol failure → `502 ftps_failed` with typed-exception envelope
+- `GET /files` on root refused by the printer (bare `550`, seen while it opens a freshly uploaded job) → one retry after 1.5 s, then `503` with `Retry-After: 5`; never an empty listing, so a caller deleting by listing cannot mistake a busy card for an empty one. `cache` and `timelapse` may not exist and still list as empty.
 - Invalid `dir` param → `422 invalid_input`
 
 ### 10.1 File listing response shape (GET /files)

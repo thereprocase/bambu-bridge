@@ -55,6 +55,7 @@ def setup(tmp_path, *, data=None, external=False):
         inbox_wake=asyncio.Event(),
         ensure_idle=AsyncMock(),
         recover_lost_start=AsyncMock(),
+        prune_printer_storage=AsyncMock(),
         inbox_failure=Mock(),
         arm_inbox_expiry=Mock(),
         inbox_owner=contextvars.ContextVar("fixture_inbox_owner", default=None),
