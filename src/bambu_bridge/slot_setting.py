@@ -48,14 +48,23 @@ MATERIAL_NOZZLE_C: dict[str, tuple[int, int]] = {
     "TPU": (175, 260),
 }
 
-# Bambu's generic presets; other materials are written as manual entries.
+# Bambu's "Generic <type>" presets (data/stock_materials_v242.json). Orca lists a
+# slot only when its preset id resolves, so every material with a stock generic
+# preset needs its id here; the rest are written as manual entries.
 GENERIC_TRAY_INFO_IDX = {
     "ABS": "GFB99",
     "ASA": "GFB98",
+    "HIPS": "GFS98",
     "PA": "GFN99",
+    "PA-CF": "GFN98",
     "PC": "GFC99",
+    "PCTG": "GFG97",
     "PETG": "GFG99",
+    "PETG-CF": "GFG98",
     "PLA": "GFL99",
+    "PLA-CF": "GFL98",
+    "PPA-CF": "GFN97",
+    "PPA-GF": "GFN96",
     "PVA": "GFS99",
     "TPU": "GFU99",
 }
