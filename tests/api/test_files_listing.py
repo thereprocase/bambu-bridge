@@ -207,7 +207,12 @@ async def test_listing_undated_files_sort_last(
     from bambu_bridge.protocol import ftps as ftps_mod
     from bambu_bridge.protocol.ftps import FileEntry
 
-    async def _mock_listing(self: ftps_mod.FtpsTransfer, remote_dir: str = "") -> list[FileEntry]:  # noqa: ARG001
+    async def _mock_listing(
+        self: ftps_mod.FtpsTransfer,  # noqa: ARG001
+        remote_dir: str = "",  # noqa: ARG001
+        *,
+        strict: bool = False,  # noqa: ARG001
+    ) -> list[FileEntry]:
         return [
             FileEntry("undated.gcode.3mf"),
             FileEntry("dated.gcode.3mf", modified_at=_dt(2026, 6, 1)),
@@ -245,7 +250,12 @@ async def test_listing_sort_basis_none_for_undated(
     from bambu_bridge.protocol import ftps as ftps_mod
     from bambu_bridge.protocol.ftps import FileEntry
 
-    async def _mock_listing(self: ftps_mod.FtpsTransfer, remote_dir: str = "") -> list[FileEntry]:  # noqa: ARG001
+    async def _mock_listing(
+        self: ftps_mod.FtpsTransfer,  # noqa: ARG001
+        remote_dir: str = "",  # noqa: ARG001
+        *,
+        strict: bool = False,  # noqa: ARG001
+    ) -> list[FileEntry]:
         return [FileEntry("no_ts.gcode.3mf")]
 
     def run() -> None:

@@ -34,6 +34,7 @@ from bambu_bridge.native_spools import NativeSpoolOverlay, VirtualSpoolStateUnav
 from bambu_bridge.native_video import NativeVideo
 from bambu_bridge.pairing import PairingStore, identity
 from bambu_bridge.preview_source import PreviewSources
+from bambu_bridge.printer_files import BRIDGE_FILE
 from bambu_bridge.retention import prune_state
 from bambu_bridge.service.events import Event, EventBus
 from bambu_bridge.service.slot_display import InventoryDisplay
@@ -46,6 +47,12 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 # Wake an idle delivery worker so stale start owners are swept without traffic.
 INBOX_TICK = 60
+# Printer-storage pruning: how often to look, how many settled uploads to keep,
+# and how old an upload must be before its printer copy may go. The library
+# archives a finished print from the printer within minutes; a day is ample.
+STORAGE_PRUNE_INTERVAL = 3600
+STORAGE_PRUNE_KEEP = 3
+STORAGE_PRUNE_MIN_AGE = 86400
 RETENTION_INTERVAL_S = 3600
 
 
@@ -179,6 +186,7 @@ class NativeGateway:
         )
         self.inbox_expiry: set[asyncio.TimerHandle] = set()
         self.inbox_status: list[dict[str, Any]] = []
+        self.storage_pruned_at = 0.0
         self.preview_upload_id: str | None = None
         self.preview_sources = PreviewSources(
             store.directory,
@@ -799,6 +807,60 @@ class NativeGateway:
                         code=row.get("code"),
                     )
 
+    async def prune_printer_storage(self) -> None:
+        """Delete bridge job files the printer no longer needs, at most hourly, idle only.
+
+        Every delivered upload used to stay on the printer's card for good; by
+        2026-10-29 there were 270 of them and the P1S began refusing to parse
+        new jobs and to list its root. The selection is in printer_files.prunable.
+        """
+        from bambu_bridge.printer_files import prunable
+        from bambu_bridge.protocol.ftps import UPLOAD_DIR_PERSISTENT, FtpsTransfer
+
+        inbox = self.inbox
+        if inbox is None or self.config is None:
+            return
+        now = time.time()
+        if now - self.storage_pruned_at < STORAGE_PRUNE_INTERVAL:
+            return
+        try:
+            self.require_idle()
+        except ValueError:
+            return
+        self.storage_pruned_at = now
+        printer_id = cast(dict[str, str], self.config)["printer_id"]
+        service = self.service()
+        ftps = FtpsTransfer(service.ip, service.access_code, port=self.app.state.ftps_port)
+        try:
+            names = await ftps.list_dir(UPLOAD_DIR_PERSISTENT, strict=True)
+        except Exception:  # noqa: BLE001 - a refused listing just waits for the next hour
+            log.warning("storage.prune_list_failed", printer_id=printer_id, exc_info=True)
+            return
+        current = str((service.snapshot().get("_raw") or {}).get("gcode_file") or "")
+        rows = await asyncio.to_thread(inbox.remote_rows, printer_id)
+        doomed = prunable(
+            names, rows, current, keep=STORAGE_PRUNE_KEEP, min_age_s=STORAGE_PRUNE_MIN_AGE, now=now
+        )
+        deleted: list[str] = []
+        for name in doomed:
+            try:
+                await ftps.delete("/" + name)
+            except Exception:  # noqa: BLE001 - stop at the first refusal; the rest wait
+                log.warning(
+                    "storage.prune_delete_failed", printer_id=printer_id, name=name, exc_info=True
+                )
+                break
+            deleted.append(name)
+        if deleted:
+            ids = [m.group(1) for m in (BRIDGE_FILE.fullmatch(n) for n in deleted) if m]
+            await asyncio.to_thread(inbox.remote_pruned, ids)
+            log.info(
+                "storage.pruned",
+                printer_id=printer_id,
+                files=len(deleted),
+                remaining=len(names) - len(deleted),
+            )
+
     async def deliver_inbox(self) -> None:
         """One ordered worker, independent of Orca socket lifetime; never replay a start."""
         from bambu_bridge.protocol.ftps import FtpsTransfer
@@ -820,6 +882,7 @@ class NativeGateway:
             async with self.inbox_dispatch_lock:
                 await self.recover_lost_start()
             await asyncio.to_thread(inbox.prune)
+            await self.prune_printer_storage()
             for row in await asyncio.to_thread(inbox.pending, printer_id):
                 identifier = row["id"]
                 if row["state"] == "stored" and await asyncio.to_thread(

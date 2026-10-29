@@ -206,7 +206,7 @@ class NativeInbox:
                 "review_ack_at": "INTEGER",
                 # Highest printer layer_num seen while this attempt was printing.
                 "layer_reached": "INTEGER",
-                **{name: "REAL" for name in TIMING_FIELDS},
+                **dict.fromkeys(TIMING_FIELDS, "REAL"),
             }.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE uploads ADD COLUMN {name} {definition}")
@@ -1203,6 +1203,28 @@ class NativeInbox:
                 "DELETE FROM uploads WHERE retained=0 AND created<unixepoch()-7776000 "
                 f"AND (start_state IS NULL OR {TERMINAL_SQL})"
             )
+
+    def remote_rows(self, printer: str) -> list[dict[str, Any]]:
+        """Every upload this inbox delivered to the printer, for storage pruning."""
+        with self.connect() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT id,remote,state,start_state,created,code FROM uploads "
+                    "WHERE printer=? AND kind='upload'",
+                    (printer,),
+                ).fetchall()
+            ]
+
+    def remote_pruned(self, identifiers: list[str]) -> None:
+        """Record that the printer no longer holds these uploads; the local copy stays."""
+        with self.connect() as db:
+            for identifier in identifiers:
+                db.execute(
+                    "UPDATE uploads SET code='BBFTP_REMOTE_PRUNED' "
+                    "WHERE id=? AND state='delivered'",
+                    (identifier,),
+                )
 
     def cancel_queued(self, printer: str) -> None:
         with self.connect() as db:
