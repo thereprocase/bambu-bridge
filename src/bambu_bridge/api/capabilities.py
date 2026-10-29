@@ -156,18 +156,16 @@ async def control_capability_gate(request: Request) -> None:
                 },
             )
     require_p1s(service)
-    if suffix in {
-        "xcam",
-        "calibration",
-        "set_accessories/nozzle",
-        "ams/drying",
-        "home",
-        "move",
-        "extrude",
-        "steppers/off",
-        "filament/unload",
-        "ams/change",
-    }:
+    # Per-model gating follows Orca's printer table for the P1S (resources/printers/C12.json):
+    # support_ai_monitoring and enable_set_nozzle_info are false, so the xcam modules and
+    # the nozzle accessory command have nothing to drive on this machine. Still under
+    # review: the AMS drying cycle (no dryer on this AMS, wire format unverified) and M84
+    # (Orca never sends it). Home, jog, extrude, bed/vibration calibration, AMS change and
+    # unload match Orca's open DeviceManager builders or are plain G-code the P1S already
+    # runs in its start code (owner 2026-10-29).
+    if suffix in {"xcam", "set_accessories/nozzle"}:
+        unavailable("Not available on P1S")
+    if suffix in {"ams/drying", "steppers/off"}:
         unavailable("Control support under review")
     if suffix == "skip_objects":
         from bambu_bridge.skip_objects import enabled
@@ -176,12 +174,20 @@ async def control_capability_gate(request: Request) -> None:
             unavailable("Control support under review")
     await await_fresh_telemetry(service)
     state = fresh_state(service)
+    idle = START_READY_STATES
     allowed = {
         "print/pause": {"RUNNING", "PREPARE"},
         "print/resume": {"PAUSE"},
         "print/stop": {"RUNNING", "PREPARE", "PAUSE"},
         # StatusPanel enables part skip while printing, not preparing.
         "skip_objects": {"RUNNING", "PAUSE"},
+        # Orca greys out axis moves, extrusion and calibration unless the
+        # printer is idle; filament change and unload keep their own pause
+        # rules in control.py.
+        "home": idle,
+        "move": idle,
+        "extrude": idle,
+        "calibration": idle,
     }
     if suffix in allowed and state not in allowed[suffix]:
         unavailable(f"Printer state: {state}")

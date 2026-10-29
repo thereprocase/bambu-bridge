@@ -36,8 +36,8 @@ test("detection capability is independent of enabled state", () => {
 test("AMS 2 Pro hardware alone does not approve the incorrect drying command", () => {
   expect(printerCapabilities({ model: "P1S", _raw: { ams: { ams: [{ info: "1003" }] } } }).get("drying").reason).toBe("Control support under review");
 });
-test("calibration remains gated pending wire correction", () => {
-  expect(printerCapabilities(p1s).get("calibration").available).toBe(false);
+test("bed and vibration calibration is available on a P1S", () => {
+  expect(printerCapabilities(p1s).get("calibration")).toEqual({ available: true, reason: "" });
 });
 test("reported features on another model require a qualified adapter", () => {
   const c = printerCapabilities({ model: "H2D", _raw: { home_flag: (1 << 19) | (1 << 18) | (1 << 25), lights_report: [{node: "work_light"}] } });
@@ -49,6 +49,7 @@ test("AMS remains present during RFID discovery", () => {
 test("missing support telemetry remains unconfirmed", () => {
   expect(printerCapabilities({model: "P1S"}).get("tangle").reason).toBe("Availability unconfirmed");
 });
-test.each(["motion", "filamentMotion"] as const)("%s stays withheld pending validation", feature => {
-  expect(printerCapabilities(p1s).get(feature)).toEqual({available: false, reason: "Control support under review"});
+test.each(["motion", "filamentMotion"] as const)("%s is available on a P1S and unconfirmed elsewhere", feature => {
+  expect(printerCapabilities(p1s).get(feature)).toEqual({ available: true, reason: "" });
+  expect(printerCapabilities({ model: "H2D" }).get(feature).reason).toBe("Availability unconfirmed");
 });

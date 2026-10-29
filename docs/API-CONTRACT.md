@@ -709,7 +709,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog. `distance_mm` ∈ ±{1, 10} (OrcaSlicer's steps; UIs send XY at 3000, Z at 900 mm/min). `409 conflict` while a print runs (allowed when paused), as OrcaSlicer disables motion. | v0.1 |
 | POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
 | POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | filament change. `409 conflict` while a print runs; when paused only the external spool (`254`), as in OrcaSlicer. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
-| POST | `/filament/unload` | — | unload current filament. `409 conflict` while a print runs; when paused only if the external spool is loaded (OrcaSlicer). | v0.1 |
+| POST | `/filament/unload` | — | unload current filament, sent as OrcaSlicer does (`ams_change_filament` with `target`, `ams_id` and `slot_id` 255). `409 conflict` while a print runs; when paused only if the external spool is loaded (OrcaSlicer). | v0.1 |
 | POST | `/work_light` | `{"mode": "on\|off\|flashing", "loop_times": int?, "interval_time": int?}` | work/task light; mode `"flashing"` accepts `loop_times` (default 1; 0=forever) and `interval_time` ms (default 500). Not all P1S configs have this node; printer ignores when absent. | v0.1 |
 | POST | `/ipcam/record` | `{"enabled": bool}` | enable/disable print video recording to SD card | v0.1 |
 | POST | `/ipcam/timelapse` | `{"enabled": bool}` | enable/disable timelapse generation to SD card | v0.1 |
@@ -818,7 +818,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be connec
 
 | Method | Path | Body summary | Risk | Notes |
 |---|---|---|---|---|
-| POST | `/xcam` | `{module_name, enabled, print_halt?}` | YELLOW | `module_name` whitelist-validated to matrix-confirmed P1S set. `print_halt=true` auto-pauses on detection. |
+| POST | `/xcam` | `{module_name, enabled, print_halt?}` | YELLOW | `module_name` whitelist-validated. On a P1S the gate answers `409 capability_unavailable` "Not available on P1S": OrcaSlicer's printer table (`resources/printers/C12.json`) has `support_ai_monitoring: false`. |
 | POST | `/print_option` | `{<flag_name>: bool, ...}` | YELLOW | Flags allowlist: `auto_recovery`, `air_print_detect`, `filament_tangle_detect`, `nozzle_blob_detect`, `sound_enable`. Unknown keys → 422. |
 | POST | `/skip_objects` | `{obj_list, job, gcode_file, run_id, plate, digest, action}` | YELLOW | OrcaSlicer's part skip; the identity comes from `GET /skip_objects`. See §11.4. Withheld (`409 capability_unavailable`, "Control support under review") unless `BRIDGE_ENABLE_SKIP_OBJECTS=1`. |
 | POST | `/ams/filament_setting` | `{ams_id, tray_id, tray_info_idx, tray_color, nozzle_temp_min, nozzle_temp_max, tray_type, override?}` | YELLOW | `tray_color` = 8-char RRGGBBAA hex; `tray_type` from known materials list; `temp_min < temp_max ≤ 300`; a slot with an assigned spool or in a refill backup → 409 `slot_in_use` (context: `spool_id`, `refill`, `assignment_kept`) unless `override: true`, whose 200 adds `guard` |
@@ -826,7 +826,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be connec
 | POST | `/ams/drying` | `{ams_id, temp, cooling_temp, duration, humidity, mode?, rotate_tray?}` | YELLOW | Starts AMS drying cycle; requires AMS firmware support. |
 | POST | `/ams/user_setting` | `{ams_id, startup_read_option, tray_read_option}` | YELLOW | Configures RFID auto-read behaviour. |
 | POST | `/calibration` | `{option: 1\|2\|4\|7, bed_type?}` | RED | P1S-confirmed bits only (matrix §8). Option 3, 5, 6, 8+ → 422 naming the matrix. |
-| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Tells the printer only; the temperature ceiling does not depend on it. |
+| POST | `/set_accessories/nozzle` | `{nozzle_type, nozzle_diameter}` | YELLOW | `nozzle_type ∈ {stainless_steel, hardened_steel}`; `nozzle_diameter ∈ {0.2, 0.4, 0.6, 0.8}`. Tells the printer only; the temperature ceiling does not depend on it. | On a P1S the gate answers `409` "Not available on P1S" (`C12.json`: `enable_set_nozzle_info: false`).
 | POST | `/extrude` | `{distance_mm, feedrate?}` | RED | 5-layer guard (see §11.2). |
 | POST | `/steppers/off` | — | RED | Sends M84; resets dead-reckon position to UNKNOWN. |
 | POST | `/gcode/raw` | `{line: str}` | BLACK | Gated by `BRIDGE_ENABLE_RAW_GCODE` env var; disabled by default (403). Every line logged at WARNING. 4 KB cap inherited. |

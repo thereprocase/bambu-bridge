@@ -97,9 +97,16 @@ def test_ams_and_filament() -> None:
     assert chg["command"] == "ams_change_filament"
     assert chg["target"] == 1
     assert chg["curr_temp"] == 240
+    assert (chg["ams_id"], chg["slot_id"]) == (0, 1)
+    second_unit = _body(commands.ams_change_filament(6), "print")
+    assert (second_unit["target"], second_unit["ams_id"], second_unit["slot_id"]) == (6, 1, 2)
+    external = _body(commands.ams_change_filament(254), "print")
+    assert (external["target"], external["ams_id"], external["slot_id"]) == (255, 255, 255)
     with pytest.raises(ValueError, match="target tray"):
         commands.ams_change_filament(-1)
-    assert _body(commands.unload_filament(), "print")["command"] == "unload_filament"
+    unload = _body(commands.unload_filament(), "print")
+    assert unload["command"] == "ams_change_filament"
+    assert (unload["target"], unload["slot_id"], unload["ams_id"]) == (255, 255, 255)
 
 
 def test_get_version_is_info_category() -> None:
