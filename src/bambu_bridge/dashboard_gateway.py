@@ -80,7 +80,7 @@ class DashboardGateway:
             return
         trusted = (
             trusted_transport
-            and headers.get(b"tailscale-user-login") == self.login
+            and (self.login == "*" or headers.get(b"tailscale-user-login") == self.login)
             and (origin is None or origin == self.origin)
             and (
                 headers.get(b"sec-fetch-site") != "cross-site"

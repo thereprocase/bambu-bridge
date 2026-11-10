@@ -16,7 +16,7 @@ ORIGIN = "https://bridge.example.ts.net"
 HEADERS = {"Tailscale-User-Login": "owner@example.com", "X-Forwarded-Proto": "https"}
 
 
-def gateway() -> DashboardGateway:
+def gateway(login: str = "owner@example.com") -> DashboardGateway:
     app = FastAPI()
 
     @app.get("/api/test")
@@ -40,7 +40,7 @@ def gateway() -> DashboardGateway:
         )
         await socket.close()
 
-    return DashboardGateway(app, ORIGIN, "owner@example.com", "owner-secret")
+    return DashboardGateway(app, ORIGIN, login, "owner-secret")
 
 
 def test_session_and_authorized_http_do_not_return_key() -> None:
@@ -202,3 +202,16 @@ def test_owner_dashboard_cannot_be_framed() -> None:
         ):
             assert response.headers["x-frame-options"] == "DENY"
             assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
+
+
+@pytest.mark.parametrize("login", [None, "other@example.com"])
+def test_tailnet_policy_accepts_private_serve_without_user_identity(login: str | None) -> None:
+    headers = {"X-Forwarded-Proto": "https"}
+    if login is not None:
+        headers["Tailscale-User-Login"] = login
+    with TestClient(gateway("*"), base_url=ORIGIN, client=("127.0.0.1", 5000)) as client:
+        assert client.get("/app/session", headers=headers).status_code == 200
+        assert client.post("/api/test", headers={**headers, "Origin": "https://attacker.example"}).status_code == 403
+        assert client.post("/api/test", headers={**headers, "Origin": ORIGIN}).json()["authorized"]
+    with TestClient(gateway("*"), base_url=ORIGIN, client=("100.64.0.2", 5000)) as client:
+        assert client.get("/app/session", headers=headers).status_code == 403
