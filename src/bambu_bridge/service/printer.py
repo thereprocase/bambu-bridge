@@ -36,6 +36,7 @@ from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.auto_refill import AutoRefillHistory
 from bambu_bridge.service.diagnostic_journal import DiagnosticJournal
 from bambu_bridge.service.events import Event, EventBus, diff_state
+from bambu_bridge.service.maintenance_motion import MaintenanceMotion
 from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.service.refill_reports import RefillReports
 from bambu_bridge.service.remaining_estimates import RemainingEstimates
@@ -332,6 +333,7 @@ class PrinterService:
         # invalidates the estimate.
         self._tracked_pos: dict[str, float | None] = {"X": None, "Y": None, "Z": None}
         self._motion_request_lock = asyncio.Lock()
+        self.maintenance_motion = MaintenanceMotion()
 
         self._mqtt = self._build_mqtt()
         self._task: asyncio.Task[None] | None = None
@@ -439,6 +441,7 @@ class PrinterService:
         snapshot = translate_snapshot(self._state, ctx)
         for slot in snapshot["ams"]["slots"]:
             slot["remaining_estimate"] = self.remaining_estimates.view(slot["physical_slot"] - 1)
+        snapshot["maintenance"] = self.maintenance_motion.snapshot()
         return snapshot
 
     @property
@@ -526,6 +529,28 @@ class PrinterService:
         typed control endpoints use so the builder stays the single source of
         wire truth.
         """
+        if self.maintenance_motion.observe_command(envelope):
+            self.bus.publish(Event("delta", {}))
+        await self._publish_raw(envelope)
+
+    async def send_maintenance(self, envelope: dict[str, Any], targets: dict[str, float]) -> None:
+        """Remember a sent target, without treating it as a verified coordinate."""
+        self._tracked_pos = {"X": None, "Y": None, "Z": None}
+        epoch = self.maintenance_motion.epoch
+        self.maintenance_motion.register(envelope)
+        try:
+            await self._publish_raw(envelope)
+        except BaseException:
+            self.maintenance_motion.reset("Maintenance command delivery was not confirmed")
+            self.bus.publish(Event("delta", {}))
+            raise
+        # A disconnect/print/external command during publication wins over the
+        # stale target. Never resurrect a coordinate after invalidation.
+        if epoch == self.maintenance_motion.epoch:
+            self.maintenance_motion.requested(targets)
+            self.bus.publish(Event("delta", {}))
+
+    async def _publish_raw(self, envelope: dict[str, Any]) -> None:
         if self.command_guard is not None:
             async with self.command_guard(envelope):
                 await self._mqtt.publish(envelope)
@@ -597,6 +622,8 @@ class PrinterService:
         if any(v is not None for v in self._tracked_pos.values()):
             self._log.info("motion.reset", reason=reason)
         self._tracked_pos = {"X": None, "Y": None, "Z": None}
+        self.maintenance_motion.reset(reason)
+        self.bus.publish(Event("delta", {}))
 
     # ----------------------------------------------------------------- #
     # MQTT callbacks
@@ -790,6 +817,8 @@ class PrinterService:
 
         # Receipt watermark was already published above, before async work.
         prev_state = self._state
+        if self.maintenance_motion.observe_report(incoming, prev_state):
+            self.bus.publish(Event("delta", {}))
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
 

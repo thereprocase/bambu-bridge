@@ -707,6 +707,9 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
 | POST | `/home` | — | G28 home all axes | v0.1 |
 | POST | `/move/absolute-z` | `{position_mm, feed_mm_min?}` | P1S absolute bed Z, 0–250 mm, max 600 mm/min; fresh idle/homed Z required | v0.7 |
+| POST | `/move/absolute-xy` | `{x_mm, y_mm, feed_mm_min?}` | P1S absolute XY, 0–256 mm each, max 3000 mm/min; fresh idle/homed X and Y required | v0.7 |
+| POST | `/move/maintenance-step` | `{axis, direction, step_mm}` | One bounded absolute target from the last requested maintenance target; steps 1/10/50 mm | v0.7 |
+| POST | `/move/maintenance-xy-step` | `{direction_x, direction_y, step_mm}` | Eight-direction finite XY step from last requested XY target; each direction −1/0/1, not both zero | v0.7 |
 | POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog. `distance_mm` ∈ ±{1, 10} (OrcaSlicer's steps; UIs send XY at 3000, Z at 900 mm/min). `409 conflict` while a print runs (allowed when paused), as OrcaSlicer disables motion. | v0.1 |
 | POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
 | POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | filament change. `409 conflict` while a print runs; when paused only the external spool (`254`), as in OrcaSlicer. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
@@ -1149,13 +1152,32 @@ Unsupported device families use the general published catalog. The frozen P1S
 cloud requests are made.
 
 
-Absolute bed positioning sends `G90`, one bounded Z move and `M400`. Publication
-returns `confirmation: pending`; it does not prove physical completion. The
-bridge never seeds a relative position from either Home All or an absolute
-command. Homed axes with unknown bridge coordinates return
-`jog_position_unknown` for relative jogging, rather than claiming homing failed.
-The browser Movement section provides a single equal-width Maintenance Z row:
-Top (0), Upper (83), Lower (167), Bottom (250 mm). Commands require fresh idle
-P1S telemetry, homed Z, and a trusted connection. Raw G-code remains disabled
-unless separately enabled by the operator. Physical operation requires
-supervised qualification; automated coverage uses synthetic printer fixtures.
+Maintenance positioning uses P1S firmware absolute coordinates. Bounds are
+X/Y 0–256 mm and Z 0–250 mm, matching the maintained P1S machine geometry.
+Targets are finite and moves require fresh idle P1S telemetry and the relevant
+homed bits. Payloads preserve soft-endstop/reference state, enable all soft
+endstops, select G90, send one bounded target and M400, then restore state.
+The [captured manual-axis macro](https://github.com/Doridian/OpenBambuAPI/blob/main/gcode.md#manual-axis-move-x-y-or-z)
+provides the M211 and M1002 push/pop sequence. Publish success is not physical
+completion; responses retain `confirmation: pending`.
+
+Snapshots expose `maintenance.last_requested.{X,Y,Z}` and
+`maintenance.position_verified: false`. Requested targets are references for
+calculating another bounded absolute target, never measured coordinates.
+Home, disconnect, print transitions, other movement commands and observed
+external command reports invalidate them. Movements from an external screen
+or LAN client are not guaranteed to be observable in P1S telemetry; select an
+absolute preset again after using those controls. Unknown references return
+`maintenance_target_unknown`; an overrun returns
+`maintenance_target_out_of_bounds`, with no command publication. G28 never
+seeds a verified coordinate, and legacy relative-jog guards remain unchanged.
+
+The browser Maintenance section has four Z presets on the left (Top 0,
+Upper 83, Lower 167, Bottom 250) and Raise/Lower plus a 1/10/50 mm step selector
+on the right. XY offers a center, four half-corners and four full corners in
+a nested directional grid. Its eight-direction pad sends one finite target
+per click; it has no hold-to-repeat loop, because MQTT publication does not
+prove motion completion or bound a repeated-command backlog.
+
+These additions are branch work until separately deployed. Automated tests
+use synthetic printer fixtures; physical operation remains unqualified.

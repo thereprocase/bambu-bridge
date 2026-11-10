@@ -575,10 +575,133 @@ async def move_bed_absolute(
         envelope = _build(
             commands.move_bed_absolute, body.position_mm, feed_mm_min=body.feed_mm_min
         )
-        # Invalidate before awaiting publication: another relative request cannot
-        # reuse an estimate while this command may already be executing.
-        service.reset_motion_state("Absolute Z requested; completion unverified")
-        return await _send(service, envelope)
+        return await _send_maintenance(service, envelope, {"Z": body.position_mm})
+
+
+async def _send_maintenance(
+    service: PrinterService, envelope: dict[str, Any], targets: dict[str, float]
+) -> dict[str, Any]:
+    try:
+        await service.send_maintenance(envelope, targets)
+    except ConnectionError as exc:
+        raise HTTPException(502, detail=str(exc)) from exc
+    return {
+        "sent": envelope,
+        "confirmation": "pending",
+        "maintenance": service.maintenance_motion.snapshot(),
+    }
+
+
+class AbsoluteXYBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    x_mm: float = Field(ge=0, le=256, allow_inf_nan=False)
+    y_mm: float = Field(ge=0, le=256, allow_inf_nan=False)
+    feed_mm_min: int = Field(default=3000, ge=1, le=3000)
+
+
+def _require_maintenance_axes(service: PrinterService, axes: str) -> None:
+    require_start_ready(service, "maintenance movement")
+    flag = (service.snapshot().get("_raw") or {}).get("home_flag")
+    for axis in axes:
+        if isinstance(flag, bool) or not isinstance(flag, int) or not flag & _HOME_BIT[axis]:
+            _jog_raise(errors.jog_not_homed(axis))
+
+
+@router.post("/{printer_id}/move/absolute-xy")
+async def move_xy_absolute(
+    printer_id: str, body: AbsoluteXYBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    async with _motion_request(service):
+        _require_maintenance_axes(service, "XY")
+        envelope = _build(
+            commands.move_xy_absolute, body.x_mm, body.y_mm, feed_mm_min=body.feed_mm_min
+        )
+        return await _send_maintenance(service, envelope, {"X": body.x_mm, "Y": body.y_mm})
+
+
+class MaintenanceStepBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    axis: Literal["X", "Y", "Z"]
+    direction: Literal[-1, 1]
+    step_mm: Literal[1, 10, 50]
+
+
+@router.post("/{printer_id}/move/maintenance-step")
+async def maintenance_step(
+    printer_id: str, body: MaintenanceStepBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    async with _motion_request(service):
+        axes = "Z" if body.axis == "Z" else "XY"
+        _require_maintenance_axes(service, axes)
+        try:
+            target = service.maintenance_motion.step_target(body.axis, body.direction, body.step_mm)
+        except LookupError as exc:
+            raise HTTPException(
+                409, {"error": "maintenance_target_unknown", "message": str(exc)}
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                409, {"error": "maintenance_target_out_of_bounds", "message": str(exc)}
+            ) from exc
+        if body.axis == "Z":
+            envelope = _build(commands.move_bed_absolute, target)
+            targets = {"Z": target}
+        else:
+            other = "Y" if body.axis == "X" else "X"
+            other_target = service.maintenance_motion.targets[other]
+            if other_target is None:
+                raise HTTPException(
+                    409,
+                    {
+                        "error": "maintenance_target_unknown",
+                        "message": "Select an absolute XY target first",
+                    },
+                )
+            targets = {body.axis: target, other: other_target}
+            envelope = _build(commands.move_xy_absolute, targets["X"], targets["Y"])
+        return await _send_maintenance(service, envelope, targets)
+
+
+class MaintenanceXYStepBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    direction_x: Literal[-1, 0, 1]
+    direction_y: Literal[-1, 0, 1]
+    step_mm: Literal[1, 10, 50]
+
+
+@router.post("/{printer_id}/move/maintenance-xy-step")
+async def maintenance_xy_step(
+    printer_id: str, body: MaintenanceXYStepBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    async with _motion_request(service):
+        _require_maintenance_axes(service, "XY")
+        if body.direction_x == body.direction_y == 0:
+            raise HTTPException(422, detail="Choose an XY direction")
+        try:
+            targets: dict[str, float] = {}
+            for axis, direction in (("X", body.direction_x), ("Y", body.direction_y)):
+                if direction:
+                    targets[axis] = service.maintenance_motion.step_target(
+                        axis, direction, body.step_mm
+                    )
+                else:
+                    known = service.maintenance_motion.targets[axis]
+                    if known is None:
+                        raise LookupError("Select an absolute XY target first")
+                    targets[axis] = known
+        except LookupError as exc:
+            raise HTTPException(
+                409, {"error": "maintenance_target_unknown", "message": str(exc)}
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                409, {"error": "maintenance_target_out_of_bounds", "message": str(exc)}
+            ) from exc
+        envelope = _build(commands.move_xy_absolute, targets["X"], targets["Y"])
+        return await _send_maintenance(service, envelope, targets)
 
 
 @router.post("/{printer_id}/ams/control")
