@@ -331,6 +331,7 @@ class PrinterService:
         # print start/stop, MQTT session loss) because a move we can't see
         # invalidates the estimate.
         self._tracked_pos: dict[str, float | None] = {"X": None, "Y": None, "Z": None}
+        self._motion_request_lock = asyncio.Lock()
 
         self._mqtt = self._build_mqtt()
         self._task: asyncio.Task[None] | None = None

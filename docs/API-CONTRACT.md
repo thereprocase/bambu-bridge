@@ -706,6 +706,7 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/speed` | `{"level": 1-4}` | 1 silent · 2 standard · 3 sport · 4 ludicrous. **Response echoes labels** so APK doesn't hardcode i18n. | v0 |
 | POST | `/gcode` | `{"line": "G28"}` | raw G-code. Marked `safety: false`. APK should NOT expose to user UI casually; reserve for an explicit "advanced" pane. | v0.1 |
 | POST | `/home` | — | G28 home all axes | v0.1 |
+| POST | `/move/absolute-z` | `{position_mm, feed_mm_min?}` | P1S absolute bed Z, 0–250 mm, max 600 mm/min; fresh idle/homed Z required | v0.7 |
 | POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog. `distance_mm` ∈ ±{1, 10} (OrcaSlicer's steps; UIs send XY at 3000, Z at 900 mm/min). `409 conflict` while a print runs (allowed when paused), as OrcaSlicer disables motion. | v0.1 |
 | POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
 | POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | filament change. `409 conflict` while a print runs; when paused only the external spool (`254`), as in OrcaSlicer. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
@@ -1146,3 +1147,15 @@ cross-model descriptions; existing severity, advice and phase notes remain.
 Unsupported device families use the general published catalog. The frozen P1S
 01P response records its official URL, vendor version and SHA256; no runtime
 cloud requests are made.
+
+
+Absolute bed positioning sends `G90`, one bounded Z move and `M400`. Publication
+returns `confirmation: pending`; it does not prove physical completion. The
+bridge never seeds a relative position from either Home All or an absolute
+command. Homed axes with unknown bridge coordinates return
+`jog_position_unknown` for relative jogging, rather than claiming homing failed.
+The browser Movement section provides a single equal-width Maintenance Z row:
+Top (0), Upper (83), Lower (167), Bottom (250 mm). Commands require fresh idle
+P1S telemetry, homed Z, and a trusted connection. Raw G-code remains disabled
+unless separately enabled by the operator. Physical operation requires
+supervised qualification; automated coverage uses synthetic printer fixtures.

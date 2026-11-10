@@ -26,6 +26,7 @@ for any endpoint where the contract documents physical slots.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Annotated, Any
 
@@ -239,6 +240,15 @@ def set_fan(part: str, percent: int) -> Envelope:
 def home() -> Envelope:
     """Home all axes (G28). Moves the toolhead — not a passive command."""
     return _gcode("G28")
+
+
+def move_bed_absolute(position_mm: float, *, feed_mm_min: int = 600) -> Envelope:
+    """Bounded P1S absolute Z target; no assumed current position or mode."""
+    if not math.isfinite(position_mm) or not 0 <= position_mm <= 250:
+        raise ValueError("absolute Z target must be finite and in 0..250 mm")
+    if isinstance(feed_mm_min, bool) or not 1 <= feed_mm_min <= 600:
+        raise ValueError("absolute Z feed must be in 1..600 mm/min")
+    return _gcode(f"G90\nG1 Z{position_mm:g} F{feed_mm_min}\nM400")
 
 
 def move_axis(axis: str, distance_mm: float, *, feed_mm_min: int = 600) -> Envelope:

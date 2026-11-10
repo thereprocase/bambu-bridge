@@ -209,3 +209,38 @@ test('Skip objects follows Orca: shown with fun bit 49, usable while RUNNING/PAU
   telemetry({ _raw: { gcode_state: 'PAUSE' }, phase: 'paused' });
   assert.equal(skipBtn().disabled, false);
 });
+
+test('maintenance Z positions form one equal-width row and send bounded absolute targets', async () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet({ hold: true });
+  const targets = [['Top', 0], ['Upper', 83], ['Lower', 167], ['Bottom', 250]];
+  const row = buttons(body(), 'Top')[0].parentNode;
+  assert.equal(row.style.display, 'grid');
+  assert.equal(row.style.gridTemplateColumns, 'repeat(4, minmax(0, 1fr))');
+  assert.equal(row.style.width, '100%');
+  for (const [label, target] of targets) {
+    const button = buttons(body(), label)[0];
+    assert.equal(button.parentNode, row);
+    assert.equal(button.disabled, false);
+    const request = button.fire("click");
+    await tick();
+    assert.deepEqual(posts.at(-1), {
+      path: `/printers/${PID}/move/absolute-z`, body: { position_mm: target, feed_mm_min: 600 },
+    });
+    assert.ok(targets.every(([name]) => buttons(body(), name)[0].disabled));
+    pending.shift()({ ok: true, status: 200, data: { confirmation: 'pending' } });
+    await request;
+    await tick();
+  }
+});
+
+test('maintenance positions stay disabled until Z is homed and when telemetry is stale', () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 3 }, { phase: 'completed' }));
+  openSheet();
+  assert.ok(buttons(body(), 'Bottom')[0].disabled);
+  telemetry({ _raw: { home_flag: 7 } });
+  assert.equal(buttons(body(), 'Bottom')[0].disabled, false);
+  store.applyDelta(PID, { session: { last_telemetry_at: new Date(Date.now() - 60000).toISOString() } });
+  assert.ok(buttons(body(), 'Bottom')[0].disabled);
+  assert.equal(posts.length, 0);
+});

@@ -66,6 +66,7 @@ ERR_CAMERA_UNAVAILABLE = "camera_unavailable"
 ERR_CAMERA_NO_FRAME = "camera_no_frame"
 
 ERR_JOG_NOT_HOMED = "jog_not_homed"
+ERR_JOG_POSITION_UNKNOWN = "jog_position_unknown"
 ERR_JOG_OUT_OF_ENVELOPE = "jog_out_of_envelope"
 ERR_JOG_STEP_NOT_ALLOWED = "jog_step_not_allowed"
 
@@ -281,6 +282,22 @@ def jog_not_homed(axis: str) -> JSONResponse:
         status_code=status.HTTP_409_CONFLICT,
         likely_cause="axis_position_unknown",
         remediation_hint="Tap 'Home all' to home all axes before jogging.",
+        context={"axis": axis},
+    )
+
+
+def jog_position_unknown(axis: str) -> JSONResponse:
+    """The printer is homed, but it does not report an axis coordinate."""
+    return envelope(
+        error=ERR_JOG_POSITION_UNKNOWN,
+        message=(f"Cannot jog {axis}: printer is homed, but its current position "
+                 "is unknown to the bridge."),
+        status_code=status.HTTP_409_CONFLICT,
+        likely_cause="axis_position_unknown",
+        remediation_hint=(
+            "Home All does not establish a verified coordinate in the bridge. "
+            "For the bed, use an absolute Z target; otherwise use the printer controls."
+        ),
         context={"axis": axis},
     )
 

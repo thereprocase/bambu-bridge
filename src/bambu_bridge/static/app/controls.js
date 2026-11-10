@@ -457,11 +457,49 @@ function movePanel(ctx, st) {
     jogBtn('Z', -1, 'Z−'),
   ]);
 
+  let sendingPosition = false;
+  const maintenanceButtons = [
+    ['Top', 0],
+    ['Upper', 83],
+    ['Lower', 167],
+    ['Bottom', 250],
+  ].map(([label, target]) => el('button', {
+    class: 'btn', style: { minWidth: '0', paddingLeft: '4px', paddingRight: '4px' }, text: label,
+    'aria-label': `${label}: move bed to Z${target} mm`,
+    onClick: async () => {
+      if (sendingPosition) return;
+      sendingPosition = true;
+      updateMaintenance();
+      try {
+        await run(ctx, '/move/absolute-z', { position_mm: target, feed_mm_min: 600 },
+          `Bed Z${target} command sent`);
+      } finally {
+        sendingPosition = false;
+        updateMaintenance();
+      }
+    },
+  }));
+  function updateMaintenance() {
+    const current = ctx.state();
+    const flag = current.raw.home_flag;
+    const homedZ = Number.isInteger(flag) && (flag & 4) !== 0;
+    const session = ctx.app.store.current(ctx.pid)?.session || {};
+    const age = Date.now() - Date.parse(session.last_telemetry_at || "");
+    const fresh = Number.isFinite(age) && age >= 0 && age <= 15000;
+    for (const button of maintenanceButtons) {
+      button.disabled = sendingPosition || !current.enabled || !current.idle || !homedZ || !fresh;
+    }
+  }
+  ctx.update(updateMaintenance);
+
   return el('div', {}, [
     homeBtn,
     el('div', { class: 'field__hint', style: { marginTop: 'var(--space-3)' }, text: 'Step size' }),
     el('div', { class: 'row gap-2', style: { flexWrap: 'wrap' } }, chips),
     grid,
+    el('div', { class: 't-section', style: { marginTop: 'var(--space-3)' }, text: 'Maintenance Z positions' }),
+    el('div', { class: 'field__hint', text: 'Requires idle printer and homed Z. Top raises the bed near the nozzle; bottom lowers it. Keep hands and cleaning tools clear while moving.' }),
+    el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 'var(--space-2)', width: '100%' } }, maintenanceButtons),
   ]);
 }
 

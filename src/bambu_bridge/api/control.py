@@ -47,7 +47,10 @@ direction).
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -55,7 +58,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
-from bambu_bridge.api.capabilities import control_capability_gate
+from bambu_bridge.api.capabilities import control_capability_gate, require_start_ready
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol import commands
 from bambu_bridge.protocol.models import build_command
@@ -126,6 +129,25 @@ async def _send(service: PrinterService, envelope: dict[str, Any]) -> dict[str, 
     except ConnectionError as exc:  # dropped between the check and the publish
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"sent": envelope, "confirmation": "pending"}
+
+
+@asynccontextmanager
+async def _motion_request(service: PrinterService) -> AsyncIterator[None]:
+    """Reject overlapping motion publications; firmware queues ordered G-code."""
+    lock = getattr(service, "_motion_request_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        service._motion_request_lock = lock
+    if lock.locked():
+        raise HTTPException(
+            409,
+            {
+                "error": "motion_request_pending",
+                "message": "A movement command is still being sent.",
+            },
+        )
+    async with lock:
+        yield
 
 
 def _build(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -374,13 +396,13 @@ async def send_gcode(
 async def home(printer_id: str, registry: Registry = Depends(get_registry)) -> dict[str, Any]:
     """Home all axes (G28). Moves the toolhead."""
     service = _online(registry, printer_id)
-    result = await _send(service, commands.home())
-    # Publish succeeded → seed the dead-reckon estimate to the known post-home
-    # position so subsequent jogs have a position to clamp against. (If the
-    # publish raised, _send already converted it to an HTTPException and we
-    # never reach here — the estimate stays whatever it was.)
-    service.reset_motion_state("Home requested; completion unverified")
-    return result
+    async with _motion_request(service):
+        result = await _send(service, commands.home())
+        # Publication is not physical completion, and G28 does not report its
+        # final coordinate. Keep relative jogging fail-closed; homed absolute
+        # Z moves do not require inventing that missing coordinate.
+        service.reset_motion_state("Home requested; completion unverified")
+        return result
 
 
 def _jog_raise(resp: Any) -> None:
@@ -440,9 +462,10 @@ def _check_jog(service: PrinterService, axis: str, distance_mm: float) -> None:
         # UNKNOWN POSITION + ANY POSSIBILITY OF COLLISION = REJECT.
         # We do not distinguish direction here on purpose: a gap-closing Z-
         # jog could ram the bed, and a gap-opening jog could already be at the
-        # envelope max — from an unknown position both are unsafe. The fix is
-        # always the same: re-home so the bridge regains a known estimate.
-        _jog_raise(errors.jog_not_homed(axis))
+        # envelope max — from an unknown position both are unsafe. G28
+        # publication does not prove a coordinate; use a bounded absolute
+        # bed target instead of inventing a relative-jog estimate.
+        _jog_raise(errors.jog_position_unknown(axis))
         return  # unreachable — satisfies the type-checker
 
     # Known position: clamp the dead-reckoned result.
@@ -499,30 +522,63 @@ async def move(
     - axis must be homed (home_flag bitmask in printer state)
     - the bridge's dead-reckoned position must be known and the result must
       stay within Z ∈ [SAFE_Z_FLOOR, 256], X/Y ∈ [0, 256] mm; an unknown
-      position is rejected (re-home to recover).
+      position is rejected; homed bed moves can use absolute Z targets.
     """
     service = _online(registry, printer_id)
-    require_not_busy(service)
-    axis = body.axis.upper()
-    _check_jog(service, axis, body.distance_mm)
-    result = await _send(
-        service,
-        _build(
-            commands.move_axis,
-            axis,
-            body.distance_mm,
-            feed_mm_min=body.feed_mm_min,
-        ),
-    )
-    # Publish succeeded → advance the dead-reckon estimate by the signed delta
-    # so the next jog clamps against the new position. Only reached when both
-    # the guard passed and the publish did not raise.
-    service.apply_jog(axis, body.distance_mm)
-    return result
+    async with _motion_request(service):
+        require_not_busy(service)
+        axis = body.axis.upper()
+        _check_jog(service, axis, body.distance_mm)
+        result = await _send(
+            service,
+            _build(
+                commands.move_axis,
+                axis,
+                body.distance_mm,
+                feed_mm_min=body.feed_mm_min,
+            ),
+        )
+        # Publish succeeded → advance the dead-reckon estimate by the signed delta
+        # so the next jog clamps against the new position. Only reached when both
+        # the guard passed and the publish did not raise.
+        service.apply_jog(axis, body.distance_mm)
+        return result
 
 
 class AmsControlBody(BaseModel):
     action: str = Field(examples=["resume"])
+
+
+class AbsoluteBedBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    position_mm: float = Field(ge=0, le=250, allow_inf_nan=False)
+    feed_mm_min: int = Field(default=600, ge=1, le=600)
+
+
+@router.post("/{printer_id}/move/absolute-z")
+async def move_bed_absolute(
+    printer_id: str, body: AbsoluteBedBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    """Send a bounded absolute Z target using the printer's homed coordinate.
+
+    Unlike a relative jog this never guesses the current coordinate. G90
+    makes the mode explicit; M400 orders later queued commands after the move.
+    A successful response means publication only, never observed completion.
+    """
+    service = _online(registry, printer_id)
+    async with _motion_request(service):
+        require_start_ready(service, "absolute bed movement")
+        raw = service.snapshot().get("_raw") or {}
+        flag = raw.get("home_flag")
+        if isinstance(flag, bool) or not isinstance(flag, int) or not flag & _HOME_BIT["Z"]:
+            _jog_raise(errors.jog_not_homed("Z"))
+        envelope = _build(
+            commands.move_bed_absolute, body.position_mm, feed_mm_min=body.feed_mm_min
+        )
+        # Invalidate before awaiting publication: another relative request cannot
+        # reuse an estimate while this command may already be executing.
+        service.reset_motion_state("Absolute Z requested; completion unverified")
+        return await _send(service, envelope)
 
 
 @router.post("/{printer_id}/ams/control")

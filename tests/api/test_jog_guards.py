@@ -279,7 +279,7 @@ async def test_unknown_position_gap_closing_z_rejected(
                 json={"axis": "Z", "distance_mm": -10.0},
             )
             assert r.status_code == 409, r.text
-            assert r.json()["error"] == "jog_not_homed", r.text
+            assert r.json()["error"] == "jog_position_unknown", r.text
             # Nothing must have reached the printer.
             assert not any(
                 "G1 Z" in req.get("print", {}).get("param", "")
@@ -313,7 +313,7 @@ async def test_unknown_position_gap_opening_z_also_rejected(
                 json={"axis": "Z", "distance_mm": 10.0},
             )
             assert r.status_code == 409, r.text
-            assert r.json()["error"] == "jog_not_homed", r.text
+            assert r.json()["error"] == "jog_position_unknown", r.text
 
     await asyncio.to_thread(run)
 
@@ -343,7 +343,7 @@ async def test_unknown_position_xy_rejected(
                     json={"axis": axis, "distance_mm": 10.0},
                 )
                 assert r.status_code == 409, (axis, r.text)
-                assert r.json()["error"] == "jog_not_homed", (axis, r.text)
+                assert r.json()["error"] == "jog_position_unknown", (axis, r.text)
 
     await asyncio.to_thread(run)
 
@@ -519,7 +519,7 @@ async def test_disconnect_resets_position_then_gap_close_rejected(
                 json={"axis": "Z", "distance_mm": -10.0},
             )
             assert r.status_code == 409, r.text
-            assert r.json()["error"] == "jog_not_homed", r.text
+            assert r.json()["error"] == "jog_position_unknown", r.text
 
     await asyncio.to_thread(run)
 
