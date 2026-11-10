@@ -7,6 +7,7 @@ This avoids cumulative overrun even when delivery/completion is unverified.
 from __future__ import annotations
 
 import re
+import uuid
 from collections import deque
 from typing import Any, Literal
 
@@ -23,6 +24,8 @@ class MaintenanceMotion:
         self.targets: dict[str, float | None] = dict.fromkeys(LIMITS)
         self.reason = "No maintenance target requested"
         self.epoch = 0
+        self.revision = 0
+        self.session_id = uuid.uuid4().hex
         self._own_sequences: deque[str] = deque(maxlen=128)
 
     def snapshot(self) -> dict[str, Any]:
@@ -30,18 +33,23 @@ class MaintenanceMotion:
             "last_requested": dict(self.targets),
             "position_verified": False,
             "reason": self.reason,
+            "revision": self.revision,
+            "session_id": self.session_id,
         }
 
     def reset(self, reason: str) -> None:
         self.targets = dict.fromkeys(LIMITS)
         self.reason = reason
         self.epoch += 1
+        self.revision += 1
 
     def register(self, envelope: dict[str, Any]) -> None:
         self._own_sequences.append(str(envelope["print"]["sequence_id"]))
 
     def requested(self, targets: dict[str, float]) -> None:
         self.targets.update(targets)
+        self.epoch += 1
+        self.revision += 1
         self.reason = "Last requested target; physical completion is unverified"
 
     def step_target(self, axis: str, direction: int, step_mm: int) -> float:
@@ -52,10 +60,10 @@ class MaintenanceMotion:
         current = self.targets[axis]
         if current is None:
             raise LookupError("Select an absolute maintenance target first")
-        target = current + direction * step_mm
         lo, hi = LIMITS[axis]
-        if not lo <= target <= hi:
-            raise ValueError(f"{axis} target would exceed {lo:g}..{hi:g} mm")
+        target = max(lo, min(hi, current + direction * step_mm))
+        if target == current:
+            raise ValueError(f"{axis} is already at the {lo:g}..{hi:g} mm travel limit")
         return target
 
     def observe_command(self, envelope: dict[str, Any]) -> bool:

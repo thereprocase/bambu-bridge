@@ -126,6 +126,9 @@ def require_start(service: Any, what: str = "a file") -> float | None:
     require_trusted_cert(service)
     require_p1s(service)
     require_start_ready(service, what)
+    held = getattr(service, "maintenance_hold", None)
+    if held is not None and held.active:
+        unavailable("Release held jogging before starting a print")
     return reported_nozzle(service)
 
 
@@ -141,6 +144,8 @@ async def control_capability_gate(request: Request) -> None:
         raise HTTPException(404, "Printer not found") from None
     require_trusted_cert(service)
     suffix = request.url.path.split(f"/printers/{request.path_params['printer_id']}/", 1)[-1]
+    if suffix == "move/hold/stop":
+        return  # host-only cancellation must remain available while stale/busy
     if suffix == "get_version":
         return
     # Raw routes require an explicit operator opt-in, including the legacy alias.
@@ -190,6 +195,9 @@ async def control_capability_gate(request: Request) -> None:
         "move/absolute-xy": idle,
         "move/maintenance-step": idle,
         "move/maintenance-xy-step": idle,
+        "move/hold/qualify": idle,
+        "move/hold/start": idle,
+        "move/hold/renew": idle,
         "extrude": idle,
         "calibration": idle,
     }

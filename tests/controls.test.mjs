@@ -290,11 +290,39 @@ test('nine XY presets are nested; eight finite direction buttons use requested r
     assert.equal(btn.disabled,false);
     const click=btn.fire('click'); await tick();
     assert.deepEqual(posts.at(-1),{path:`/printers/${PID}/move/maintenance-xy-step`,body:{direction_x:dx,direction_y:dy,step_mm:10}});
-    assert.equal((btn.listeners.pointerdown || []).length, 0, 'no unbounded hold-repeat');
+    assert.equal((btn.listeners.pointercancel || []).length, 1, 'pointer cancellation stops the bounded server lease');
     pending.shift()({ok:true,status:200,data:{maintenance:{last_requested:{X:128+dx*10,Y:128+dy*10,Z:null},position_verified:false}}});
     await click;
   }
   telemetry({maintenance:{last_requested:{X:null,Y:null,Z:null},reason:'connection_lost'}});
   assert.ok(ariaButton('Step back by selected XY step').disabled);
   assert.match(text(), /Select an absolute XY target/);
+});
+
+test('large click step near an endpoint leaves the held direction available', async () => {
+  store.applySnapshot(PID, snapshot({gcode_state:'FINISH',home_flag:7},{phase:'completed',maintenance:{last_requested:{X:128,Y:128,Z:10}}}));
+  openSheet();
+  const select=find(body(),n=>n.tagName==='SELECT'&&n.attrs['aria-label']==='Maintenance Z step')[0];
+  select.value='50';await select.fire('change');
+  assert.equal(buttons(body(),'↑ Raise')[0].disabled,false);
+});
+
+test('unqualified long press never falls through to a large click jog', async () => {
+ store.applySnapshot(PID,snapshot({gcode_state:'FINISH',home_flag:7},{phase:'completed',maintenance:{last_requested:{X:128,Y:128,Z:125},hold:{qualified:false}}}));
+ openSheet();const button=ariaButton('Step back by selected XY step');
+ await button.fire('pointerdown');await new Promise(r=>setTimeout(r,330));
+ await button.fire('pointerup');await button.fire('click');
+ assert.equal(posts.length,0);
+});
+
+test('qualified browser hold starts a lease and pointer release stops it without a click step', async () => {
+ store.applySnapshot(PID,snapshot({gcode_state:'FINISH',home_flag:7},{phase:'completed',maintenance:{last_requested:{X:128,Y:128,Z:125},hold:{qualified:true}}}));
+ const handle=openSheet({hold:true});const button=ariaButton('Step back by selected XY step');
+ await button.fire('pointerdown');await new Promise(r=>setTimeout(r,330));
+ assert.equal(posts.at(-1).path,`/printers/${PID}/move/hold/start`);
+ pending.shift()({ok:true,status:200,data:{lease:'a'.repeat(32)}});await tick();
+ await button.fire('pointerup');await button.fire('click');await tick();
+ assert.equal(posts.at(-1).path,`/printers/${PID}/move/hold/stop`);
+ assert.equal(posts.filter(v=>v.path.endsWith('maintenance-xy-step')).length,0);
+ pending.shift()({ok:true,status:200,data:{hold:{active:false}}});await tick();handle.close();
 });

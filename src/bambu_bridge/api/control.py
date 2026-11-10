@@ -62,6 +62,7 @@ from bambu_bridge.api.capabilities import control_capability_gate, require_start
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol import commands
 from bambu_bridge.protocol.models import build_command
+from bambu_bridge.service.maintenance_hold import HoldStopped
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 
@@ -134,6 +135,11 @@ async def _send(service: PrinterService, envelope: dict[str, Any]) -> dict[str, 
 @asynccontextmanager
 async def _motion_request(service: PrinterService) -> AsyncIterator[None]:
     """Reject overlapping motion publications; firmware queues ordered G-code."""
+    held = getattr(service, "maintenance_hold", None)
+    if held is not None and held.active:
+        raise HTTPException(
+            409, {"error": "maintenance_hold_active", "message": "Release the held jog first."}
+        )
     lock = getattr(service, "_motion_request_lock", None)
     if lock is None:
         lock = asyncio.Lock()
@@ -588,7 +594,7 @@ async def _send_maintenance(
     return {
         "sent": envelope,
         "confirmation": "pending",
-        "maintenance": service.maintenance_motion.snapshot(),
+        "maintenance": service.snapshot().get("maintenance", service.maintenance_motion.snapshot()),
     }
 
 
@@ -702,6 +708,80 @@ async def maintenance_xy_step(
             ) from exc
         envelope = _build(commands.move_xy_absolute, targets["X"], targets["Y"])
         return await _send_maintenance(service, envelope, targets)
+
+
+class HoldStartBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    axes: Literal["Z", "XY"]
+    direction_x: Literal[-1, 0, 1] = 0
+    direction_y: Literal[-1, 0, 1] = 0
+    direction_z: Literal[-1, 0, 1] = 0
+
+
+class HoldLeaseBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lease: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+@router.post("/{printer_id}/move/hold/qualify")
+async def qualify_hold(
+    printer_id: str, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    async with _motion_request(service):
+        _require_maintenance_axes(service, "XYZ")
+        try:
+            result = await service.maintenance_hold.qualify()
+        except HoldStopped as exc:
+            raise HTTPException(
+                409, {"error": "maintenance_hold_unqualified", "message": str(exc)}
+            ) from exc
+        return {"hold": result, "maintenance": service.snapshot().get("maintenance")}
+
+
+@router.post("/{printer_id}/move/hold/start")
+async def start_hold(
+    printer_id: str, body: HoldStartBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    _require_maintenance_axes(service, body.axes)
+    if (body.axes == "Z" and (body.direction_x or body.direction_y)) or (
+        body.axes == "XY" and body.direction_z
+    ):
+        raise HTTPException(422, detail="Choose directions only for the selected axes")
+    try:
+        lease = service.maintenance_hold.start(
+            body.axes, body.direction_x, body.direction_y, body.direction_z
+        )
+    except HoldStopped as exc:
+        raise HTTPException(
+            409, {"error": "maintenance_hold_unavailable", "message": str(exc)}
+        ) from exc
+    return {"lease": lease, "lease_ms": 750, "hold": service.maintenance_hold.snapshot()}
+
+
+@router.post("/{printer_id}/move/hold/renew")
+async def renew_hold(
+    printer_id: str, body: HoldLeaseBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    try:
+        service.maintenance_hold.renew(body.lease)
+    except HoldStopped as exc:
+        raise HTTPException(
+            409, {"error": "maintenance_hold_expired", "message": str(exc)}
+        ) from exc
+    return {"lease_ms": 750, "hold": service.maintenance_hold.snapshot()}
+
+
+@router.post("/{printer_id}/move/hold/stop")
+async def stop_hold(
+    printer_id: str, body: HoldLeaseBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    # Stopping a host lease is safe even after a disconnect or print start.
+    service = registry.get(printer_id)
+    service.maintenance_hold.stop(body.lease)
+    return {"hold": service.maintenance_hold.snapshot()}
 
 
 @router.post("/{printer_id}/ams/control")

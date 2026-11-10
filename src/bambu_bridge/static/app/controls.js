@@ -50,6 +50,7 @@ import {
 } from './ui.js';
 import { printerStateLabels } from './printer-state.js';
 import * as skipObjects from './skip-objects.js';
+import { createHeldJog } from './held-jog.js';
 
 // OrcaSlicer's jog steps (mm) and feed rates (mm/min). The bridge's
 // api/control.py ALLOWED_STEPS refuses any other step; a parity test keeps
@@ -131,6 +132,7 @@ function openControlsSheet(app, pid, opts = {}) {
   const titleEl = el('div', { class: 'sheet__title', style: { margin: '0' } });
   const stack = el('div', { class: 'stack' });
   const updaters = [];
+  const cleanups = [];
   let sheetHandle = null;
 
   const ctx = {
@@ -140,6 +142,7 @@ function openControlsSheet(app, pid, opts = {}) {
     /** Show a failed result (or clear the slot with null). */
     report: (r) => { clear(errSlot); if (r) errSlot.appendChild(errorCard(r)); },
     update: (fn) => updaters.push(fn),
+    onClose: (fn) => cleanups.push(fn),
   };
 
   const header = el('div', { class: 'row row--between mb-4' }, [
@@ -173,7 +176,7 @@ function openControlsSheet(app, pid, opts = {}) {
 
   sheetHandle = mountSheet(el('div', {}, [header, errSlot, stack]), {
     drawer: true,
-    onClose: () => { if (unsub) { unsub(); unsub = null; } if (opts.onClose) opts.onClose(); },
+    onClose: () => { cleanups.forEach(fn => fn()); if (unsub) { unsub(); unsub = null; } if (opts.onClose) opts.onClose(); },
   });
   render();
   unsub = app.store.subscribe(render);
@@ -207,13 +210,17 @@ function dynamicSection(ctx, keyOf, build) {
   const host = el('div');
   let key = null;
   let own = [];
+  let closeOwn = [];
+  ctx.onClose?.(() => closeOwn.forEach(fn => fn()));
   ctx.update((st) => {
     const k = keyOf(st);
     if (k !== key) {
       key = k;
+      closeOwn.forEach(fn => fn());
+      closeOwn = [];
       own = [];
       clear(host);
-      host.appendChild(build({ ...ctx, update: (fn) => own.push(fn) }, st));
+      host.appendChild(build({ ...ctx, update: (fn) => own.push(fn), onClose: fn => closeOwn.push(fn) }, st));
     }
     for (const fn of own) fn(st);
   });
@@ -469,6 +476,11 @@ function movePanel(ctx, st) {
 /** Maintenance targets use server-owned last commands, never guessed positions. */
 function maintenancePanel(ctx) {
   let sending = false;
+  let heldJog = null;
+  let pressTimer = null;
+  const heldClicks = new Set();
+  const holdStatus = el("div", {class: "field__hint", role: "status", "aria-live": "polite"});
+  let verifyButton = null;
   let zStep = 10;
   let xyStep = 10;
   const buttons = [];
@@ -494,15 +506,15 @@ function maintenancePanel(ctx) {
     const requested = lastRequested();
     if (axes === 'Z') {
       const z = requested.Z;
-      return Number.isFinite(z) && z + dx * zStep >= 0 && z + dx * zStep <= 250;
+      return Number.isFinite(z) && (dx < 0 ? z > 0 : z < 250);
     }
     const { X: x, Y: y } = requested;
     return Number.isFinite(x) && Number.isFinite(y)
-      && x + dx * xyStep >= 0 && x + dx * xyStep <= 256
-      && y + dy * xyStep >= 0 && y + dy * xyStep <= 256;
+      && (dx === 0 || (dx < 0 ? x > 0 : x < 256))
+      && (dy === 0 || (dy < 0 ? y > 0 : y < 256));
   }
   async function send(path, body) {
-    if (sending) return;
+    if (sending || heldJog?.active) return;
     sending = true;
     update();
     try {
@@ -519,13 +531,53 @@ function maintenancePanel(ctx) {
       update();
     }
   }
-  function button(label, aria, axes, action, allowed = () => true, style = {}) {
+  async function postHold(path, body) {
+    const result = await ctx.post(path, body);
+    if (!result.ok) { ctx.report(result); throw new Error(result.message || 'Held jogging stopped'); }
+    return result.data;
+  }
+  function stopHeld() {
+    if (pressTimer !== null) clearTimeout(pressTimer);
+    pressTimer = null;
+    void heldJog?.stop();
+  }
+  const hidden = () => { if (document.visibilityState === 'hidden') stopHeld(); };
+  globalThis.addEventListener?.('blur', stopHeld);
+  document.addEventListener('visibilitychange', hidden);
+  ctx.onClose?.(() => {
+    stopHeld();
+    globalThis.removeEventListener?.('blur', stopHeld);
+    document.removeEventListener('visibilitychange', hidden);
+  });
+  function button(label, aria, axes, action, allowed = () => true, style = {}, direction = null) {
     const node = el('button', {
       class: 'btn', text: label, 'aria-label': aria,
       style: { ...smallButton, ...style },
-      onClick: () => { if (ready(axes) && allowed()) return action(); },
+      onClick: () => {
+        if (heldClicks.has(aria)) { heldClicks.delete(aria); return; }
+        if (ready(axes) && allowed()) return action();
+      },
+      ...(direction ? {
+        onPointerdown: () => {
+          heldClicks.delete(aria);
+          if (!ready(axes) || !allowed() || heldJog?.active) return;
+          pressTimer = setTimeout(() => {
+            pressTimer = null; heldClicks.add(aria);
+            const status = ctx.app.store.current(ctx.pid)?.maintenance?.hold;
+            if (!status?.qualified) { toast('Enable held jogging first. Click steps remain available.'); return; }
+            heldJog = createHeldJog({
+              start: () => postHold('/move/hold/start', direction),
+              renew: lease => postHold('/move/hold/renew', {lease}),
+              stop: lease => postHold('/move/hold/stop', {lease}),
+            }, () => {});
+            void heldJog.start();
+          }, 300);
+        },
+        onPointerup: stopHeld, onPointercancel: stopHeld,
+        onLostpointercapture: stopHeld, onPointerleave: stopHeld,
+      } : {}),
     });
-    buttons.push({ node, axes, allowed });
+    buttons.push({ node, axes, allowed, holdable: !!direction });
     return node;
   }
   function stepSelect(label, set) {
@@ -545,10 +597,10 @@ function maintenancePanel(ctx) {
       () => send('/move/absolute-z', { position_mm: target, feed_mm_min: 600 })));
   const raise = button('↑ Raise', 'Raise bed: decrease requested Z by selected step', 'Z',
     () => send('/move/maintenance-step', { axis: 'Z', direction: -1, step_mm: zStep }),
-    () => stepAllowed('Z', -1));
+    () => stepAllowed('Z', -1), {}, {axes:'Z', direction_z:-1});
   const lower = button('↓ Lower', 'Lower bed: increase requested Z by selected step', 'Z',
     () => send('/move/maintenance-step', { axis: 'Z', direction: 1, step_mm: zStep }),
-    () => stepAllowed('Z', 1));
+    () => stepAllowed('Z', 1), {}, {axes:'Z', direction_z:1});
   const zControls = el('div', {
     style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', width: '100%' },
   }, [
@@ -594,10 +646,23 @@ function maintenancePanel(ctx) {
       () => send('/move/maintenance-xy-step', { direction_x: dx, direction_y: dy, step_mm: xyStep }),
       () => stepAllowed('XY', dx, dy),
       { gridRow: String(index < 3 ? 1 : index < 5 ? 2 : 3),
-        gridColumn: String(index === 3 ? 1 : index === 4 ? 3 : index < 3 ? index + 1 : index - 4) })));
+        gridColumn: String(index === 3 ? 1 : index === 4 ? 3 : index < 3 ? index + 1 : index - 4) },
+      {axes:'XY', direction_x:dx, direction_y:dy})));
 
+  verifyButton = button('Enable held jogging', 'Verify held jogging without axis movement', 'XY', async () => {
+    sending = true; update();
+    try {
+      const result = await postHold('/move/hold/qualify');
+      if (result.maintenance) ctx.app.store.applyDelta(ctx.pid, {maintenance: result.maintenance});
+    } finally { sending = false; update(); }
+  }, () => ready('Z'));
   function update() {
-    for (const { node, axes, allowed } of buttons) node.disabled = !ready(axes) || !allowed();
+    const hold = ctx.app.store.current(ctx.pid)?.maintenance?.hold;
+    if (!ready('Z') && !ready('XY')) stopHeld();
+    const holdText = hold?.reason || 'Held jogging needs idle verification. Click steps remain available.';
+    if (holdStatus.textContent !== holdText) holdStatus.textContent = holdText;
+    if (verifyButton) verifyButton.textContent = hold?.qualified ? 'Verify held jogging again' : 'Enable held jogging';
+    for (const { node, axes, allowed, holdable } of buttons) node.disabled = !ready(axes) || !allowed() || (!!heldJog?.active && !holdable);
     const requested = lastRequested();
     const nextZ = Number.isFinite(requested.Z)
       ? `Last Z command: ${requested.Z} mm. Physical position is unverified.`
@@ -626,7 +691,8 @@ function maintenancePanel(ctx) {
     el('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', marginTop: '12px' } }, [
       dpad, stepSelect('Maintenance XY step', (n) => { xyStep = n; }),
     ]),
-    statusXY,
+    statusXY, verifyButton, holdStatus,
+    el('div', { class: 'field__hint', text: 'Hold a direction to jog; release to stop future segments. Held segments are small and independent of the click-step selector.' }),
     el('div', { class: 'field__hint', text: 'Each click sends one bounded target. Choose an absolute preset again after using other printer controls.' }),
   ]);
 }

@@ -2,6 +2,7 @@ package com.thereprocase.bambubridge.pairing
 
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okio.ByteString.Companion.decodeBase64
 import okio.ByteString.Companion.toByteString
@@ -45,6 +46,13 @@ class PairedTransport(base: String, pin: String, remote: String? = null) {
             }.getOrDefault(false)
         }.build()
     private val remoteClient = builder().build() // ordinary system CA + hostname checks
+    // A command must not be replayed after a lost response. Give writes a
+    // separate, non-idle pool so a later command does not inherit a socket
+    // that the bridge or network closed between requests.
+    private val localCommandClient = localClient.newBuilder()
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.MILLISECONDS)).build()
+    private val remoteCommandClient = remoteClient.newBuilder()
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.MILLISECONDS)).build()
 
     private fun matches(cert: X509Certificate): Boolean = MessageDigest.isEqual(
         expected, cert.publicKey.encoded.toByteString().sha256().toByteArray())
@@ -62,11 +70,14 @@ class PairedTransport(base: String, pin: String, remote: String? = null) {
     }
 
     /** Recover a stale pooled connection only for reads. Commands are never replayed. */
-    fun clientForRequest(url: HttpUrl, method: String): OkHttpClient =
-        clientFor(url).newBuilder().retryOnConnectionFailure(method == "GET").build()
+    fun clientForRequest(url: HttpUrl, method: String): OkHttpClient {
+        val readClient = clientFor(url) // validates scope and paired identity
+        if (method == "GET") return readClient.newBuilder().retryOnConnectionFailure(true).build()
+        return if (sameOrigin(url, baseUrl)) localCommandClient else remoteCommandClient
+    }
 
     fun close() {
-        for (client in listOf(localClient, remoteClient)) {
+        for (client in listOf(localClient, remoteClient, localCommandClient, remoteCommandClient)) {
             client.dispatcher.cancelAll()
             client.connectionPool.evictAll()
         }

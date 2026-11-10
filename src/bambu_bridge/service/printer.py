@@ -36,6 +36,7 @@ from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.auto_refill import AutoRefillHistory
 from bambu_bridge.service.diagnostic_journal import DiagnosticJournal
 from bambu_bridge.service.events import Event, EventBus, diff_state
+from bambu_bridge.service.maintenance_hold import MaintenanceHold
 from bambu_bridge.service.maintenance_motion import MaintenanceMotion
 from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.service.refill_reports import RefillReports
@@ -334,6 +335,13 @@ class PrinterService:
         self._tracked_pos: dict[str, float | None] = {"X": None, "Y": None, "Z": None}
         self._motion_request_lock = asyncio.Lock()
         self.maintenance_motion = MaintenanceMotion()
+        self.maintenance_hold = MaintenanceHold(
+            self.maintenance_motion, self._maintenance_ready, lambda: self._state,
+            self.send_raw, self.send_maintenance,
+            self._maintenance_changed, self._motion_request_lock,
+            marker_path=(diagnostic_history_path.with_suffix(".motion-fences.sqlite")
+                         if diagnostic_history_path else None),
+        )
 
         self._mqtt = self._build_mqtt()
         self._task: asyncio.Task[None] | None = None
@@ -362,6 +370,7 @@ class PrinterService:
         self._update_camera_warmth()
 
     async def stop(self) -> None:
+        await self.maintenance_hold.close()
         if self._camera is not None:
             await self._camera.aclose()
             self._camera = None
@@ -442,6 +451,7 @@ class PrinterService:
         for slot in snapshot["ams"]["slots"]:
             slot["remaining_estimate"] = self.remaining_estimates.view(slot["physical_slot"] - 1)
         snapshot["maintenance"] = self.maintenance_motion.snapshot()
+        snapshot["maintenance"]["hold"] = self.maintenance_hold.snapshot()
         return snapshot
 
     @property
@@ -530,6 +540,7 @@ class PrinterService:
         wire truth.
         """
         if self.maintenance_motion.observe_command(envelope):
+            self.maintenance_hold.invalidate("Another movement command invalidated held jogging")
             self.bus.publish(Event("delta", {}))
         await self._publish_raw(envelope)
 
@@ -577,6 +588,20 @@ class PrinterService:
     # Dead-reckoned motion state (jog crash-prevention)
     # ----------------------------------------------------------------- #
 
+    def _maintenance_changed(self) -> None:
+        self.maintenance_motion.revision += 1
+        self.bus.publish(Event("delta", {}))
+
+    def _maintenance_ready(self, axes: str) -> bool:
+        age = time.time() - self._last_telemetry_at if self._last_telemetry_at else float("inf")
+        flag = self._state.get("home_flag")
+        mask = 4 if axes == "Z" else 3 if axes == "XY" else 7
+        return (
+            self.connected and self.cert_status != "changed" and 0 <= age <= 15
+            and self._state.get("gcode_state") in {"IDLE", "FINISH", "FAILED"}
+            and isinstance(flag, int) and not isinstance(flag, bool) and flag & mask == mask
+        )
+
     def tracked_position(self, axis: str) -> float | None:
         """Bridge's best-estimate position for ``axis`` (mm), or None=unknown.
 
@@ -623,6 +648,7 @@ class PrinterService:
             self._log.info("motion.reset", reason=reason)
         self._tracked_pos = {"X": None, "Y": None, "Z": None}
         self.maintenance_motion.reset(reason)
+        self.maintenance_hold.invalidate(reason)
         self.bus.publish(Event("delta", {}))
 
     # ----------------------------------------------------------------- #
@@ -768,6 +794,7 @@ class PrinterService:
             )
 
     async def _handle_report(self, report: ReportMessage) -> None:
+        receipt = self.maintenance_hold.received()
         raw = report.model_dump(mode="json", exclude_none=True, exclude_unset=True)
         # Publish receipt time before any awaited observer/persistence work.
         # A raw-bus consumer must never see new state with an old watermark.
@@ -818,6 +845,7 @@ class PrinterService:
         # Receipt watermark was already published above, before async work.
         prev_state = self._state
         if self.maintenance_motion.observe_report(incoming, prev_state):
+            self.maintenance_hold.invalidate("External movement or homing report")
             self.bus.publish(Event("delta", {}))
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
@@ -829,6 +857,7 @@ class PrinterService:
         delta = diff_state(prev_state, merged)
         self._state = merged
         self._refresh_gcode_state()
+        self.maintenance_hold.observe(incoming, receipt)
         if not self._gcode_fresh and "gcode_state" in incoming:
             self._gcode_fresh = True
             self._check_gap()
