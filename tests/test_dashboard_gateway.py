@@ -211,7 +211,10 @@ def test_tailnet_policy_accepts_private_serve_without_user_identity(login: str |
         headers["Tailscale-User-Login"] = login
     with TestClient(gateway("*"), base_url=ORIGIN, client=("127.0.0.1", 5000)) as client:
         assert client.get("/app/session", headers=headers).status_code == 200
-        assert client.post("/api/test", headers={**headers, "Origin": "https://attacker.example"}).status_code == 403
+        assert (
+            client.post("/api/test", headers={**headers, "Origin": "https://attacker.example"})
+            .status_code == 403
+        )
         assert client.post("/api/test", headers={**headers, "Origin": ORIGIN}).json()["authorized"]
     with TestClient(gateway("*"), base_url=ORIGIN, client=("100.64.0.2", 5000)) as client:
         assert client.get("/app/session", headers=headers).status_code == 403

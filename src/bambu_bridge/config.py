@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     bridge_pairing_remote_url: str | None = None  # optional direct HTTPS over Tailscale
     bridge_dashboard_port: int | None = None
     bridge_dashboard_origin: str = ""
-    bridge_dashboard_login: str = ""  # "*" trusts private Tailscale Serve without a per-user login check
+    # "*" trusts private Tailscale Serve without a per-user login check.
+    bridge_dashboard_login: str = ""
     bridge_trusted_proxies: str = ""  # opt in exact trusted reverse proxy source IPs
     bridge_native_host: str | None = None  # explicit private IPv4; no listeners until enabled
     bridge_native_durable_inbox: bool = False  # staged rollout; native command ordering changes
