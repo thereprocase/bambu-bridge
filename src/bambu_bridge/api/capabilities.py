@@ -186,6 +186,10 @@ async def control_capability_gate(request: Request) -> None:
         # rules in control.py.
         "home": idle,
         "move": idle,
+        "move/absolute-z": idle,
+        "move/absolute-xy": idle,
+        "move/maintenance-step": idle,
+        "move/maintenance-xy-step": idle,
         "extrude": idle,
         "calibration": idle,
     }

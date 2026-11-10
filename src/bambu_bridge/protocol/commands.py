@@ -26,6 +26,7 @@ for any endpoint where the contract documents physical slots.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Annotated, Any
 
@@ -239,6 +240,33 @@ def set_fan(part: str, percent: int) -> Envelope:
 def home() -> Envelope:
     """Home all axes (G28). Moves the toolhead — not a passive command."""
     return _gcode("G28")
+
+
+def _maintenance_move(move: str) -> Envelope:
+    # OpenBambuAPI gcode.md "Manual axis move": preserve soft-endstop and
+    # reference-mode state while explicitly enabling all three soft endstops.
+    return _gcode(
+        "M211 S\nM211 X1 Y1 Z1\nM1002 push_ref_mode\nG90\n"
+        + move + "\nM400\nM1002 pop_ref_mode\nM211 R"
+    )
+
+
+def move_bed_absolute(position_mm: float, *, feed_mm_min: int = 600) -> Envelope:
+    """Bounded P1S absolute Z target; no assumed current position or mode."""
+    if not math.isfinite(position_mm) or not 0 <= position_mm <= 250:
+        raise ValueError("absolute Z target must be finite and in 0..250 mm")
+    if isinstance(feed_mm_min, bool) or not 1 <= feed_mm_min <= 600:
+        raise ValueError("absolute Z feed must be in 1..600 mm/min")
+    return _maintenance_move(f"G1 Z{position_mm:g} F{feed_mm_min}")
+
+
+def move_xy_absolute(x_mm: float, y_mm: float, *, feed_mm_min: int = 3000) -> Envelope:
+    """P1S XY build envelope, with firmware soft endstops explicitly enabled."""
+    if not all(math.isfinite(v) and 0 <= v <= 256 for v in (x_mm, y_mm)):
+        raise ValueError("absolute XY targets must be finite and in 0..256 mm")
+    if isinstance(feed_mm_min, bool) or not 1 <= feed_mm_min <= 3000:
+        raise ValueError("absolute XY feed must be in 1..3000 mm/min")
+    return _maintenance_move(f"G1 X{x_mm:g} Y{y_mm:g} F{feed_mm_min}")
 
 
 def move_axis(axis: str, distance_mm: float, *, feed_mm_min: int = 600) -> Envelope:

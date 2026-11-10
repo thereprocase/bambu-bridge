@@ -462,6 +462,172 @@ function movePanel(ctx, st) {
     el('div', { class: 'field__hint', style: { marginTop: 'var(--space-3)' }, text: 'Step size' }),
     el('div', { class: 'row gap-2', style: { flexWrap: 'wrap' } }, chips),
     grid,
+    maintenancePanel(ctx),
+  ]);
+}
+
+/** Maintenance targets use server-owned last commands, never guessed positions. */
+function maintenancePanel(ctx) {
+  let sending = false;
+  let zStep = 10;
+  let xyStep = 10;
+  const buttons = [];
+  const statusZ = el('div', { class: 'field__hint', role: 'status', 'aria-live': 'polite' });
+  const statusXY = el('div', { class: 'field__hint', role: 'status', 'aria-live': 'polite' });
+  const readinessHint = el('div', { class: 'field__hint' });
+  const smallButton = { minWidth: '0', minHeight: '44px', paddingLeft: '4px', paddingRight: '4px' };
+
+  function lastRequested() {
+    return ctx.app.store.current(ctx.pid)?.maintenance?.last_requested || {};
+  }
+  function ready(axes) {
+    const current = ctx.state();
+    const session = ctx.app.store.current(ctx.pid)?.session || {};
+    const age = Date.now() - Date.parse(session.last_telemetry_at || '');
+    const flag = current.raw.home_flag;
+    const mask = axes === 'Z' ? 4 : 3;
+    return !sending && current.enabled && ['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state)
+      && Number.isFinite(age) && age >= 0 && age <= 15000
+      && Number.isInteger(flag) && (flag & mask) === mask;
+  }
+  function stepAllowed(axes, dx, dy = 0) {
+    const requested = lastRequested();
+    if (axes === 'Z') {
+      const z = requested.Z;
+      return Number.isFinite(z) && z + dx * zStep >= 0 && z + dx * zStep <= 250;
+    }
+    const { X: x, Y: y } = requested;
+    return Number.isFinite(x) && Number.isFinite(y)
+      && x + dx * xyStep >= 0 && x + dx * xyStep <= 256
+      && y + dy * xyStep >= 0 && y + dy * xyStep <= 256;
+  }
+  async function send(path, body) {
+    if (sending) return;
+    sending = true;
+    update();
+    try {
+      ctx.report(null);
+      const result = await ctx.post(path, body);
+      if (result.ok) {
+        if (result.data?.maintenance) {
+          ctx.app.store.applyDelta(ctx.pid, { maintenance: result.data.maintenance });
+        }
+        toast('Movement command sent');
+      } else ctx.report(result);
+    } finally {
+      sending = false;
+      update();
+    }
+  }
+  function button(label, aria, axes, action, allowed = () => true, style = {}) {
+    const node = el('button', {
+      class: 'btn', text: label, 'aria-label': aria,
+      style: { ...smallButton, ...style },
+      onClick: () => { if (ready(axes) && allowed()) return action(); },
+    });
+    buttons.push({ node, axes, allowed });
+    return node;
+  }
+  function stepSelect(label, set) {
+    return el('label', { class: 'field__hint' }, [
+      el('span', { text: 'Step' }),
+      el('select', {
+        class: 'input', 'aria-label': label, style: { width: '100%', minWidth: '0' },
+        onChange: (event) => { set(Number(event.target.value)); update(); },
+      }, [1, 10, 50].map((step) => el('option', {
+        value: String(step), text: `${step} mm`, ...(step === 10 ? { selected: true } : {}),
+      }))),
+    ]);
+  }
+
+  const zPresets = [['Top', 0], ['Upper', 83], ['Lower', 167], ['Bottom', 250]].map(([label, target]) =>
+    button(label, `${label}: move bed to Z${target} mm`, 'Z',
+      () => send('/move/absolute-z', { position_mm: target, feed_mm_min: 600 })));
+  const raise = button('↑ Raise', 'Raise bed: decrease requested Z by selected step', 'Z',
+    () => send('/move/maintenance-step', { axis: 'Z', direction: -1, step_mm: zStep }),
+    () => stepAllowed('Z', -1));
+  const lower = button('↓ Lower', 'Lower bed: increase requested Z by selected step', 'Z',
+    () => send('/move/maintenance-step', { axis: 'Z', direction: 1, step_mm: zStep }),
+    () => stepAllowed('Z', 1));
+  const zControls = el('div', {
+    style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', width: '100%' },
+  }, [
+    el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' } }, zPresets),
+    el('div', { class: 'stack', style: { gap: '6px' } }, [
+      stepSelect('Maintenance Z step', (n) => { zStep = n; }), raise, lower,
+    ]),
+  ]);
+
+  const xyPoints = [
+    ['↖', 'Full', 'Back left', 0, 256, 1, 1],
+    ['↗', 'Full', 'Back right', 256, 256, 1, 5],
+    ['↖', 'Half', 'Halfway back left', 64, 192, 2, 2],
+    ['↗', 'Half', 'Halfway back right', 192, 192, 2, 4],
+    ['', 'Center', 'Center', 128, 128, 3, 3],
+    ['↙', 'Half', 'Halfway front left', 64, 64, 4, 2],
+    ['↘', 'Half', 'Halfway front right', 192, 64, 4, 4],
+    ['↙', 'Full', 'Front left', 0, 0, 5, 1],
+    ['↘', 'Full', 'Front right', 256, 0, 5, 5],
+  ].map(([arrow, caption, name, x, y, row, column]) => {
+    const node = button('', `${name}: X${x} Y${y} mm`, 'XY',
+      () => send('/move/absolute-xy', { x_mm: x, y_mm: y, feed_mm_min: 3000 }),
+      () => true, { gridRow: String(row), gridColumn: String(column), flexDirection: 'column', gap: '0' });
+    if (arrow) node.appendChild(el('span', { text: arrow, 'aria-hidden': 'true' }));
+    node.appendChild(el('span', { text: caption, style: { fontSize: '11px' } }));
+    return node;
+  });
+  const xyGrid = el('div', {
+    role: 'group', 'aria-label': 'Absolute XY maintenance targets; back is up, front is down',
+    style: { display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+      gridTemplateRows: 'repeat(5, minmax(44px, auto))', gap: '6px', width: '100%' },
+  }, xyPoints);
+  const directions = [
+    ['↖', 'Back left', -1, 1], ['↑', 'Back', 0, 1], ['↗', 'Back right', 1, 1],
+    ['←', 'Left', -1, 0], ['→', 'Right', 1, 0],
+    ['↙', 'Front left', -1, -1], ['↓', 'Front', 0, -1], ['↘', 'Front right', 1, -1],
+  ];
+  const dpad = el('div', {
+    role: 'group', 'aria-label': 'XY maintenance steps',
+    style: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '6px' },
+  }, directions.map(([arrow, name, dx, dy], index) =>
+    button(arrow, `Step ${name.toLowerCase()} by selected XY step`, 'XY',
+      () => send('/move/maintenance-xy-step', { direction_x: dx, direction_y: dy, step_mm: xyStep }),
+      () => stepAllowed('XY', dx, dy),
+      { gridRow: String(index < 3 ? 1 : index < 5 ? 2 : 3),
+        gridColumn: String(index === 3 ? 1 : index === 4 ? 3 : index < 3 ? index + 1 : index - 4) })));
+
+  function update() {
+    for (const { node, axes, allowed } of buttons) node.disabled = !ready(axes) || !allowed();
+    const requested = lastRequested();
+    const nextZ = Number.isFinite(requested.Z)
+      ? `Last Z command: ${requested.Z} mm. Physical position is unverified.`
+      : 'Select an absolute Z preset before using Raise or Lower.';
+    const nextXY = Number.isFinite(requested.X) && Number.isFinite(requested.Y)
+      ? `Last XY command: X${requested.X}, Y${requested.Y} mm. Physical position is unverified.`
+      : 'Select an absolute XY target before using the direction pad.';
+    if (statusZ.textContent !== nextZ) statusZ.textContent = nextZ;
+    if (statusXY.textContent !== nextXY) statusXY.textContent = nextXY;
+    const current = ctx.state();
+    const message = !current.enabled ? 'Waiting for a fresh connected printer status.'
+      : !['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state) ? 'Maintenance positioning requires an idle printer.'
+      : !Number.isInteger(current.raw.home_flag) || (current.raw.home_flag & 7) !== 7
+        ? 'Maintenance presets require homed axes: Z for the bed, X and Y for the toolhead.'
+        : 'Presets require fresh printer status; each click sends one bounded target.';
+    if (readinessHint.textContent !== message) readinessHint.textContent = message;
+  }
+  ctx.update(update);
+  return el('div', { style: { marginTop: 'var(--space-3)' } }, [
+    el('div', { class: 't-section', text: 'Maintenance Z positions' }), readinessHint,
+    el('div', { class: 'field__hint', text: 'Top raises the bed; Bottom lowers it. Keep hands and tools clear while moving.' }),
+    zControls, statusZ,
+    el('div', { class: 't-section', style: { marginTop: 'var(--space-3)' }, text: 'Maintenance XY positions' }),
+    el('div', { class: 'field__hint', text: 'Back (+Y) ↑ · Front (−Y) ↓ · Left (−X) · Right (+X)' }),
+    xyGrid,
+    el('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', marginTop: '12px' } }, [
+      dpad, stepSelect('Maintenance XY step', (n) => { xyStep = n; }),
+    ]),
+    statusXY,
+    el('div', { class: 'field__hint', text: 'Each click sends one bounded target. Choose an absolute preset again after using other printer controls.' }),
   ]);
 }
 

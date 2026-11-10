@@ -209,3 +209,92 @@ test('Skip objects follows Orca: shown with fun bit 49, usable while RUNNING/PAU
   telemetry({ _raw: { gcode_state: 'PAUSE' }, phase: 'paused' });
   assert.equal(skipBtn().disabled, false);
 });
+
+test('maintenance Z presets stay left of step controls and send bounded absolute targets', async () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet({ hold: true });
+  const targets = [['Top', 0], ['Upper', 83], ['Lower', 167], ['Bottom', 250]];
+  const row = buttons(body(), 'Top')[0].parentNode;
+  assert.equal(row.style.display, 'grid');
+  assert.equal(row.style.gridTemplateColumns, 'repeat(2, minmax(0, 1fr))');
+  assert.equal(row.parentNode.style.gridTemplateColumns, 'minmax(0, 1fr) 96px');
+  for (const [label, target] of targets) {
+    const button = buttons(body(), label)[0];
+    assert.equal(button.parentNode, row);
+    assert.equal(button.disabled, false);
+    const request = button.fire("click");
+    await tick();
+    assert.deepEqual(posts.at(-1), {
+      path: `/printers/${PID}/move/absolute-z`, body: { position_mm: target, feed_mm_min: 600 },
+    });
+    assert.ok(targets.every(([name]) => buttons(body(), name)[0].disabled));
+    pending.shift()({ ok: true, status: 200, data: { confirmation: 'pending' } });
+    await request;
+    await tick();
+  }
+});
+
+test('maintenance positions stay disabled until Z is homed and when telemetry is stale', () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 3 }, { phase: 'completed' }));
+  openSheet();
+  assert.ok(buttons(body(), 'Bottom')[0].disabled);
+  telemetry({ _raw: { home_flag: 7 } });
+  assert.equal(buttons(body(), 'Bottom')[0].disabled, false);
+  store.applyDelta(PID, { session: { last_telemetry_at: new Date(Date.now() - 60000).toISOString() } });
+  assert.ok(buttons(body(), 'Bottom')[0].disabled);
+  assert.equal(posts.length, 0);
+});
+
+
+const ariaButton = (label) => find(body(), (n) => n.tagName === 'BUTTON' && n.attrs['aria-label'] === label)[0];
+
+test('maintenance step references come from server response, with bounded Z direction and dropdown', async () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet({ hold: true });
+  assert.ok(buttons(body(), '↑ Raise')[0].disabled);
+  assert.match(text(), /Select an absolute Z preset/);
+  const request = buttons(body(), 'Bottom')[0].fire('click');
+  await tick();
+  pending.shift()({ ok: true, status: 200, data: { maintenance: { last_requested: { X: null, Y: null, Z: 250 }, position_verified: false } } });
+  await request;
+  assert.equal(buttons(body(), '↑ Raise')[0].disabled, false);
+  assert.ok(buttons(body(), '↓ Lower')[0].disabled, 'no requested movement past bottom');
+  const select = find(body(), (n) => n.tagName === 'SELECT' && n.attrs['aria-label'] === 'Maintenance Z step')[0];
+  assert.deepEqual(select.children.map(n => n.attrs.value), ['1', '10', '50']);
+  select.value = '50';
+  await select.fire('change');
+  const step = buttons(body(), '↑ Raise')[0].fire('click');
+  await tick();
+  assert.deepEqual(posts.at(-1), { path: `/printers/${PID}/move/maintenance-step`, body: { axis: 'Z', direction: -1, step_mm: 50 } });
+  pending.shift()({ ok: true, status: 200, data: { maintenance: { last_requested: { X: null, Y: null, Z: 200 }, position_verified: false } } });
+  await step;
+  assert.match(text(), /Last Z command: 200 mm. Physical position is unverified/);
+});
+
+test('nine XY presets are nested; eight finite direction buttons use requested reference', async () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet({ hold: true });
+  const points = [['Back left',0,256],['Back right',256,256],['Halfway back left',64,192],['Halfway back right',192,192],['Center',128,128],['Halfway front left',64,64],['Halfway front right',192,64],['Front left',0,0],['Front right',256,0]];
+  const pointButtons = points.map(([name,x,y])=>ariaButton(`${name}: X${x} Y${y} mm`));
+  assert.equal(pointButtons[0].parentNode.style.gridTemplateColumns, 'repeat(5, minmax(0, 1fr))');
+  assert.deepEqual(pointButtons.map(n=>[n.style.gridRow,n.style.gridColumn]), [['1','1'],['1','5'],['2','2'],['2','4'],['3','3'],['4','2'],['4','4'],['5','1'],['5','5']]);
+  assert.ok(ariaButton('Step back by selected XY step').disabled);
+  const center = pointButtons[4].fire('click');
+  await tick();
+  assert.deepEqual(posts.at(-1), { path: `/printers/${PID}/move/absolute-xy`, body: { x_mm:128, y_mm:128, feed_mm_min:3000 } });
+  pending.shift()({ok:true,status:200,data:{maintenance:{last_requested:{X:128,Y:128,Z:null},position_verified:false}}});
+  await center;
+  const directions = [['back left',-1,1],['back',0,1],['back right',1,1],['left',-1,0],['right',1,0],['front left',-1,-1],['front',0,-1],['front right',1,-1]];
+  for (const [name,dx,dy] of directions) {
+    const btn=ariaButton(`Step ${name} by selected XY step`);
+    assert.equal(btn.disabled,false);
+    const click=btn.fire('click'); await tick();
+    assert.deepEqual(posts.at(-1),{path:`/printers/${PID}/move/maintenance-xy-step`,body:{direction_x:dx,direction_y:dy,step_mm:10}});
+    assert.equal((btn.listeners.pointerdown || []).length, 0, 'no unbounded hold-repeat');
+    pending.shift()({ok:true,status:200,data:{maintenance:{last_requested:{X:128+dx*10,Y:128+dy*10,Z:null},position_verified:false}}});
+    await click;
+  }
+  telemetry({maintenance:{last_requested:{X:null,Y:null,Z:null},reason:'connection_lost'}});
+  assert.ok(ariaButton('Step back by selected XY step').disabled);
+  assert.match(text(), /Select an absolute XY target/);
+});
