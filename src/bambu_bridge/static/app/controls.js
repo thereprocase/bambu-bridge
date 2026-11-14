@@ -604,7 +604,7 @@ function maintenancePanel(ctx) {
   const zControls = el('div', {
     style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', width: '100%' },
   }, [
-    el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' } }, zPresets),
+    el('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '8px' } }, zPresets),
     el('div', { class: 'stack', style: { gap: '6px' } }, [
       stepSelect('Maintenance Z step', (n) => { zStep = n; }), raise, lower,
     ]),

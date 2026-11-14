@@ -104,10 +104,10 @@ export function MaintenanceControls({ printerId }: { printerId: string }) {
     <Text style={[type.small, { color: c.muted }]}>Top raises the bed; Bottom lowers it. Keep hands and tools clear while moving.</Text>
     {!supported && <Text style={[type.small, { color: c.warn }]}>Update the bridge to enable maintenance positioning.</Text>}
     <View style={{ flexDirection: "row", gap: 12 }}>
-      <View style={{ flex: 1, gap: 8 }}>{[0, 1].map(row => <View key={row} style={{ flexDirection: "row", gap: 8 }}>
-        {Z_PRESETS.slice(row * 2, row * 2 + 2).map(([label, target]) => button(label,
-          `${label}: move bed to Z${target} mm`, !readyZ, () => send(() => moveBedAbsolute(printerId, target)), { flex: 1, minHeight: 64 }))}
-      </View>)}</View>
+      <View style={{ flex: 1, gap: 8 }}>
+        {Z_PRESETS.map(([label, target]) => button(label,
+          `${label}: move bed to Z${target} mm`, !readyZ, () => send(() => moveBedAbsolute(printerId, target)), { minHeight: 44 }))}
+      </View>
       <View style={{ width: 96, gap: 6 }}>
         <Text style={[type.small, { color: c.muted }]}>Step</Text>{selector("Maintenance Z step", zStep, setZStep)}
         {button("↑ Raise", "Raise bed by selected Z step", !readyZ || !zAllowed(-1), () => send(() => maintenanceZStep(printerId, -1, zStep)), undefined, {axes:"Z",direction_z:-1})}

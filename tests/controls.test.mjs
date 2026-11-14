@@ -210,13 +210,13 @@ test('Skip objects follows Orca: shown with fun bit 49, usable while RUNNING/PAU
   assert.equal(skipBtn().disabled, false);
 });
 
-test('maintenance Z presets stay left of step controls and send bounded absolute targets', async () => {
+test('maintenance Z presets stack in one column left of step controls and send bounded absolute targets', async () => {
   store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
   openSheet({ hold: true });
   const targets = [['Top', 0], ['Upper', 83], ['Lower', 167], ['Bottom', 250]];
   const row = buttons(body(), 'Top')[0].parentNode;
   assert.equal(row.style.display, 'grid');
-  assert.equal(row.style.gridTemplateColumns, 'repeat(2, minmax(0, 1fr))');
+  assert.equal(row.style.gridTemplateColumns, 'minmax(0, 1fr)');
   assert.equal(row.parentNode.style.gridTemplateColumns, 'minmax(0, 1fr) 96px');
   for (const [label, target] of targets) {
     const button = buttons(body(), label)[0];
