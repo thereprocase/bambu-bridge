@@ -134,6 +134,50 @@ async def test_command_that_raised_is_not_rerun():
 
 
 @pytest.mark.asyncio
+async def test_repeat_stops_waiting_for_a_command_that_never_finishes(monkeypatch):
+    monkeypatch.setattr(idempotency, "WAIT_S", 0.05)
+    client, calls, gate = _app()
+    first = asyncio.create_task(client.post("/slow", headers={"Idempotency-Key": KEY}))
+    while calls["n"] == 0:
+        await asyncio.sleep(0)
+    second = await client.post("/slow", headers={"Idempotency-Key": KEY})
+    assert second.status_code == 409
+    assert calls["n"] == 1
+    gate.set()
+    await first
+
+
+@pytest.mark.asyncio
+async def test_running_commands_are_bounded():
+    client, calls, gate = _app()
+    running = [
+        asyncio.create_task(client.post("/slow", headers={"Idempotency-Key": f"pending-{i:012d}"}))
+        for i in range(idempotency.MAX_PENDING)
+    ]
+    while calls["n"] < idempotency.MAX_PENDING:
+        await asyncio.sleep(0)
+    refused = await client.post("/slow", headers={"Idempotency-Key": "one-too-many-0000"})
+    assert refused.status_code == 503
+    assert calls["n"] == idempotency.MAX_PENDING
+    gate.set()
+    assert all(r.status_code == 200 for r in await asyncio.gather(*running))
+
+
+@pytest.mark.asyncio
+async def test_cancelled_command_is_not_rerun():
+    client, calls, _ = _app()
+    first = asyncio.create_task(client.post("/slow", headers={"Idempotency-Key": KEY}))
+    while calls["n"] == 0:
+        await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    second = await client.post("/slow", headers={"Idempotency-Key": KEY})
+    assert second.status_code == 409
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
 async def test_stored_response_expires():
     now = [0.0]
     client, calls, _ = _app(clock=lambda: now[0])
@@ -179,3 +223,35 @@ async def test_bridge_advertises_the_feature_on_every_response():
         missing = await client.get("/api/v1/nope")
     assert ok.headers["x-bridge-features"] == "idempotency-key"
     assert missing.headers["x-bridge-features"] == "idempotency-key"
+
+
+def test_keyed_registration_through_the_real_app_runs_once(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from bambu_bridge.protocol import discovery
+    from tests.conftest import ACCESS_CODE, API_KEY, SERIAL, build_app, patch_discovery_ok
+
+    patch_discovery_ok(monkeypatch, serial=SERIAL)
+    runs = {"n": 0}
+    probe = discovery.extract_serial_from_cert
+
+    async def counting(*args, **kwargs):
+        runs["n"] += 1
+        return await probe(*args, **kwargs)
+
+    monkeypatch.setattr(discovery, "extract_serial_from_cert", counting)
+    auth = {"Authorization": f"Bearer {API_KEY}"}
+    body = {"host": "127.0.0.1", "access_code": ACCESS_CODE, "friendly_name": "Keyed"}
+    with TestClient(build_app(tmp_path / "keyed.db")) as client:
+        # A refused credential does not use up the key: the credential is part of its scope.
+        keyed = {**auth, "Idempotency-Key": KEY}
+        refused = client.post("/api/v1/printers", json=body, headers={"Idempotency-Key": KEY})
+        assert refused.status_code == 401
+        first = client.post("/api/v1/printers", json=body, headers=keyed)
+        second = client.post("/api/v1/printers", json=body, headers=keyed)
+        listing = client.get("/api/v1/printers", headers=auth).json()
+    assert (first.status_code, second.status_code) == (201, 201)
+    assert second.headers["idempotency-replayed"] == "true"
+    assert first.content == second.content
+    assert runs["n"] == 1
+    assert len(listing) == 1

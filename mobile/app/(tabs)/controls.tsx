@@ -41,6 +41,7 @@ import {
 import { BridgeError } from "../../src/api/errors";
 import { Button } from "../../src/components/Button";
 import { confirmUnload } from "../../src/components/confirmUnload";
+import { unloadAvailability } from "../../src/lib/unloadRule";
 import { Field } from "../../src/components/Field";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
@@ -80,6 +81,7 @@ export default function ControlsScreen() {
   }
 
   const isPrinting = view.phase === "printing" || view.phase === "preparing";
+  const unload = unloadAvailability(live?.snapshot);
 
   function safeCall(fn: () => Promise<unknown>, okMsg: string) {
     return fn()
@@ -252,13 +254,11 @@ export default function ControlsScreen() {
           external spool. Loading a slot is on the Filament tab.
         </Text>
         <View style={{ flexDirection: "row", gap: space.sm }}>
-          <Button label="Unload filament" variant="secondary" disabled={isPrinting}
-            onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId), "Unloading"))} />
+          <Button label="Unload filament" variant="secondary" disabled={!unload.allowed}
+            onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId), "Unloading"), unload.loaded)} />
         </View>
-        {isPrinting && (
-          <Text style={[type.small, { color: c.warn }]}>
-            Printer is active — unloading is available when the print ends.
-          </Text>
+        {unload.reason && (
+          <Text style={[type.small, { color: c.warn }]}>{unload.reason}</Text>
         )}
       </Surface>
       </CapabilityCard>

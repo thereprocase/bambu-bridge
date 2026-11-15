@@ -19,8 +19,9 @@
  * Commands (everything except GET) carry an `Idempotency-Key`. A bridge that
  * advertises `X-Bridge-Features: idempotency-key` runs a key once and answers
  * a repeat with the stored response, so a command whose connection failed
- * quickly is sent again: once on the same address, then on the other one.
- * Against a bridge without that feature a command is still sent exactly once.
+ * quickly is sent again within its own timeout: on the same address, then on
+ * the other one, each only if that address advertised the feature. Against a
+ * bridge without that feature a command is still sent exactly once.
  */
 
 import { qaLog } from "../lib/qalog";
@@ -64,17 +65,31 @@ export interface RequestOptions {
  * a request that hung for longer may still be running on the bridge and the
  * person may already have moved on. */
 const COMMAND_REPEAT_WINDOW_MS = 10_000;
-const COMMAND_REPEAT_TIMEOUT_MS = 8_000;
 const COMMAND_REPEAT_PAUSE_MS = 300;
+/** A repeat needs at least this much of the command's timeout left to be worth sending. */
+const COMMAND_REPEAT_MIN_MS = 1_000;
 
-/** Whether the bridge's latest response advertised idempotency keys. Updated
- * on every response so a bridge rolled back to an older release is noticed. */
-let commandRepeatSafe = false;
-function noteFeatures(value: string | null | undefined): void {
-  commandRepeatSafe = (value ?? "").split(",").some((f) => f.trim() === "idempotency-key");
+/** Origins whose latest response advertised idempotency keys. Kept per origin
+ * because the LAN and remote addresses could reach different bridge releases;
+ * updated on every response so a rolled-back bridge is noticed. */
+const repeatSafeOrigins = new Set<string>();
+function originKey(base: string): string {
+  try { const u = new URL(base); return `${u.protocol}//${u.host}`; }
+  catch { return base; }
 }
+function noteFeatures(base: string, value: string | null | undefined): void {
+  const safe = (value ?? "").split(",").some((f) => f.trim() === "idempotency-key");
+  if (safe) repeatSafeOrigins.add(originKey(base));
+  else repeatSafeOrigins.delete(originKey(base));
+}
+const repeatSafe = (base: string) => repeatSafeOrigins.has(originKey(base));
 /** Test hook. */
-export function resetCommandRepeat(): void { commandRepeatSafe = false; }
+export function resetCommandRepeat(): void { repeatSafeOrigins.clear(); repeatListener = null; }
+
+/** Called once when a command's first attempt failed and the app is sending it
+ * again, so the UI can say so instead of going quiet. */
+let repeatListener: (() => void) | null = null;
+export function setCommandRepeatListener(listener: (() => void) | null): void { repeatListener = listener; }
 
 let keySerial = 0;
 /** Unique per command; the bridge scopes it to this device's credential, so
@@ -143,12 +158,16 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
       // by idempotency key.
       const other = otherUrlFor(base);
       if (command) {
-        if (!commandRepeatSafe || opts.repeat === false ||
+        // The bridge that may already have run the command must be the one
+        // that deduplicates it, so the failed address itself has to qualify.
+        const targets = repeatSafe(base) ? [base, ...(other && repeatSafe(other) ? [other] : [])] : [];
+        if (!targets.length || opts.repeat === false ||
             Date.now() - startedAt > COMMAND_REPEAT_WINDOW_MS) {
           if (!other) useNetStore.getState().setReach("down");
           throw e;
         }
-        return repeatCommand<T>([base, ...(other ? [other] : [])], path, opts, key!, e);
+        const deadline = startedAt + (opts.timeoutMs ?? 15_000);
+        return repeatCommand<T>(targets, path, opts, key!, deadline, e);
       }
       if (other) {
         try {
@@ -191,19 +210,23 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
 
 /** Send an already-attempted command again with the same idempotency key:
  * first on the address that failed, after a short pause, then on the other
- * one. The bridge runs the key once, so whichever attempt gets through
- * returns the single result. */
+ * one. The bridge runs the key once and holds a repeat until the original
+ * finishes, so each attempt gets the rest of the command's own timeout. */
 async function repeatCommand<T>(
   targets: string[],
   path: string,
   opts: RequestOptions,
   key: string,
+  deadline: number,
   firstError: BridgeNetworkError,
 ): Promise<T> {
-  const timeoutMs = Math.min(opts.timeoutMs ?? 15_000, COMMAND_REPEAT_TIMEOUT_MS);
   let last = firstError;
+  let outOfTime = false;
+  repeatListener?.();
   for (const [index, target] of targets.entries()) {
     if (index === 0) await pause(COMMAND_REPEAT_PAUSE_MS);
+    const timeoutMs = deadline - Date.now();
+    if (timeoutMs < COMMAND_REPEAT_MIN_MS) { outOfTime = true; break; }
     try {
       const result = await requestVia<T>(target, path, { ...opts, timeoutMs }, key);
       notifyRequestSucceeded(target);
@@ -216,12 +239,16 @@ async function repeatCommand<T>(
         if (e instanceof BridgeError) { notifyRequestSucceeded(target); reportReach(target); }
         throw e;
       }
+      // An attempt cut off by the command's own deadline may have been held by
+      // the bridge for a still-running original; that is no evidence the
+      // address is down.
+      if (deadline - Date.now() < COMMAND_REPEAT_MIN_MS) { outOfTime = true; break; }
       notifyRequestFailed(target);
       last = e;
     }
   }
   qaLog("net.command_repeat", { path, ok: false });
-  useNetStore.getState().setReach("down");
+  if (!outOfTime) useNetStore.getState().setReach("down");
   throw last;
 }
 
@@ -273,7 +300,7 @@ async function requestVia<T>(
       ? await pairedFetch(url, method, headers, body, opts.timeoutMs ?? 15_000,
         !!opts.rawBytes, controller.signal)
       : await fetch(url, { method, headers, body, signal: controller.signal });
-    noteFeatures(response.headers?.get?.("x-bridge-features"));
+    noteFeatures(base, response.headers?.get?.("x-bridge-features"));
     if (response.status === 204) return undefined as T;
     if (!response.ok) {
       const envelope = await safeEnvelope(response);

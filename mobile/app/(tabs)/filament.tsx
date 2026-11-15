@@ -41,6 +41,7 @@ import {
 } from "../../src/api/inventory";
 import { Button } from "../../src/components/Button";
 import { confirmUnload } from "../../src/components/confirmUnload";
+import { unloadAvailability } from "../../src/lib/unloadRule";
 import { NeedsYouCard } from "../../src/components/NeedsYouCard";
 import { ProgressBar } from "../../src/components/ProgressBar";
 import { RecentPrints } from "../../src/components/RecentPrints";
@@ -234,11 +235,12 @@ export default function FilamentScreen() {
     return () => { clearInterval(timer); refillAsked.current++; refillInFlight.current = false; };
   }, [settling, selectedId, inventoryOn]));
 
-  // The bridge refuses an unload while a print runs; offer it when it can work.
-  const unloadBlocked = view.phase === "printing" || view.phase === "preparing";
+  // Disable unload when the bridge would refuse it (see lib/unloadRule).
+  const unload = unloadAvailability(live?.snapshot);
+  const sendUnload = () => confirmUnload(() => safeCall(() => unloadFilament(selectedId!)), unload.loaded);
 
   function safeCall(fn: () => Promise<unknown>) {
-    fn()
+    return fn()
       .then(() => showToast("Command sent", { severity: "success" }))
       .catch((e) => showToast(e instanceof BridgeError ? e.envelope.message : e instanceof Error ? e.message : String(e), { severity: "danger" }));
   }
@@ -649,12 +651,15 @@ export default function FilamentScreen() {
             </>
           )}
           {capabilities.get("filamentMotion").available && !rescanning && slotsToRender.some((s) => !s.empty) && (
-            <Button
-              label={unloadBlocked ? "Unload current filament (after the print)" : "Unload current filament"}
-              variant="secondary"
-              disabled={unloadBlocked}
-              onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
-            />
+            <>
+              <Button
+                label="Unload current filament"
+                variant="secondary"
+                disabled={!unload.allowed}
+                onPress={sendUnload}
+              />
+              {unload.reason && <Text style={[type.small, { color: c.muted }]}>{unload.reason}</Text>}
+            </>
           )}
         </Surface>
         </CapabilityCard>
@@ -690,13 +695,14 @@ export default function FilamentScreen() {
                     onPress={() => router.push({ pathname: "/spool", params: { id: String(external.assignment!.spool_id), printer: selectedId, source: external.source.source } })}
                   />
                 )}
-                {capabilities.get("filamentMotion").available && (
+                {/* Unload acts on whatever is loaded, so offer it here only for the external spool. */}
+                {capabilities.get("filamentMotion").available && unload.externalLoaded && (
                   <Button
                     label="Unload"
                     variant="secondary"
                     size="small"
-                    disabled={unloadBlocked}
-                    onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
+                    disabled={!unload.allowed}
+                    onPress={sendUnload}
                   />
                 )}
               </>

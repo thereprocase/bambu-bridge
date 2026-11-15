@@ -13,8 +13,10 @@ Scope and limits:
 * A key is bound to the caller's credential, the method and the full request
   target. The request body is not compared: a client generates one random key
   per command and reuses it only to repeat that command.
-* A repeat that arrives while the first request is still running waits for it
-  and receives the same response.
+* A repeat that arrives while the first request is still running waits for it,
+  up to ``WAIT_S``, and receives the same response; after that it gets a 409.
+* At most ``MAX_PENDING`` keyed commands run at once; another keyed command
+  gets a 503 and is not run.
 * Stored responses are kept in memory for ``TTL_S`` seconds, at most
   ``MAX_ENTRIES`` of them, and only up to ``MAX_BODY`` bytes each. A larger
   response is not stored; its repeat receives a 409 that says the command was
@@ -38,6 +40,12 @@ from bambu_bridge.api import errors as api_errors
 TTL_S = 300.0
 MAX_ENTRIES = 256
 MAX_BODY = 64 * 1024
+# Keyed commands still running. The middleware sees requests before
+# authentication, so this bounds what any caller can hold open.
+MAX_PENDING = 32
+# A repeat waits this long for the original to finish; longer than the app's
+# longest command timeout (120 s for native backup and restore).
+WAIT_S = 150.0
 FEATURE_HEADER = (b"x-bridge-features", b"idempotency-key")
 REPLAY_HEADER = (b"idempotency-replayed", b"true")
 _METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -98,8 +106,24 @@ class IdempotencyMiddleware:
         self._prune()
         entry = self._entries.get(slot)
         if entry is not None:
-            await entry.done.wait()
+            try:
+                await asyncio.wait_for(entry.done.wait(), WAIT_S)
+            except TimeoutError:
+                response = api_errors.conflict(
+                    "This command is still running. Check the printer status."
+                )
+                await response(scope, receive, tagged)
+                return
             await self._replay(entry, scope, receive, tagged)
+            return
+
+        if sum(1 for e in self._entries.values() if e.finished_at is None) >= MAX_PENDING:
+            response = api_errors.envelope(
+                error=api_errors.ERR_CONFLICT,
+                message="The bridge is busy with other commands. Try again in a moment.",
+                status_code=503,
+            )
+            await response(scope, receive, tagged)
             return
 
         entry = self._entries[slot] = _Entry()
