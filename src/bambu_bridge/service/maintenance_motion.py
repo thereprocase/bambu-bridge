@@ -18,6 +18,15 @@ _MOTION = re.compile(
     r"(?im)^\s*(?:N\d+\s+)?(?:G(?:0?[0123]|28|29|38\d*|92)|M(?:17|18|84))(?=[\sXYZEF;]|$)"
 )
 
+# AMS load and unload both go out as print.ams_change_filament; the printer
+# drives the toolhead to the cutter and purge positions for them.
+_MOVING_COMMANDS = frozenset(
+    {"project_file", "gcode_file", "axis_control", "home", "calibration", "ams_change_filament"}
+)
+_REPORTED_MOVING_COMMANDS = frozenset(
+    {"gcode_line", "gcode_file", "project_file", "axis_control", "home", "ams_change_filament"}
+)
+
 
 class MaintenanceMotion:
     def __init__(self) -> None:
@@ -71,7 +80,7 @@ class MaintenanceMotion:
         command = body.get("command")
         if "sequence_id" in body:
             self._own_sequences.append(str(body["sequence_id"]))
-        if command in {"project_file", "gcode_file", "axis_control", "home", "calibration"} or (
+        if command in _MOVING_COMMANDS or (
             command == "gcode_line" and _MOTION.search(str(body.get("param", "")))
         ):
             self.reset("Another movement command invalidated maintenance targets")
@@ -90,7 +99,7 @@ class MaintenanceMotion:
         command = incoming.get("command")
         # Acknowledgements of our own targets are not physical completion.
         # Other command reports are conservatively treated as untracked motion.
-        if command in {"gcode_line", "gcode_file", "project_file", "axis_control", "home"}:
+        if command in _REPORTED_MOVING_COMMANDS:
             own = str(incoming.get("sequence_id", "")) in self._own_sequences
             failed = "result" in incoming and str(incoming["result"]).lower() != "success"
             if not own or failed:

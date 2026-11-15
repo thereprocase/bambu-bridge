@@ -73,6 +73,12 @@ class FenceSequence:
 class MaintenanceHold:
     LEASE_S = 0.75
     SEGMENT_MM = 1.0
+    # An idle P1S reports in bursts with gaps of about 27 s (api/capabilities.py),
+    # longer than the 15 s readiness window. With no lease active, a qualified
+    # hold rides out a quiet gap by asking for a full report (the service spaces
+    # those 10 s apart, so up to five go out between 15 s and 60 s). Silence
+    # past this bound, about twice the observed gap, drops qualification.
+    QUIET_LIMIT_S = 60.0
 
     def __init__(
         self,
@@ -86,9 +92,19 @@ class MaintenanceHold:
         *,
         fence_timeout: float = 4.0,
         marker_path: Path | None = None,
+        settled: Callable[[str], bool] | None = None,
+        telemetry_age: Callable[[], float] | None = None,
+        refresh: Callable[[], Awaitable[Any]] | None = None,
     ) -> None:
         self.motion, self.ready, self.raw = motion, ready, raw
         self.publish, self.move, self.changed, self.lock = publish, move, changed, lock
+        # ready(axes) must equal settled(axes) and a report no older than 15 s.
+        # settled is everything except report age (connected, idle, homed), so
+        # "settled but not ready" means only that the printer has been quiet.
+        # Without it every readiness loss counts as evidence of motion.
+        self.settled = settled or ready
+        self.telemetry_age = telemetry_age or (lambda: float("inf"))
+        self.refresh = refresh
         self.fence_timeout = fence_timeout
         self._sequence = FenceSequence(marker_path)
         self.qualified = False
@@ -122,8 +138,15 @@ class MaintenanceHold:
             "segment_mm": self.SEGMENT_MM,
         }
 
-    def invalidate(self, reason: str) -> None:
-        if any(v is not None for v in self.motion.targets.values()):
+    def invalidate(self, reason: str, *, keep_targets: bool = False) -> None:
+        """Drop qualification and stop any hold.
+
+        keep_targets is for causes that are not evidence of motion (an old
+        report, a verification that sent no axis move). The last requested
+        targets stay, so click steps keep their reference. Disconnects, busy
+        states, homing changes and foreign commands leave it False.
+        """
+        if not keep_targets and any(v is not None for v in self.motion.targets.values()):
             self.motion.reset(reason)
         self.qualified = False
         self.reason = reason
@@ -181,6 +204,7 @@ class MaintenanceHold:
         targets: dict[str, float] | None = None,
         *,
         lease: bool,
+        verification: bool = False,
     ) -> None:
         self._check(lease=lease)
         marker = self._sequence.next(*self._baseline())
@@ -204,12 +228,18 @@ class MaintenanceHold:
             try:
                 while not self._pending.done():
                     if not self.ready(self._axes):
-                        self.invalidate("Printer readiness was lost while draining a fence")
+                        self.invalidate(
+                            "Printer readiness was lost while draining a fence",
+                            keep_targets=self.settled(self._axes),
+                        )
                         raise HoldStopped(self.reason)
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        # Verification publishes M400/M73 only, so a missing
+                        # echo there says nothing about where the axes went.
                         self.invalidate(
-                            "Printer did not report motion completion; held jogging disabled"
+                            "Printer did not report motion completion; held jogging disabled",
+                            keep_targets=verification,
                         )
                         raise HoldStopped(self.reason)
                     stopped = self._cancel.is_set() or (lease and time.monotonic() >= self._expires)
@@ -254,7 +284,7 @@ class MaintenanceHold:
         baseline: tuple[int, int] | None = None
         try:
             baseline = self._baseline()
-            await self._fence(lease=False)
+            await self._fence(lease=False, verification=True)
             self._check(lease=False)
             await self._restore(baseline)
             self.qualified = True
@@ -363,9 +393,30 @@ class MaintenanceHold:
     async def _watch_status(self) -> None:
         while self.qualified or self.active:
             await asyncio.sleep(0.25)
-            if not self.ready("XYZ"):
+            if self.ready("XYZ"):
+                continue
+            if not self.settled("XYZ"):
+                # Disconnected, busy or unhomed: the axes may have moved.
                 self.invalidate("Fresh idle homed status was lost; verify held jogging again")
                 return
+            # Still connected, idle and homed as last reported; only quiet.
+            if self.active:
+                # A live lease queues motion and needs current status.
+                self.invalidate(
+                    "Printer status went stale during held jogging; verify held jogging again",
+                    keep_targets=True,
+                )
+                return
+            if self.telemetry_age() > self.QUIET_LIMIT_S:
+                self.invalidate(
+                    "Printer stopped reporting status; verify held jogging again",
+                    keep_targets=True,
+                )
+                return
+            if self.refresh is not None:
+                # The service spaces full-report requests; most calls send nothing.
+                with contextlib.suppress(Exception):
+                    await self.refresh()
 
     async def close(self) -> None:
         self._closing = True

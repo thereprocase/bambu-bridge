@@ -51,7 +51,14 @@ def reported_nozzle(service: Any) -> float | None:
 
 
 def telemetry_fresh(service: Any) -> bool:
-    """Connected, with a status report no older than 15 s (5 s clock tolerance)."""
+    """Connected, with a status report no older than 15 s (5 s clock tolerance).
+
+    After a disconnect or reconnect the service keeps the pre-drop status and
+    its timestamp; status_pending stays True until the new session reports
+    gcode_state, and until then nothing is fresh.
+    """
+    if getattr(service, "status_pending", False) is True:
+        return False
     session = service.snapshot().get("session") or {}
     try:
         stamp = datetime.fromisoformat(session["last_telemetry_at"].replace("Z", "+00:00"))

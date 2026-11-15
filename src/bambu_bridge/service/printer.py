@@ -307,6 +307,11 @@ class PrinterService:
         #   detect the 0 → positive transition that emits `print_progress`
         #   (the §6.0.1 "now actually printing" signal).
         self._last_telemetry_at: float | None = None
+        # True from a disconnect or reconnect until a report on the new session
+        # carries gcode_state. `_last_telemetry_at` and `_state` survive the drop
+        # (display and gap classification need them), but they describe the
+        # printer before the drop, so freshness gates must not pass on them.
+        self._status_pending = False
         self._last_layer_num: int = 0
         self._last_connect_attempt_at: float | None = None
         # Epoch of the last MQTT drop — `connection_restored` reports
@@ -341,6 +346,9 @@ class PrinterService:
             self._maintenance_changed, self._motion_request_lock,
             marker_path=(diagnostic_history_path.with_suffix(".motion-fences.sqlite")
                          if diagnostic_history_path else None),
+            settled=self._maintenance_settled,
+            telemetry_age=self._telemetry_age,
+            refresh=self.request_full_report,
         )
 
         self._mqtt = self._build_mqtt()
@@ -419,6 +427,11 @@ class PrinterService:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def status_pending(self) -> bool:
+        """No report with gcode_state has arrived since the last disconnect or reconnect."""
+        return self._status_pending
 
     def snapshot(self) -> dict[str, Any]:
         """Translated snapshot — the §6 wire shape consumed by the APK.
@@ -592,15 +605,27 @@ class PrinterService:
         self.maintenance_motion.revision += 1
         self.bus.publish(Event("delta", {}))
 
-    def _maintenance_ready(self, axes: str) -> bool:
-        age = time.time() - self._last_telemetry_at if self._last_telemetry_at else float("inf")
+    def _telemetry_age(self) -> float:
+        """Seconds since the last report on this session; inf before the first one."""
+        if self._last_telemetry_at is None or self._status_pending:
+            return float("inf")
+        return time.time() - self._last_telemetry_at
+
+    def _maintenance_settled(self, axes: str) -> bool:
+        """Connected, trusted, idle and homed as last reported, however old the report."""
         flag = self._state.get("home_flag")
         mask = 4 if axes == "Z" else 3 if axes == "XY" else 7
         return (
-            self.connected and self.cert_status != "changed" and 0 <= age <= 15
+            self.connected and self.cert_status != "changed"
             and self._state.get("gcode_state") in {"IDLE", "FINISH", "FAILED"}
             and isinstance(flag, int) and not isinstance(flag, bool) and flag & mask == mask
         )
+
+    def _maintenance_ready(self, axes: str) -> bool:
+        # Settled and fresh. The hold watchdog relies on this split: not
+        # settled is evidence about the printer; settled but not ready means
+        # only that the last report is old.
+        return self._maintenance_settled(axes) and 0 <= self._telemetry_age() <= 15
 
     def tracked_position(self, axis: str) -> float | None:
         """Bridge's best-estimate position for ``axis`` (mm), or None=unknown.
@@ -659,6 +684,8 @@ class PrinterService:
         self.material_inventory.clear()
         self.remaining_estimates.clear()
         self.refill_reports.clear()
+        # Set before _connected so no gate sees connected + pre-drop status as fresh.
+        self._status_pending = True
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
@@ -709,6 +736,7 @@ class PrinterService:
 
     async def _handle_lost(self) -> None:
         self._connected = False
+        self._status_pending = True
         self.material_inventory.clear()
         self.remaining_estimates.clear()
         self.refill_reports.clear()
@@ -856,6 +884,10 @@ class PrinterService:
         merged = _deep_merge(prev_state, incoming)
         delta = diff_state(prev_state, merged)
         self._state = merged
+        if "gcode_state" in incoming:
+            # Cleared with the merge, never with the earlier watermark: a gate
+            # woken by the raw bus must not read pre-drop state as current.
+            self._status_pending = False
         self._refresh_gcode_state()
         self.maintenance_hold.observe(incoming, receipt)
         if not self._gcode_fresh and "gcode_state" in incoming:
