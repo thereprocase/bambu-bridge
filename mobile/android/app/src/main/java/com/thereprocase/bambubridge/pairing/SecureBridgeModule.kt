@@ -15,7 +15,6 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLException
 
 class SecureBridgeModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
     override fun getName() = "SecureBridge"
@@ -95,7 +94,7 @@ class SecureBridgeModule(private val context: ReactApplicationContext) : ReactCo
             val keys = headers.keySetIterator()
             while (keys.hasNextKey()) {
                 val key = keys.nextKey()
-                if (key.lowercase() in setOf("authorization", "accept", "content-type")) {
+                if (key.lowercase() in setOf("authorization", "accept", "content-type", "idempotency-key")) {
                     request.header(key, headers.getString(key) ?: "")
                 }
             }
@@ -115,6 +114,7 @@ class SecureBridgeModule(private val context: ReactApplicationContext) : ReactCo
                             promise.resolve(Arguments.createMap().apply {
                                 putInt("status", r.code)
                                 putString("contentType", r.header("Content-Type") ?: "application/octet-stream")
+                                putString("features", r.header("X-Bridge-Features") ?: "")
                                 putString("body", if (binary && r.isSuccessful) data.toByteString().base64()
                                     else data.toString(Charsets.UTF_8))
                             })
@@ -237,9 +237,7 @@ class SecureBridgeModule(private val context: ReactApplicationContext) : ReactCo
                 putString("id", id); putString("type", type); putString("data", data); putInt("code", code)
             })
     }
-    private fun securityFailure(e: Throwable): Boolean =
-        e is SSLException || e is SecurityException || e is IllegalArgumentException ||
-            (e.cause != null && e.cause !== e && securityFailure(e.cause!!))
+    private fun securityFailure(e: Throwable): Boolean = PairedTransport.identityFailure(e)
 
     private fun reject(promise: Promise, e: Throwable) {
         if (securityFailure(e)) promise.reject("PAIR_IDENTITY", "Couldn't verify this bridge. Check its identity and pair again.")

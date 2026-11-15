@@ -1,7 +1,7 @@
 import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import type { PairedProfile } from "./protocol";
 
-interface Result { status: number; contentType: string; body: string }
+interface Result { status: number; contentType: string; body: string; features?: string }
 interface NativeBridge {
   scan(): Promise<string | null>;
   configure(base: string | null, pin: string | null, remote: string | null): Promise<void>;
@@ -48,7 +48,7 @@ export async function pairedFetch(url: string, method: string, headers: Record<s
     const result = await module.request(id, url, method, headers, body ?? null, timeout, binary);
     return {
       status: result.status, ok: result.status >= 200 && result.status < 300,
-      headers: new Headers({ "content-type": result.contentType }),
+      headers: new Headers({ "content-type": result.contentType, "x-bridge-features": result.features ?? "" }),
       text: async () => result.body,
       arrayBuffer: async () => decodeBase64(result.body),
     } as Response;
