@@ -3,9 +3,10 @@ import renderer,{act} from 'react-test-renderer';
 import { AppState, Text } from 'react-native';
 import * as control from '../../api/control';
 let mockSnapshot:any;
+let mockLink:string='open';
 const mockToast=jest.fn();
 jest.mock('@react-navigation/native',()=>({useIsFocused:()=>true}));
-jest.mock('../../store/live',()=>({useLiveStore:(select:any)=>select({printers:{P1:{snapshot:mockSnapshot}}})}));
+jest.mock('../../store/live',()=>({useLiveStore:(select:any)=>select({printers:{P1:{snapshot:mockSnapshot,status:mockLink}}})}));
 jest.mock('../../components/Toast',()=>({useToastStore:(select:any)=>select({show:mockToast})}));
 jest.mock('../../theme/ThemeProvider',()=>({useTheme:()=>{const t=jest.requireActual('../../theme/tokens');return {c:t.light,space:t.space,type:t.typography,radius:t.radius};}}));
 jest.mock('../../api/control',()=>({moveBedAbsolute:jest.fn(),moveXYAbsolute:jest.fn(),maintenanceZStep:jest.fn(),maintenanceXYStep:jest.fn(),qualifyHeldJog:jest.fn(),startHeldJog:jest.fn(),renewHeldJog:jest.fn(),stopHeldJog:jest.fn()}));
@@ -16,8 +17,10 @@ function seed(state='FINISH'){
 }
 function response(){return {sent:{},confirmation:'pending' as const,maintenance:mockSnapshot.maintenance};}
 function press(root:renderer.ReactTestRenderer,label:string){const node=root.root.findAll(n=>n.props.accessibilityLabel===label&&typeof n.props.onPress==='function')[0];expect(node).toBeTruthy();return node;}
-beforeEach(()=>{jest.useFakeTimers();jest.clearAllMocks();Object.defineProperty(AppState,'currentState',{configurable:true,value:'active'});seed();api.moveXYAbsolute.mockResolvedValue(response());api.moveBedAbsolute.mockResolvedValue(response());api.maintenanceZStep.mockResolvedValue(response());api.maintenanceXYStep.mockResolvedValue(response());api.startHeldJog.mockResolvedValue({lease:'a'.repeat(32),lease_ms:750,hold:mockSnapshot.maintenance.hold});api.renewHeldJog.mockResolvedValue({lease_ms:750,hold:mockSnapshot.maintenance.hold});api.stopHeldJog.mockResolvedValue({hold:mockSnapshot.maintenance.hold});});
-afterEach(()=>jest.useRealTimers());
+beforeEach(()=>{mockLink='open';jest.useFakeTimers();jest.clearAllMocks();Object.defineProperty(AppState,'currentState',{configurable:true,value:'active'});seed();api.moveXYAbsolute.mockResolvedValue(response());api.moveBedAbsolute.mockResolvedValue(response());api.maintenanceZStep.mockResolvedValue(response());api.maintenanceXYStep.mockResolvedValue(response());api.startHeldJog.mockResolvedValue({lease:'a'.repeat(32),lease_ms:750,hold:mockSnapshot.maintenance.hold});api.renewHeldJog.mockResolvedValue({lease_ms:750,hold:mockSnapshot.maintenance.hold});api.stopHeldJog.mockResolvedValue({hold:mockSnapshot.maintenance.hold});});
+let listenerSpy:jest.SpyInstance;
+beforeEach(()=>{listenerSpy=jest.spyOn(AppState,'addEventListener').mockImplementation(()=>({remove:jest.fn()}) as any);});
+afterEach(()=>{listenerSpy.mockRestore();jest.useRealTimers();});
 test('native presets and eight-direction pad use bounded maintenance endpoints',async()=>{
  let root!:renderer.ReactTestRenderer;await act(async()=>{root=renderer.create(<MaintenanceControls printerId="P1"/>);});
  await act(async()=>{press(root,'Bottom: move bed to Z250 mm').props.onPress();});expect(api.moveBedAbsolute).toHaveBeenCalledWith('P1',250);
@@ -55,12 +58,30 @@ test('short tap steps once; long press holds only and releases without a click s
 
 test('background cancels held jogging and rejects delayed long press events',async()=>{
  let changed!:(value:string)=>void;
- const subscription=jest.spyOn(AppState,'addEventListener').mockImplementation((_,callback:any)=>{changed=callback;return{remove:jest.fn()};});
+ listenerSpy.mockImplementation((_,callback:any)=>{changed=callback;return{remove:jest.fn()};});
  let root!:renderer.ReactTestRenderer;await act(async()=>{root=renderer.create(<MaintenanceControls printerId="P1"/>);});
  const button=press(root,'Raise bed by selected Z step');
  await act(async()=>{button.props.onPressIn();button.props.onLongPress();});
  expect(api.startHeldJog).toHaveBeenCalledTimes(1);
  await act(async()=>{changed('background');});expect(api.stopHeldJog).toHaveBeenCalledTimes(1);
  await act(async()=>{button.props.onLongPress();});expect(api.startHeldJog).toHaveBeenCalledTimes(1);
- await act(async()=>{root.unmount();});subscription.mockRestore();
+ await act(async()=>{root.unmount();});
+});
+
+const texts=(root:renderer.ReactTestRenderer)=>root.root.findAllByType(Text).flatMap(n=>n.props.children).filter(v=>typeof v==='string') as string[];
+test('F02: a 27 s old status report keeps the buttons enabled while the link is live',async()=>{
+ mockSnapshot.session.last_telemetry_at=new Date(Date.now()-27000).toISOString();
+ let root!:renderer.ReactTestRenderer;await act(async()=>{root=renderer.create(<MaintenanceControls printerId="P1"/>);});
+ expect(press(root,'Bottom: move bed to Z250 mm').props.disabled).toBe(false);
+ expect(texts(root).some(t=>t.includes('busy')||t.includes('offline')||t.includes('link'))).toBe(false);
+ await act(async()=>{root.unmount();});
+});
+test('F17/F18: a down bridge link disables movement and says why; step buttons read Bed up and Bed down',async()=>{
+ mockLink='closed';
+ let root!:renderer.ReactTestRenderer;await act(async()=>{root=renderer.create(<MaintenanceControls printerId="P1"/>);});
+ expect(press(root,'Bottom: move bed to Z250 mm').props.disabled).toBe(true);
+ expect(texts(root)).toContain('Bridge link is down; waiting to reconnect.');
+ const labels=root.root.findAllByType(Text).flatMap(n=>n.props.children);
+ expect(labels).toContain('↑ Bed up');expect(labels).toContain('↓ Bed down');expect(labels).toContain('Lower');
+ await act(async()=>{root.unmount();});
 });

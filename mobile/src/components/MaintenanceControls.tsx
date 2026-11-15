@@ -8,13 +8,14 @@ import { useLiveStore } from "../store/live";
 import { useTheme } from "../theme/ThemeProvider";
 import { useToastStore } from "./Toast";
 import { createHoldLease } from "../lib/holdLease";
-import { Z_PRESETS, XY_PRESETS, XY_DIRECTIONS, maintenanceReady, latestMaintenance, maintenanceStepAllowed } from "../lib/maintenance";
+import { Z_PRESETS, XY_PRESETS, XY_DIRECTIONS, maintenanceReady, maintenanceDisabledReason, latestMaintenance, maintenanceStepAllowed, MAINTENANCE_STEPS } from "../lib/maintenance";
 
 type Step = 1 | 10 | 50;
 type HeldDirection = {axes:"Z"|"XY";direction_x?:-1|0|1;direction_y?:-1|0|1;direction_z?:-1|1};
 export function MaintenanceControls({ printerId }: { printerId: string }) {
   const { c, type, radius } = useTheme();
   const snapshot = useLiveStore(s => s.printers[printerId]?.snapshot);
+  const link = useLiveStore(s => s.printers[printerId]?.status ?? "closed");
   const [response, setResponse] = useState<MaintenanceState | null>(null);
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -23,13 +24,12 @@ export function MaintenanceControls({ printerId }: { printerId: string }) {
   const [zStep, setZStep] = useState<Step>(10);
   const [xyStep, setXYStep] = useState<Step>(10);
   const [active, setActive] = useState(AppState.currentState === "active");
-  const [now, setNow] = useState(Date.now());
   const focused = useIsFocused();
   const showToast = useToastStore(s => s.show);
   const state = latestMaintenance(snapshot?.maintenance as MaintenanceState | undefined, response);
   const supported = !!snapshot?.maintenance;
-  const readyZ = supported && !pending && active && focused && maintenanceReady(snapshot, "Z", now);
-  const readyXY = supported && !pending && active && focused && maintenanceReady(snapshot, "XY", now);
+  const readyZ = supported && !pending && active && focused && maintenanceReady(snapshot, "Z", link);
+  const readyXY = supported && !pending && active && focused && maintenanceReady(snapshot, "XY", link);
   const generation = useRef(0);
   const current = useRef({active,focused,readyZ,readyXY,state});
   current.current = {active,focused,readyZ,readyXY,state};
@@ -38,13 +38,12 @@ export function MaintenanceControls({ printerId }: { printerId: string }) {
     generation.current += 1; setResponse(null); setPending(false); inFlight.current = false;
   }, [printerId]);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
     const listener = AppState.addEventListener("change", value => {
       current.current.active = value === "active";
       if (value !== "active") void lease.current?.stop();
       setActive(value === "active");
     });
-    return () => { current.current.active=false; clearInterval(timer); listener.remove(); generation.current += 1; void lease.current?.stop(); };
+    return () => { current.current.active=false; listener.remove(); generation.current += 1; void lease.current?.stop(); };
   }, []);
   useEffect(() => { if (!active || !focused) void lease.current?.stop(); }, [active, focused]);
   async function send(fn: () => Promise<MaintenanceResponse>, message = "Movement command sent") {
@@ -94,9 +93,10 @@ export function MaintenanceControls({ printerId }: { printerId: string }) {
   }
   function selector(label: string, value: Step, set: (step: Step) => void) {
     return button(`${value} mm ▾`, label, pending, () => Alert.alert(label, undefined,
-      [1, 10, 50].map(n => ({ text: `${n} mm`, onPress: () => set(n as Step) }))), { width: "100%" });
+      MAINTENANCE_STEPS.map(n => ({ text: `${n} mm`, onPress: () => set(n as Step) }))), { width: "100%" });
   }
   const requested = state?.last_requested;
+  const disabledReason = supported ? maintenanceDisabledReason(snapshot, link, pending) : null;
   const zAllowed = (direction: number) => maintenanceStepAllowed(state, "Z", direction, zStep);
   const xyAllowed = (dx: number, dy: number) => maintenanceStepAllowed(state, "X", dx, xyStep) && maintenanceStepAllowed(state, "Y", dy, xyStep);
   return <View style={{ gap: 8 }}>
@@ -110,12 +110,12 @@ export function MaintenanceControls({ printerId }: { printerId: string }) {
       </View>
       <View style={{ width: 96, gap: 6 }}>
         <Text style={[type.small, { color: c.muted }]}>Step</Text>{selector("Maintenance Z step", zStep, setZStep)}
-        {button("↑ Raise", "Raise bed by selected Z step", !readyZ || !zAllowed(-1), () => send(() => maintenanceZStep(printerId, -1, zStep)), undefined, {axes:"Z",direction_z:-1})}
-        {button("↓ Lower", "Lower bed by selected Z step", !readyZ || !zAllowed(1), () => send(() => maintenanceZStep(printerId, 1, zStep)), undefined, {axes:"Z",direction_z:1})}
+        {button("↑ Bed up", "Raise bed by selected Z step", !readyZ || !zAllowed(-1), () => send(() => maintenanceZStep(printerId, -1, zStep)), undefined, {axes:"Z",direction_z:-1})}
+        {button("↓ Bed down", "Lower bed by selected Z step", !readyZ || !zAllowed(1), () => send(() => maintenanceZStep(printerId, 1, zStep)), undefined, {axes:"Z",direction_z:1})}
       </View>
     </View>
     <Text accessibilityLiveRegion="polite" style={[type.small, { color: c.muted }]}>{typeof requested?.Z === "number"
-      ? `Last Z command: ${requested.Z} mm. Physical position is unverified.` : "Select an absolute Z preset before using Raise or Lower."}</Text>
+      ? `Last Z command: ${requested.Z} mm. Physical position is unverified.` : "Select an absolute Z preset before using Bed up or Bed down."}</Text>
     <Text style={[type.h2, { color: c.text }]}>Maintenance XY positions</Text>
     <Text style={[type.small, { color: c.muted }]}>Back (+Y) ↑ · Front (−Y) ↓ · Left (−X) · Right (+X)</Text>
     <View accessibilityLabel="Absolute XY maintenance targets" style={{ gap: 6 }}>
@@ -146,6 +146,6 @@ export function MaintenanceControls({ printerId }: { printerId: string }) {
       () => send(async () => { const result=await qualifyHeldJog(printerId); return {sent:null,confirmation:"pending",maintenance:result.maintenance}; }, "Held-jog verification finished"))}
     <Text accessibilityLiveRegion="polite" style={[type.small,{color:c.muted}]}>{state?.hold?.reason ?? "Held jogging needs idle firmware verification. Click steps remain available."}</Text>
     <Text style={[type.small,{color:c.muted}]}>Hold a direction to jog; release to stop future segments. Held segments are small and independent of the click-step selector.</Text>
-    <Text style={[type.small, { color: c.muted }]}>Requires an idle printer, fresh status and homed axes. Select an absolute preset again after using other printer controls.</Text>
+    {disabledReason && <Text accessibilityLiveRegion="polite" style={[type.small, { color: c.warn }]}>{disabledReason}</Text>}
   </View>;
 }
