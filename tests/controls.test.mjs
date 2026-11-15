@@ -234,36 +234,69 @@ test('maintenance Z presets stack in one column left of step controls and send b
   }
 });
 
-test('maintenance positions stay disabled until Z is homed and when telemetry is stale', () => {
+test('maintenance positions stay disabled until Z is homed and while the printer is offline', () => {
   store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 3 }, { phase: 'completed' }));
   openSheet();
   assert.ok(buttons(body(), 'Bottom')[0].disabled);
   telemetry({ _raw: { home_flag: 7 } });
   assert.equal(buttons(body(), 'Bottom')[0].disabled, false);
-  store.applyDelta(PID, { session: { last_telemetry_at: new Date(Date.now() - 60000).toISOString() } });
+  store.applyDelta(PID, { session: { connected: false } });
   assert.ok(buttons(body(), 'Bottom')[0].disabled);
+  assert.match(text(), /Waiting for a connected printer/);
   assert.equal(posts.length, 0);
 });
 
+test('F02: status age alone does not disable maintenance controls while linked, idle and homed', () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet();
+  assert.equal(buttons(body(), 'Bottom')[0].disabled, false);
+  // 27 s: the gap between idle P1S report bursts; 10 min: far past any gate.
+  for (const age of [27000, 600000]) {
+    store.applyDelta(PID, { session: { last_telemetry_at: new Date(Date.now() - age).toISOString() } });
+    assert.equal(buttons(body(), 'Bottom')[0].disabled, false, `age ${age} ms`);
+    assert.doesNotMatch(text(), /Waiting for a connected printer/);
+  }
+  assert.match(text(), /ask the printer for a fresh status/);
+});
 
+test('F02: maintenance controls stay disabled when the bridge websocket is down', () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet();
+  assert.equal(buttons(body(), 'Bottom')[0].disabled, false);
+  store.setConnected(PID, false);
+  assert.ok(buttons(body(), 'Bottom')[0].disabled);
+});
+
+test('F18: Z step buttons read Bed up and Bed down; preset Lower keeps its name', () => {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
+  openSheet();
+  assert.equal(buttons(body(), '↑ Bed up').length, 1);
+  assert.equal(buttons(body(), '↓ Bed down').length, 1);
+  assert.equal(buttons(body(), '↑ Raise').length + buttons(body(), '↓ Lower').length, 0);
+  assert.equal(buttons(body(), 'Lower').length, 1);
+  assert.match(ariaButton('Raise bed: decrease requested Z by selected step').textContent, /Bed up/);
+  assert.match(ariaButton('Lower bed: increase requested Z by selected step').textContent, /Bed down/);
+});
+
+const PRIMARY = { isPrimary: true, button: 0, pointerId: 1 };
 const ariaButton = (label) => find(body(), (n) => n.tagName === 'BUTTON' && n.attrs['aria-label'] === label)[0];
 
 test('maintenance step references come from server response, with bounded Z direction and dropdown', async () => {
   store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 }, { phase: 'completed' }));
   openSheet({ hold: true });
-  assert.ok(buttons(body(), '↑ Raise')[0].disabled);
+  assert.ok(buttons(body(), '↑ Bed up')[0].disabled);
   assert.match(text(), /Select an absolute Z preset/);
   const request = buttons(body(), 'Bottom')[0].fire('click');
   await tick();
   pending.shift()({ ok: true, status: 200, data: { maintenance: { last_requested: { X: null, Y: null, Z: 250 }, position_verified: false } } });
   await request;
-  assert.equal(buttons(body(), '↑ Raise')[0].disabled, false);
-  assert.ok(buttons(body(), '↓ Lower')[0].disabled, 'no requested movement past bottom');
+  assert.equal(buttons(body(), '↑ Bed up')[0].disabled, false);
+  assert.ok(buttons(body(), '↓ Bed down')[0].disabled, 'no requested movement past bottom');
   const select = find(body(), (n) => n.tagName === 'SELECT' && n.attrs['aria-label'] === 'Maintenance Z step')[0];
   assert.deepEqual(select.children.map(n => n.attrs.value), ['1', '10', '50']);
   select.value = '50';
   await select.fire('change');
-  const step = buttons(body(), '↑ Raise')[0].fire('click');
+  const step = buttons(body(), '↑ Bed up')[0].fire('click');
   await tick();
   assert.deepEqual(posts.at(-1), { path: `/printers/${PID}/move/maintenance-step`, body: { axis: 'Z', direction: -1, step_mm: 50 } });
   pending.shift()({ ok: true, status: 200, data: { maintenance: { last_requested: { X: null, Y: null, Z: 200 }, position_verified: false } } });
@@ -304,13 +337,13 @@ test('large click step near an endpoint leaves the held direction available', as
   openSheet();
   const select=find(body(),n=>n.tagName==='SELECT'&&n.attrs['aria-label']==='Maintenance Z step')[0];
   select.value='50';await select.fire('change');
-  assert.equal(buttons(body(),'↑ Raise')[0].disabled,false);
+  assert.equal(buttons(body(),'↑ Bed up')[0].disabled,false);
 });
 
 test('unqualified long press never falls through to a large click jog', async () => {
  store.applySnapshot(PID,snapshot({gcode_state:'FINISH',home_flag:7},{phase:'completed',maintenance:{last_requested:{X:128,Y:128,Z:125},hold:{qualified:false}}}));
  openSheet();const button=ariaButton('Step back by selected XY step');
- await button.fire('pointerdown');await new Promise(r=>setTimeout(r,330));
+ await button.fire('pointerdown',PRIMARY);await new Promise(r=>setTimeout(r,330));
  await button.fire('pointerup');await button.fire('click');
  assert.equal(posts.length,0);
 });
@@ -318,11 +351,108 @@ test('unqualified long press never falls through to a large click jog', async ()
 test('qualified browser hold starts a lease and pointer release stops it without a click step', async () => {
  store.applySnapshot(PID,snapshot({gcode_state:'FINISH',home_flag:7},{phase:'completed',maintenance:{last_requested:{X:128,Y:128,Z:125},hold:{qualified:true}}}));
  const handle=openSheet({hold:true});const button=ariaButton('Step back by selected XY step');
- await button.fire('pointerdown');await new Promise(r=>setTimeout(r,330));
+ await button.fire('pointerdown',PRIMARY);await new Promise(r=>setTimeout(r,330));
  assert.equal(posts.at(-1).path,`/printers/${PID}/move/hold/start`);
  pending.shift()({ok:true,status:200,data:{lease:'a'.repeat(32)}});await tick();
  await button.fire('pointerup');await button.fire('click');await tick();
  assert.equal(posts.at(-1).path,`/printers/${PID}/move/hold/stop`);
  assert.equal(posts.filter(v=>v.path.endsWith('maintenance-xy-step')).length,0);
  pending.shift()({ok:true,status:200,data:{hold:{active:false}}});await tick();handle.close();
+});
+
+// ── F01: one press timer, one live hold, only primary main-button presses ───
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const holdPosts = (kind) => posts.filter((p) => p.path.endsWith(`/move/hold/${kind}`));
+function openHoldSheet() {
+  store.applySnapshot(PID, snapshot({ gcode_state: 'FINISH', home_flag: 7 },
+    { phase: 'completed', maintenance: { last_requested: { X: 128, Y: 128, Z: 125 }, hold: { qualified: true } } }));
+  posts = [];
+  const app = {
+    store, currentPrinterId: () => PID, navigate() {}, requireKeyScreen() {},
+    api: { postJson: (path, body) => {
+      posts.push({ path, body });
+      return Promise.resolve({ ok: true, status: 200, data: path.endsWith('/move/hold/start') ? { lease: 'a'.repeat(32) } : {} });
+    } },
+  };
+  return controls.open(app);
+}
+
+test('F01: two holdable buttons pressed 50 ms apart, both released at 100 ms, start no hold', async () => {
+  const handle = openHoldSheet();
+  const a = ariaButton('Step back by selected XY step');
+  const b = ariaButton('Step front by selected XY step');
+  await a.fire('pointerdown', { ...PRIMARY, pointerId: 1 });
+  await sleep(50);
+  await b.fire('pointerdown', { ...PRIMARY, pointerId: 2 });
+  await sleep(50);
+  await a.fire('pointerup'); await b.fire('pointerup');
+  await sleep(600);
+  assert.equal(holdPosts('start').length, 0);
+  assert.equal(holdPosts('renew').length, 0);
+  handle.close();
+});
+
+test('F01: a hold that starts is stopped on release and never renews afterwards', async () => {
+  const handle = openHoldSheet();
+  const a = ariaButton('Step back by selected XY step');
+  await a.fire('pointerdown', PRIMARY);
+  await sleep(350);
+  await tick();
+  assert.equal(holdPosts('start').length, 1);
+  await a.fire('pointerup');
+  await tick();
+  assert.equal(holdPosts('stop').length, 1);
+  const renews = holdPosts('renew').length;
+  await sleep(700);
+  assert.equal(holdPosts('renew').length, renews, 'no renew after release');
+  assert.equal(holdPosts('start').length, 1);
+  handle.close();
+});
+
+test('F01: a second press while a hold is live does not start a second instance', async () => {
+  const handle = openHoldSheet();
+  const a = ariaButton('Step back by selected XY step');
+  const b = ariaButton('Step front by selected XY step');
+  await a.fire('pointerdown', PRIMARY);
+  await sleep(350); await tick();
+  await b.fire('pointerdown', { ...PRIMARY, pointerId: 2 });
+  await sleep(400); await tick();
+  assert.equal(holdPosts('start').length, 1);
+  assert.ok(holdPosts('stop').length >= 1, 'second contact stops the live hold');
+  const renews = holdPosts('renew').length;
+  await b.fire('pointerup'); await sleep(600);
+  assert.equal(holdPosts('start').length, 1);
+  assert.equal(holdPosts('renew').length, renews);
+  handle.close();
+});
+
+for (const [name, extra] of [
+  ['non-primary pointer', { isPrimary: false, button: 0, pointerId: 2 }],
+  ['right button', { isPrimary: true, button: 2, pointerId: 1 }],
+  ['middle button', { isPrimary: true, button: 1, pointerId: 1 }],
+  ['missing pointer fields', {}],
+]) {
+  test(`F01: pointerdown from ${name} never starts a hold`, async () => {
+    const handle = openHoldSheet();
+    const a = ariaButton('Step back by selected XY step');
+    await a.fire('pointerdown', extra);
+    await sleep(450);
+    assert.equal(holdPosts('start').length, 0);
+    handle.close();
+  });
+}
+
+test('F01: contextmenu on a holdable button stops a pending or live hold', async () => {
+  const handle = openHoldSheet();
+  const a = ariaButton('Step back by selected XY step');
+  await a.fire('pointerdown', PRIMARY);
+  await a.fire('contextmenu');
+  await sleep(450);
+  assert.equal(holdPosts('start').length, 0, 'pending timer cancelled');
+  await a.fire('pointerdown', PRIMARY);
+  await sleep(350); await tick();
+  assert.equal(holdPosts('start').length, 1);
+  await a.fire('contextmenu'); await tick();
+  assert.equal(holdPosts('stop').length, 1);
+  handle.close();
 });

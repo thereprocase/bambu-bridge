@@ -167,9 +167,11 @@ function openControlsSheet(app, pid, opts = {}) {
   function render() {
     const st = ctx.state();
     if (local.stopping && st.idle) local.stopping = false;
-    titleEl.textContent = st.enabled ? 'Controls' : 'Disconnected — controls disabled';
-    stack.style.opacity = st.enabled ? '' : '.5';
-    stack.style.pointerEvents = st.enabled ? '' : 'none';
+    // Linked, not fresh: an idle P1S reports every ~27 s and the server gate
+    // fetches a fresh report on demand, so a stale age must not grey the sheet.
+    titleEl.textContent = st.linked ? 'Controls' : 'Disconnected — controls disabled';
+    stack.style.opacity = st.linked ? '' : '.5';
+    stack.style.pointerEvents = st.linked ? '' : 'none';
     for (const fn of updaters) fn(st);
   }
   ctx.render = render;
@@ -195,6 +197,10 @@ function sheetState(app, pid) {
     job: (snap && snap.job) || {},
     raw: (snap && snap._raw) || {},
     enabled: live && vm.phase !== 'unknown',
+    // Bridge link and printer session are up; report age is not part of this.
+    // The server asks the printer for a fresh report before a maintenance move.
+    linked: !!(vm.connected && snap && snap.cert_status !== 'changed'
+      && snap.session?.connected && vm.phase !== 'unknown'),
     active,
     paused,
     busy: active && !paused,   // Orca: is_in_printing() && !can_resume()
@@ -477,7 +483,9 @@ function movePanel(ctx, st) {
 function maintenancePanel(ctx) {
   let sending = false;
   let heldJog = null;
+  const liveJogs = new Set();
   let pressTimer = null;
+  let pressToken = null; // identifies the one pointer press that armed pressTimer
   const heldClicks = new Set();
   const holdStatus = el("div", {class: "field__hint", role: "status", "aria-live": "polite"});
   let verifyButton = null;
@@ -494,12 +502,9 @@ function maintenancePanel(ctx) {
   }
   function ready(axes) {
     const current = ctx.state();
-    const session = ctx.app.store.current(ctx.pid)?.session || {};
-    const age = Date.now() - Date.parse(session.last_telemetry_at || '');
     const flag = current.raw.home_flag;
     const mask = axes === 'Z' ? 4 : 3;
-    return !sending && current.enabled && ['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state)
-      && Number.isFinite(age) && age >= 0 && age <= 15000
+    return !sending && current.linked && ['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state)
       && Number.isInteger(flag) && (flag & mask) === mask;
   }
   function stepAllowed(axes, dx, dy = 0) {
@@ -538,8 +543,8 @@ function maintenancePanel(ctx) {
   }
   function stopHeld() {
     if (pressTimer !== null) clearTimeout(pressTimer);
-    pressTimer = null;
-    void heldJog?.stop();
+    pressTimer = null; pressToken = null;
+    for (const jog of [...liveJogs]) { liveJogs.delete(jog); void jog.stop(); }
   }
   const hidden = () => { if (document.visibilityState === 'hidden') stopHeld(); };
   globalThis.addEventListener?.('blur', stopHeld);
@@ -558,23 +563,34 @@ function maintenancePanel(ctx) {
         if (ready(axes) && allowed()) return action();
       },
       ...(direction ? {
-        onPointerdown: () => {
+        onPointerdown: (event) => {
+          // Only the primary pointer's main button arms a hold; right-click and
+          // two-finger trackpad taps arrive as non-primary or button != 0.
+          if (!event.isPrimary || event.button !== 0) return;
           heldClicks.delete(aria);
-          if (!ready(axes) || !allowed() || heldJog?.active) return;
+          // One press at a time: a second contact cancels the first.
+          for (const jog of liveJogs) if (!jog.active) liveJogs.delete(jog); // self-ended holds
+          if (pressTimer !== null || liveJogs.size) { stopHeld(); return; }
+          if (!ready(axes) || !allowed()) return;
+          const token = {};
+          pressToken = token;
           pressTimer = setTimeout(() => {
-            pressTimer = null; heldClicks.add(aria);
+            pressTimer = null;
+            if (pressToken !== token) return; // the arming pointer is no longer down
+            heldClicks.add(aria);
             const status = ctx.app.store.current(ctx.pid)?.maintenance?.hold;
             if (!status?.qualified) { toast('Enable held jogging first. Click steps remain available.'); return; }
-            heldJog = createHeldJog({
+            const jog = createHeldJog({
               start: () => postHold('/move/hold/start', direction),
               renew: lease => postHold('/move/hold/renew', {lease}),
               stop: lease => postHold('/move/hold/stop', {lease}),
             }, () => {});
-            void heldJog.start();
+            heldJog = jog; liveJogs.add(jog);
+            void jog.start();
           }, 300);
         },
         onPointerup: stopHeld, onPointercancel: stopHeld,
-        onLostpointercapture: stopHeld, onPointerleave: stopHeld,
+        onLostpointercapture: stopHeld, onPointerleave: stopHeld, onContextmenu: stopHeld,
       } : {}),
     });
     buttons.push({ node, axes, allowed, holdable: !!direction });
@@ -595,10 +611,10 @@ function maintenancePanel(ctx) {
   const zPresets = [['Top', 0], ['Upper', 83], ['Lower', 167], ['Bottom', 250]].map(([label, target]) =>
     button(label, `${label}: move bed to Z${target} mm`, 'Z',
       () => send('/move/absolute-z', { position_mm: target, feed_mm_min: 600 })));
-  const raise = button('↑ Raise', 'Raise bed: decrease requested Z by selected step', 'Z',
+  const raise = button('↑ Bed up', 'Raise bed: decrease requested Z by selected step', 'Z',
     () => send('/move/maintenance-step', { axis: 'Z', direction: -1, step_mm: zStep }),
     () => stepAllowed('Z', -1), {}, {axes:'Z', direction_z:-1});
-  const lower = button('↓ Lower', 'Lower bed: increase requested Z by selected step', 'Z',
+  const lower = button('↓ Bed down', 'Lower bed: increase requested Z by selected step', 'Z',
     () => send('/move/maintenance-step', { axis: 'Z', direction: 1, step_mm: zStep }),
     () => stepAllowed('Z', 1), {}, {axes:'Z', direction_z:1});
   const zControls = el('div', {
@@ -673,11 +689,11 @@ function maintenancePanel(ctx) {
     if (statusZ.textContent !== nextZ) statusZ.textContent = nextZ;
     if (statusXY.textContent !== nextXY) statusXY.textContent = nextXY;
     const current = ctx.state();
-    const message = !current.enabled ? 'Waiting for a fresh connected printer status.'
+    const message = !current.linked ? 'Waiting for a connected printer.'
       : !['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state) ? 'Maintenance positioning requires an idle printer.'
       : !Number.isInteger(current.raw.home_flag) || (current.raw.home_flag & 7) !== 7
         ? 'Maintenance presets require homed axes: Z for the bed, X and Y for the toolhead.'
-        : 'Presets require fresh printer status; each click sends one bounded target.';
+        : 'Presets ask the printer for a fresh status first; each click sends one bounded target.';
     if (readinessHint.textContent !== message) readinessHint.textContent = message;
   }
   ctx.update(update);
