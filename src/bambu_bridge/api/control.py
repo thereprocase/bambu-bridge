@@ -54,7 +54,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
@@ -62,6 +62,7 @@ from bambu_bridge.api.capabilities import control_capability_gate, require_start
 from bambu_bridge.api.printers import get_registry
 from bambu_bridge.protocol import commands
 from bambu_bridge.protocol.models import build_command
+from bambu_bridge.service.maintenance_hold import HoldStopped
 from bambu_bridge.service.printer import PrinterService
 from bambu_bridge.service.registry import PrinterNotFoundError, Registry
 
@@ -134,6 +135,11 @@ async def _send(service: PrinterService, envelope: dict[str, Any]) -> dict[str, 
 @asynccontextmanager
 async def _motion_request(service: PrinterService) -> AsyncIterator[None]:
     """Reject overlapping motion publications; firmware queues ordered G-code."""
+    held = getattr(service, "maintenance_hold", None)
+    if held is not None and held.active:
+        raise HTTPException(
+            409, {"error": "maintenance_hold_active", "message": "Release the held jog first."}
+        )
     lock = getattr(service, "_motion_request_lock", None)
     if lock is None:
         lock = asyncio.Lock()
@@ -192,6 +198,14 @@ def _check_raw_params(params: dict[str, Any]) -> None:
 
     Raises :class:`HTTPException` 422 on violation.
     """
+    reserved = sorted({"category", "command"} & params.keys())
+    if reserved:
+        # These names are build_command's own arguments; as params they would
+        # collide and raise TypeError (500).
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"params may not use the reserved key(s) {reserved}",
+        )
     serialised = _json.dumps(params)
     if len(serialised.encode()) > 4096:
         raise HTTPException(
@@ -507,8 +521,16 @@ def require_not_busy(service: PrinterService, *, tray: int | None = None) -> Non
 
 class MoveBody(BaseModel):
     axis: str = Field(examples=["X", "Y", "Z"])
-    distance_mm: float
+    distance_mm: float = Field(allow_inf_nan=False)
     feed_mm_min: int = Field(default=600, gt=0)
+
+    @model_validator(mode="after")
+    def _feed_within_axis_limit(self) -> MoveBody:
+        # OrcaSlicer's jog rates are the ceilings: Z 900, X/Y 3000 mm/min.
+        cap = commands.JOG_FEED_MAX_Z if self.axis.upper() == "Z" else commands.JOG_FEED_MAX_XY
+        if self.feed_mm_min > cap:
+            raise ValueError(f"feed_mm_min must be at most {cap} for axis {self.axis.upper()}")
+        return self
 
 
 @router.post("/{printer_id}/move")
@@ -588,7 +610,7 @@ async def _send_maintenance(
     return {
         "sent": envelope,
         "confirmation": "pending",
-        "maintenance": service.maintenance_motion.snapshot(),
+        "maintenance": service.snapshot().get("maintenance", service.maintenance_motion.snapshot()),
     }
 
 
@@ -704,6 +726,86 @@ async def maintenance_xy_step(
         return await _send_maintenance(service, envelope, targets)
 
 
+class HoldStartBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    axes: Literal["Z", "XY"]
+    direction_x: Literal[-1, 0, 1] = 0
+    direction_y: Literal[-1, 0, 1] = 0
+    direction_z: Literal[-1, 0, 1] = 0
+
+
+class HoldLeaseBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lease: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+@router.post("/{printer_id}/move/hold/qualify")
+async def qualify_hold(
+    printer_id: str, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    async with _motion_request(service):
+        _require_maintenance_axes(service, "XYZ")
+        try:
+            result = await service.maintenance_hold.qualify()
+        except HoldStopped as exc:
+            raise HTTPException(
+                409, {"error": "maintenance_hold_unqualified", "message": str(exc)}
+            ) from exc
+        return {"hold": result, "maintenance": service.snapshot().get("maintenance")}
+
+
+@router.post("/{printer_id}/move/hold/start")
+async def start_hold(
+    printer_id: str, body: HoldStartBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    _require_maintenance_axes(service, body.axes)
+    if (body.axes == "Z" and (body.direction_x or body.direction_y)) or (
+        body.axes == "XY" and body.direction_z
+    ):
+        raise HTTPException(422, detail="Choose directions only for the selected axes")
+    try:
+        lease = service.maintenance_hold.start(
+            body.axes, body.direction_x, body.direction_y, body.direction_z
+        )
+    except HoldStopped as exc:
+        raise HTTPException(
+            409, {"error": "maintenance_hold_unavailable", "message": str(exc)}
+        ) from exc
+    return {"lease": lease, "lease_ms": 750, "hold": service.maintenance_hold.snapshot()}
+
+
+@router.post("/{printer_id}/move/hold/renew")
+async def renew_hold(
+    printer_id: str, body: HoldLeaseBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    service = _online(registry, printer_id)
+    try:
+        service.maintenance_hold.renew(body.lease)
+    except HoldStopped as exc:
+        raise HTTPException(
+            409, {"error": "maintenance_hold_expired", "message": str(exc)}
+        ) from exc
+    return {"lease_ms": 750, "hold": service.maintenance_hold.snapshot()}
+
+
+@router.post("/{printer_id}/move/hold/stop")
+async def stop_hold(
+    printer_id: str, body: HoldLeaseBody, registry: Registry = Depends(get_registry)
+) -> dict[str, Any]:
+    # Stopping a host lease is safe even after a disconnect or print start.
+    try:
+        service = registry.get(printer_id)
+    except PrinterNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"printer {printer_id} not found",
+        ) from exc
+    service.maintenance_hold.stop(body.lease)
+    return {"hold": service.maintenance_hold.snapshot()}
+
+
 @router.post("/{printer_id}/ams/control")
 async def ams_control(
     printer_id: str,
@@ -716,8 +818,8 @@ async def ams_control(
 
 class AmsChangeBody(BaseModel):
     target_tray: int = Field(ge=0, description="0-based AMS protocol index")
-    cur_temp: int = 220
-    tar_temp: int = 220
+    cur_temp: int = Field(default=220, ge=0, le=commands.NOZZLE_MAX_C)
+    tar_temp: int = Field(default=220, ge=0, le=commands.NOZZLE_MAX_C)
 
 
 @router.post("/{printer_id}/ams/change")

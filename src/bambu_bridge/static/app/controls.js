@@ -50,6 +50,7 @@ import {
 } from './ui.js';
 import { printerStateLabels } from './printer-state.js';
 import * as skipObjects from './skip-objects.js';
+import { createHeldJog } from './held-jog.js';
 
 // OrcaSlicer's jog steps (mm) and feed rates (mm/min). The bridge's
 // api/control.py ALLOWED_STEPS refuses any other step; a parity test keeps
@@ -131,6 +132,7 @@ function openControlsSheet(app, pid, opts = {}) {
   const titleEl = el('div', { class: 'sheet__title', style: { margin: '0' } });
   const stack = el('div', { class: 'stack' });
   const updaters = [];
+  const cleanups = [];
   let sheetHandle = null;
 
   const ctx = {
@@ -140,6 +142,7 @@ function openControlsSheet(app, pid, opts = {}) {
     /** Show a failed result (or clear the slot with null). */
     report: (r) => { clear(errSlot); if (r) errSlot.appendChild(errorCard(r)); },
     update: (fn) => updaters.push(fn),
+    onClose: (fn) => cleanups.push(fn),
   };
 
   const header = el('div', { class: 'row row--between mb-4' }, [
@@ -164,16 +167,18 @@ function openControlsSheet(app, pid, opts = {}) {
   function render() {
     const st = ctx.state();
     if (local.stopping && st.idle) local.stopping = false;
-    titleEl.textContent = st.enabled ? 'Controls' : 'Disconnected — controls disabled';
-    stack.style.opacity = st.enabled ? '' : '.5';
-    stack.style.pointerEvents = st.enabled ? '' : 'none';
+    // Linked, not fresh: an idle P1S reports every ~27 s and the server gate
+    // fetches a fresh report on demand, so a stale age must not grey the sheet.
+    titleEl.textContent = st.linked ? 'Controls' : 'Disconnected — controls disabled';
+    stack.style.opacity = st.linked ? '' : '.5';
+    stack.style.pointerEvents = st.linked ? '' : 'none';
     for (const fn of updaters) fn(st);
   }
   ctx.render = render;
 
   sheetHandle = mountSheet(el('div', {}, [header, errSlot, stack]), {
     drawer: true,
-    onClose: () => { if (unsub) { unsub(); unsub = null; } if (opts.onClose) opts.onClose(); },
+    onClose: () => { cleanups.forEach(fn => fn()); if (unsub) { unsub(); unsub = null; } if (opts.onClose) opts.onClose(); },
   });
   render();
   unsub = app.store.subscribe(render);
@@ -192,6 +197,10 @@ function sheetState(app, pid) {
     job: (snap && snap.job) || {},
     raw: (snap && snap._raw) || {},
     enabled: live && vm.phase !== 'unknown',
+    // Bridge link and printer session are up; report age is not part of this.
+    // The server asks the printer for a fresh report before a maintenance move.
+    linked: !!(vm.connected && snap && snap.cert_status !== 'changed'
+      && snap.session?.connected && vm.phase !== 'unknown'),
     active,
     paused,
     busy: active && !paused,   // Orca: is_in_printing() && !can_resume()
@@ -207,13 +216,17 @@ function dynamicSection(ctx, keyOf, build) {
   const host = el('div');
   let key = null;
   let own = [];
+  let closeOwn = [];
+  ctx.onClose?.(() => closeOwn.forEach(fn => fn()));
   ctx.update((st) => {
     const k = keyOf(st);
     if (k !== key) {
       key = k;
+      closeOwn.forEach(fn => fn());
+      closeOwn = [];
       own = [];
       clear(host);
-      host.appendChild(build({ ...ctx, update: (fn) => own.push(fn) }, st));
+      host.appendChild(build({ ...ctx, update: (fn) => own.push(fn), onClose: fn => closeOwn.push(fn) }, st));
     }
     for (const fn of own) fn(st);
   });
@@ -469,6 +482,13 @@ function movePanel(ctx, st) {
 /** Maintenance targets use server-owned last commands, never guessed positions. */
 function maintenancePanel(ctx) {
   let sending = false;
+  let heldJog = null;
+  const liveJogs = new Set();
+  let pressTimer = null;
+  let pressToken = null; // identifies the one pointer press that armed pressTimer
+  const heldClicks = new Set();
+  const holdStatus = el("div", {class: "field__hint", role: "status", "aria-live": "polite"});
+  let verifyButton = null;
   let zStep = 10;
   let xyStep = 10;
   const buttons = [];
@@ -482,27 +502,24 @@ function maintenancePanel(ctx) {
   }
   function ready(axes) {
     const current = ctx.state();
-    const session = ctx.app.store.current(ctx.pid)?.session || {};
-    const age = Date.now() - Date.parse(session.last_telemetry_at || '');
     const flag = current.raw.home_flag;
     const mask = axes === 'Z' ? 4 : 3;
-    return !sending && current.enabled && ['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state)
-      && Number.isFinite(age) && age >= 0 && age <= 15000
+    return !sending && current.linked && ['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state)
       && Number.isInteger(flag) && (flag & mask) === mask;
   }
   function stepAllowed(axes, dx, dy = 0) {
     const requested = lastRequested();
     if (axes === 'Z') {
       const z = requested.Z;
-      return Number.isFinite(z) && z + dx * zStep >= 0 && z + dx * zStep <= 250;
+      return Number.isFinite(z) && (dx < 0 ? z > 0 : z < 250);
     }
     const { X: x, Y: y } = requested;
     return Number.isFinite(x) && Number.isFinite(y)
-      && x + dx * xyStep >= 0 && x + dx * xyStep <= 256
-      && y + dy * xyStep >= 0 && y + dy * xyStep <= 256;
+      && (dx === 0 || (dx < 0 ? x > 0 : x < 256))
+      && (dy === 0 || (dy < 0 ? y > 0 : y < 256));
   }
   async function send(path, body) {
-    if (sending) return;
+    if (sending || heldJog?.active) return;
     sending = true;
     update();
     try {
@@ -519,13 +536,64 @@ function maintenancePanel(ctx) {
       update();
     }
   }
-  function button(label, aria, axes, action, allowed = () => true, style = {}) {
+  async function postHold(path, body) {
+    const result = await ctx.post(path, body);
+    if (!result.ok) { ctx.report(result); throw new Error(result.message || 'Held jogging stopped'); }
+    return result.data;
+  }
+  function stopHeld() {
+    if (pressTimer !== null) clearTimeout(pressTimer);
+    pressTimer = null; pressToken = null;
+    for (const jog of [...liveJogs]) { liveJogs.delete(jog); void jog.stop(); }
+  }
+  const hidden = () => { if (document.visibilityState === 'hidden') stopHeld(); };
+  globalThis.addEventListener?.('blur', stopHeld);
+  document.addEventListener('visibilitychange', hidden);
+  ctx.onClose?.(() => {
+    stopHeld();
+    globalThis.removeEventListener?.('blur', stopHeld);
+    document.removeEventListener('visibilitychange', hidden);
+  });
+  function button(label, aria, axes, action, allowed = () => true, style = {}, direction = null) {
     const node = el('button', {
       class: 'btn', text: label, 'aria-label': aria,
       style: { ...smallButton, ...style },
-      onClick: () => { if (ready(axes) && allowed()) return action(); },
+      onClick: () => {
+        if (heldClicks.has(aria)) { heldClicks.delete(aria); return; }
+        if (ready(axes) && allowed()) return action();
+      },
+      ...(direction ? {
+        onPointerdown: (event) => {
+          // Only the primary pointer's main button arms a hold; right-click and
+          // two-finger trackpad taps arrive as non-primary or button != 0.
+          if (!event.isPrimary || event.button !== 0) return;
+          heldClicks.delete(aria);
+          // One press at a time: a second contact cancels the first.
+          for (const jog of liveJogs) if (!jog.active) liveJogs.delete(jog); // self-ended holds
+          if (pressTimer !== null || liveJogs.size) { stopHeld(); return; }
+          if (!ready(axes) || !allowed()) return;
+          const token = {};
+          pressToken = token;
+          pressTimer = setTimeout(() => {
+            pressTimer = null;
+            if (pressToken !== token) return; // the arming pointer is no longer down
+            heldClicks.add(aria);
+            const status = ctx.app.store.current(ctx.pid)?.maintenance?.hold;
+            if (!status?.qualified) { toast('Enable held jogging first. Click steps remain available.'); return; }
+            const jog = createHeldJog({
+              start: () => postHold('/move/hold/start', direction),
+              renew: lease => postHold('/move/hold/renew', {lease}),
+              stop: lease => postHold('/move/hold/stop', {lease}),
+            }, () => {});
+            heldJog = jog; liveJogs.add(jog);
+            void jog.start();
+          }, 300);
+        },
+        onPointerup: stopHeld, onPointercancel: stopHeld,
+        onLostpointercapture: stopHeld, onPointerleave: stopHeld, onContextmenu: stopHeld,
+      } : {}),
     });
-    buttons.push({ node, axes, allowed });
+    buttons.push({ node, axes, allowed, holdable: !!direction });
     return node;
   }
   function stepSelect(label, set) {
@@ -543,16 +611,16 @@ function maintenancePanel(ctx) {
   const zPresets = [['Top', 0], ['Upper', 83], ['Lower', 167], ['Bottom', 250]].map(([label, target]) =>
     button(label, `${label}: move bed to Z${target} mm`, 'Z',
       () => send('/move/absolute-z', { position_mm: target, feed_mm_min: 600 })));
-  const raise = button('↑ Raise', 'Raise bed: decrease requested Z by selected step', 'Z',
+  const raise = button('↑ Bed up', 'Raise bed: decrease requested Z by selected step', 'Z',
     () => send('/move/maintenance-step', { axis: 'Z', direction: -1, step_mm: zStep }),
-    () => stepAllowed('Z', -1));
-  const lower = button('↓ Lower', 'Lower bed: increase requested Z by selected step', 'Z',
+    () => stepAllowed('Z', -1), {}, {axes:'Z', direction_z:-1});
+  const lower = button('↓ Bed down', 'Lower bed: increase requested Z by selected step', 'Z',
     () => send('/move/maintenance-step', { axis: 'Z', direction: 1, step_mm: zStep }),
-    () => stepAllowed('Z', 1));
+    () => stepAllowed('Z', 1), {}, {axes:'Z', direction_z:1});
   const zControls = el('div', {
     style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', width: '100%' },
   }, [
-    el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' } }, zPresets),
+    el('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '8px' } }, zPresets),
     el('div', { class: 'stack', style: { gap: '6px' } }, [
       stepSelect('Maintenance Z step', (n) => { zStep = n; }), raise, lower,
     ]),
@@ -594,10 +662,23 @@ function maintenancePanel(ctx) {
       () => send('/move/maintenance-xy-step', { direction_x: dx, direction_y: dy, step_mm: xyStep }),
       () => stepAllowed('XY', dx, dy),
       { gridRow: String(index < 3 ? 1 : index < 5 ? 2 : 3),
-        gridColumn: String(index === 3 ? 1 : index === 4 ? 3 : index < 3 ? index + 1 : index - 4) })));
+        gridColumn: String(index === 3 ? 1 : index === 4 ? 3 : index < 3 ? index + 1 : index - 4) },
+      {axes:'XY', direction_x:dx, direction_y:dy})));
 
+  verifyButton = button('Enable held jogging', 'Verify held jogging without axis movement', 'XY', async () => {
+    sending = true; update();
+    try {
+      const result = await postHold('/move/hold/qualify');
+      if (result.maintenance) ctx.app.store.applyDelta(ctx.pid, {maintenance: result.maintenance});
+    } finally { sending = false; update(); }
+  }, () => ready('Z'));
   function update() {
-    for (const { node, axes, allowed } of buttons) node.disabled = !ready(axes) || !allowed();
+    const hold = ctx.app.store.current(ctx.pid)?.maintenance?.hold;
+    if (!ready('Z') && !ready('XY')) stopHeld();
+    const holdText = hold?.reason || 'Held jogging needs idle verification. Click steps remain available.';
+    if (holdStatus.textContent !== holdText) holdStatus.textContent = holdText;
+    if (verifyButton) verifyButton.textContent = hold?.qualified ? 'Verify held jogging again' : 'Enable held jogging';
+    for (const { node, axes, allowed, holdable } of buttons) node.disabled = !ready(axes) || !allowed() || (!!heldJog?.active && !holdable);
     const requested = lastRequested();
     const nextZ = Number.isFinite(requested.Z)
       ? `Last Z command: ${requested.Z} mm. Physical position is unverified.`
@@ -608,11 +689,11 @@ function maintenancePanel(ctx) {
     if (statusZ.textContent !== nextZ) statusZ.textContent = nextZ;
     if (statusXY.textContent !== nextXY) statusXY.textContent = nextXY;
     const current = ctx.state();
-    const message = !current.enabled ? 'Waiting for a fresh connected printer status.'
+    const message = !current.linked ? 'Waiting for a connected printer.'
       : !['IDLE', 'FINISH', 'FAILED'].includes(current.raw.gcode_state) ? 'Maintenance positioning requires an idle printer.'
       : !Number.isInteger(current.raw.home_flag) || (current.raw.home_flag & 7) !== 7
         ? 'Maintenance presets require homed axes: Z for the bed, X and Y for the toolhead.'
-        : 'Presets require fresh printer status; each click sends one bounded target.';
+        : 'Presets ask the printer for a fresh status first; each click sends one bounded target.';
     if (readinessHint.textContent !== message) readinessHint.textContent = message;
   }
   ctx.update(update);
@@ -626,7 +707,8 @@ function maintenancePanel(ctx) {
     el('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: '12px', marginTop: '12px' } }, [
       dpad, stepSelect('Maintenance XY step', (n) => { xyStep = n; }),
     ]),
-    statusXY,
+    statusXY, verifyButton, holdStatus,
+    el('div', { class: 'field__hint', text: 'Hold a direction to jog; release to stop future segments. Held segments are small and independent of the click-step selector.' }),
     el('div', { class: 'field__hint', text: 'Each click sends one bounded target. Choose an absolute preset again after using other printer controls.' }),
   ]);
 }

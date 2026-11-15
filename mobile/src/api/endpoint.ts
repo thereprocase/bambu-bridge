@@ -8,10 +8,11 @@
  *   - LAN (home Wi-Fi): faster, and works even with Tailscale off, but only
  *     reachable when the phone is actually on that LAN.
  *
- * We identify "home" purely by SUBNET FINGERPRINT (USER DECISION, locked):
- * on Wi-Fi, ask expo-network for the phone's own IPv4, take its /24 prefix
- * (first three octets), and prefer LAN only if that prefix is one the user
- * has explicitly saved. No SSID, no location permission.
+ * We identify "home" by SUBNET FINGERPRINT: on Wi-Fi, ask expo-network for
+ * the phone's IPv4 and compare its /24 prefix (first three octets) with a
+ * saved network or the address the user explicitly paired. Other Wi-Fi
+ * networks do not qualify merely because pairing is active. No SSID or
+ * location permission is needed.
  *
  * Three pieces of module-level state keep this cheap and resilient:
  *   - a 15s decision cache, so we don't fire native getNetworkState/getIp
@@ -24,7 +25,8 @@
  *   - a `lanAliveUntil` timestamp: when a LAN request SUCCEEDS we record 120s
  *     of "LAN recently worked" so the resolver keeps preferring LAN even if
  *     the Wi-Fi fingerprint probe momentarily returns false (e.g. Android
- *     briefly demotes Wi-Fi as the default network). This is the class of bug
+ *     briefly demotes Wi-Fi as the default network). A known different Wi-Fi
+ *     clears this hint. This is the class of bug
  *     that broke the 2026-06-11 morning session.
  *
  * Both cooldowns are symmetric now — if BOTH are active simultaneously we
@@ -179,15 +181,22 @@ async function resolve(): Promise<CachedDecision> {
   // quirk, airplane-mode race) falls through to remote — never throw out of
   // the resolver, a request must always get *some* URL to try.
   let fingerprintMatch = false;
-  if (baseUrlLan && (savedNetworks.length > 0 || useBridgeStore.getState().pairing)) {
+  let differentWifi = false;
+  let pairedLanPrefix: string | null = null;
+  if (useBridgeStore.getState().pairing && baseUrlLan) {
+    try { pairedLanPrefix = prefixOf(new URL(baseUrlLan).hostname); }
+    catch { /* A malformed stored URL must not prevent remote resolution. */ }
+  }
+  if (baseUrlLan && (savedNetworks.length > 0 || pairedLanPrefix)) {
     try {
       const state = await Network.getNetworkStateAsync();
       if (state.type === Network.NetworkStateType.WIFI) {
         const ip = await Network.getIpAddressAsync();
         const prefix = prefixOf(ip);
-        if (useBridgeStore.getState().pairing ||
-            (prefix && savedNetworks.some((n) => n.prefix === prefix))) {
-          fingerprintMatch = true;
+        if (prefix) {
+          fingerprintMatch = prefix === pairedLanPrefix ||
+            savedNetworks.some((n) => n.prefix === prefix);
+          differentWifi = !fingerprintMatch;
         }
       }
     } catch {
@@ -197,6 +206,10 @@ async function resolve(): Promise<CachedDecision> {
 
   // Settings may have changed while the native network probe was pending.
   if (configKey() !== config) return resolve();
+  // A known different Wi-Fi is stronger evidence than recent LAN success.
+  // Preserve liveness for cellular/unknown probes, which can be a brief
+  // Android default-network switch while home Wi-Fi is still connected.
+  if (differentWifi) lanAliveUntil = 0;
   const lanAlive = t < lanAliveUntil;
   const lanCooled = t < lanCooldownUntil;
   const remoteCooled = t < remoteCooldownUntil;

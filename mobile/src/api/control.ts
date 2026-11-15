@@ -357,3 +357,54 @@ export function sendRawGcode(id: string, line: string) {
     }),
   );
 }
+
+/** Command references are not verified positions or completion telemetry. */
+export interface MaintenanceState {
+  last_requested: { X: number | null; Y: number | null; Z: number | null };
+  position_verified: false;
+  reason: string;
+  revision: number;
+  session_id: string;
+  hold?: HeldJogStatus;
+}
+export interface MaintenanceResponse {
+  sent: unknown;
+  confirmation: "pending";
+  maintenance: MaintenanceState;
+}
+export function moveBedAbsolute(id: string, positionMm: number) {
+  return tracked("move_absolute_z", request<MaintenanceResponse>(`/printers/${id}/move/absolute-z`, {
+    method: "POST", body: { position_mm: positionMm, feed_mm_min: 600 },
+  }));
+}
+export function moveXYAbsolute(id: string, xMm: number, yMm: number) {
+  return tracked("move_absolute_xy", request<MaintenanceResponse>(`/printers/${id}/move/absolute-xy`, {
+    method: "POST", body: { x_mm: xMm, y_mm: yMm, feed_mm_min: 3000 },
+  }));
+}
+export function maintenanceZStep(id: string, direction: -1 | 1, stepMm: 1 | 10 | 50) {
+  return tracked("maintenance_z_step", request<MaintenanceResponse>(`/printers/${id}/move/maintenance-step`, {
+    method: "POST", body: { axis: "Z", direction, step_mm: stepMm },
+  }));
+}
+export function maintenanceXYStep(id: string, directionX: -1 | 0 | 1, directionY: -1 | 0 | 1, stepMm: 1 | 10 | 50) {
+  return tracked("maintenance_xy_step", request<MaintenanceResponse>(`/printers/${id}/move/maintenance-xy-step`, {
+    method: "POST", body: { direction_x: directionX, direction_y: directionY, step_mm: stepMm },
+  }));
+}
+
+export interface HeldJogStatus {
+  qualified: boolean; active: boolean; phase: string; reason: string; lease_ms: number; segment_mm: number;
+}
+export function qualifyHeldJog(id: string) {
+  return request<{hold: HeldJogStatus; maintenance: MaintenanceState}>(`/printers/${id}/move/hold/qualify`, {method:"POST"});
+}
+export function startHeldJog(id: string, direction: {axes:"Z"|"XY";direction_x?:-1|0|1;direction_y?:-1|0|1;direction_z?:-1|1}) {
+  return request<{lease:string;lease_ms:number;hold:HeldJogStatus}>(`/printers/${id}/move/hold/start`, {method:"POST",body:direction});
+}
+export function renewHeldJog(id: string, lease: string) {
+  return request<{lease_ms:number;hold:HeldJogStatus}>(`/printers/${id}/move/hold/renew`, {method:"POST",body:{lease}});
+}
+export function stopHeldJog(id: string, lease: string) {
+  return request<{hold:HeldJogStatus}>(`/printers/${id}/move/hold/stop`, {method:"POST",body:{lease}});
+}

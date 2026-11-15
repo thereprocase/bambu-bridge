@@ -36,6 +36,7 @@ from bambu_bridge.protocol.mqtt import MqttClient, SessionErrorPhase
 from bambu_bridge.service.auto_refill import AutoRefillHistory
 from bambu_bridge.service.diagnostic_journal import DiagnosticJournal
 from bambu_bridge.service.events import Event, EventBus, diff_state
+from bambu_bridge.service.maintenance_hold import MaintenanceHold
 from bambu_bridge.service.maintenance_motion import MaintenanceMotion
 from bambu_bridge.service.material_inventory import MaterialInventory
 from bambu_bridge.service.refill_reports import RefillReports
@@ -306,6 +307,11 @@ class PrinterService:
         #   detect the 0 → positive transition that emits `print_progress`
         #   (the §6.0.1 "now actually printing" signal).
         self._last_telemetry_at: float | None = None
+        # True from a disconnect or reconnect until a report on the new session
+        # carries gcode_state. `_last_telemetry_at` and `_state` survive the drop
+        # (display and gap classification need them), but they describe the
+        # printer before the drop, so freshness gates must not pass on them.
+        self._status_pending = False
         self._last_layer_num: int = 0
         self._last_connect_attempt_at: float | None = None
         # Epoch of the last MQTT drop — `connection_restored` reports
@@ -334,6 +340,16 @@ class PrinterService:
         self._tracked_pos: dict[str, float | None] = {"X": None, "Y": None, "Z": None}
         self._motion_request_lock = asyncio.Lock()
         self.maintenance_motion = MaintenanceMotion()
+        self.maintenance_hold = MaintenanceHold(
+            self.maintenance_motion, self._maintenance_ready, lambda: self._state,
+            self.send_raw, self.send_maintenance,
+            self._maintenance_changed, self._motion_request_lock,
+            marker_path=(diagnostic_history_path.with_suffix(".motion-fences.sqlite")
+                         if diagnostic_history_path else None),
+            settled=self._maintenance_settled,
+            telemetry_age=self._telemetry_age,
+            refresh=self.request_full_report,
+        )
 
         self._mqtt = self._build_mqtt()
         self._task: asyncio.Task[None] | None = None
@@ -362,6 +378,7 @@ class PrinterService:
         self._update_camera_warmth()
 
     async def stop(self) -> None:
+        await self.maintenance_hold.close()
         if self._camera is not None:
             await self._camera.aclose()
             self._camera = None
@@ -411,6 +428,11 @@ class PrinterService:
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def status_pending(self) -> bool:
+        """No report with gcode_state has arrived since the last disconnect or reconnect."""
+        return self._status_pending
+
     def snapshot(self) -> dict[str, Any]:
         """Translated snapshot — the §6 wire shape consumed by the APK.
 
@@ -442,6 +464,7 @@ class PrinterService:
         for slot in snapshot["ams"]["slots"]:
             slot["remaining_estimate"] = self.remaining_estimates.view(slot["physical_slot"] - 1)
         snapshot["maintenance"] = self.maintenance_motion.snapshot()
+        snapshot["maintenance"]["hold"] = self.maintenance_hold.snapshot()
         return snapshot
 
     @property
@@ -530,6 +553,7 @@ class PrinterService:
         wire truth.
         """
         if self.maintenance_motion.observe_command(envelope):
+            self.maintenance_hold.invalidate("Another movement command invalidated held jogging")
             self.bus.publish(Event("delta", {}))
         await self._publish_raw(envelope)
 
@@ -577,6 +601,32 @@ class PrinterService:
     # Dead-reckoned motion state (jog crash-prevention)
     # ----------------------------------------------------------------- #
 
+    def _maintenance_changed(self) -> None:
+        self.maintenance_motion.revision += 1
+        self.bus.publish(Event("delta", {}))
+
+    def _telemetry_age(self) -> float:
+        """Seconds since the last report on this session; inf before the first one."""
+        if self._last_telemetry_at is None or self._status_pending:
+            return float("inf")
+        return time.time() - self._last_telemetry_at
+
+    def _maintenance_settled(self, axes: str) -> bool:
+        """Connected, trusted, idle and homed as last reported, however old the report."""
+        flag = self._state.get("home_flag")
+        mask = 4 if axes == "Z" else 3 if axes == "XY" else 7
+        return (
+            self.connected and self.cert_status != "changed"
+            and self._state.get("gcode_state") in {"IDLE", "FINISH", "FAILED"}
+            and isinstance(flag, int) and not isinstance(flag, bool) and flag & mask == mask
+        )
+
+    def _maintenance_ready(self, axes: str) -> bool:
+        # Settled and fresh. The hold watchdog relies on this split: not
+        # settled is evidence about the printer; settled but not ready means
+        # only that the last report is old.
+        return self._maintenance_settled(axes) and 0 <= self._telemetry_age() <= 15
+
     def tracked_position(self, axis: str) -> float | None:
         """Bridge's best-estimate position for ``axis`` (mm), or None=unknown.
 
@@ -623,6 +673,7 @@ class PrinterService:
             self._log.info("motion.reset", reason=reason)
         self._tracked_pos = {"X": None, "Y": None, "Z": None}
         self.maintenance_motion.reset(reason)
+        self.maintenance_hold.invalidate(reason)
         self.bus.publish(Event("delta", {}))
 
     # ----------------------------------------------------------------- #
@@ -633,6 +684,8 @@ class PrinterService:
         self.material_inventory.clear()
         self.remaining_estimates.clear()
         self.refill_reports.clear()
+        # Set before _connected so no gate sees connected + pre-drop status as fresh.
+        self._status_pending = True
         self._connected = True
         self._need_seed = True
         self._last_connect_attempt_at = time.time()
@@ -683,6 +736,7 @@ class PrinterService:
 
     async def _handle_lost(self) -> None:
         self._connected = False
+        self._status_pending = True
         self.material_inventory.clear()
         self.remaining_estimates.clear()
         self.refill_reports.clear()
@@ -768,6 +822,7 @@ class PrinterService:
             )
 
     async def _handle_report(self, report: ReportMessage) -> None:
+        receipt = self.maintenance_hold.received()
         raw = report.model_dump(mode="json", exclude_none=True, exclude_unset=True)
         # Publish receipt time before any awaited observer/persistence work.
         # A raw-bus consumer must never see new state with an old watermark.
@@ -818,6 +873,7 @@ class PrinterService:
         # Receipt watermark was already published above, before async work.
         prev_state = self._state
         if self.maintenance_motion.observe_report(incoming, prev_state):
+            self.maintenance_hold.invalidate("External movement or homing report")
             self.bus.publish(Event("delta", {}))
         prev_gcode = self._gcode_state
         prev_layer_num = self._last_layer_num
@@ -828,7 +884,12 @@ class PrinterService:
         merged = _deep_merge(prev_state, incoming)
         delta = diff_state(prev_state, merged)
         self._state = merged
+        if "gcode_state" in incoming:
+            # Cleared with the merge, never with the earlier watermark: a gate
+            # woken by the raw bus must not read pre-drop state as current.
+            self._status_pending = False
         self._refresh_gcode_state()
+        self.maintenance_hold.observe(incoming, receipt)
         if not self._gcode_fresh and "gcode_state" in incoming:
             self._gcode_fresh = True
             self._check_gap()

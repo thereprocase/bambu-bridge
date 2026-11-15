@@ -455,7 +455,7 @@ class AmsRfidBody(BaseModel):
 
     ams_id: int = Field(ge=0, le=AMS_ID_MAX, description="AMS unit index, 0-based (max 3)")
     slot_id: int = Field(ge=0, le=3, description="slot index within AMS unit, 0-based")
-    wait_for_report_s: float = Field(default=0, ge=0, le=30)
+    wait_for_report_s: float = Field(default=0, ge=0, le=30, allow_inf_nan=False)
 
 
 @router.post("/{printer_id}/ams/rfid")
@@ -617,6 +617,7 @@ class SetNozzleBody(BaseModel):
         description="nozzle material type"
     )
     nozzle_diameter: float = Field(
+        allow_inf_nan=False,
         description="nozzle diameter in mm — must be one of 0.2, 0.4, 0.6, 0.8"
     )
 
@@ -665,7 +666,10 @@ class ExtrudeBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    distance_mm: float = Field(description="positive = extrude, negative = retract; |value| ≤ 100")
+    distance_mm: float = Field(
+        allow_inf_nan=False,
+        description="positive = extrude, negative = retract; |value| ≤ 100",
+    )
     feedrate: int = Field(
         default=300,
         description="feedrate in mm/min — must be one of 120, 300, 600",

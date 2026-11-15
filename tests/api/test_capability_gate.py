@@ -67,6 +67,9 @@ def test_unqualified_controls_are_withheld(rig, path, body):
 IDLE_ONLY = [
     ("home", {}),
     ("move", {"axis": "Z", "distance_mm": 10}),
+    ("move/hold/qualify", {}),
+    ("move/hold/start", {"axes": "Z", "direction_z": 1}),
+    ("move/hold/renew", {"lease": "a" * 32}),
     ("extrude", {"distance_mm": 10}),
     ("calibration", {"option": 4}),
     ("ams/change", {"target_tray": 0}),

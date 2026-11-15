@@ -9,6 +9,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
+import okhttp3.RequestBody.Companion.toRequestBody
 import okio.ByteString.Companion.toByteString
 import org.junit.Assert.*
 import org.junit.Test
@@ -38,6 +39,49 @@ class PairedTransportTest {
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
             server.enqueue(MockResponse().setBody("recovered"))
             reader.newCall(Request.Builder().url(url).build()).execute().use { assertEquals("recovered", it.body!!.string()) }
+            transport.close()
+        }
+    }
+
+    @Test fun sequentialCommandsDoNotReuseAReadOrPreviousCommandSocket() {
+        val cert = HeldCertificate.Builder().build()
+        server(cert).use { server ->
+            val transport = PairedTransport(server.url("/api/v1").toString(), pin(cert))
+            val url = server.url("/api/v1/printers/test/fan")
+            server.enqueue(MockResponse().setBody("read"))
+            transport.clientForRequest(url, "GET")
+                .newCall(Request.Builder().url(url).get().build()).execute().use {
+                    assertEquals("read", it.body!!.string())
+                }
+            repeat(2) {
+                server.enqueue(MockResponse().setBody("sent"))
+                transport.clientForRequest(url, "POST")
+                    .newCall(Request.Builder().url(url).post("{}".toRequestBody()).build())
+                    .execute().use { response -> assertEquals("sent", response.body!!.string()) }
+            }
+            val requests = List(3) { server.takeRequest(5, TimeUnit.SECONDS)!! }
+            assertEquals(listOf(0, 0, 0), requests.map { it.sequenceNumber })
+            assertEquals(listOf("GET", "POST", "POST"), requests.map { it.method })
+            assertFalse(transport.clientForRequest(url, "POST").retryOnConnectionFailure)
+            transport.close()
+        }
+    }
+
+    @Test fun commandIsNotReplayedAfterServerDropsItsResponse() {
+        val cert = HeldCertificate.Builder().build()
+        server(cert).use { server ->
+            val transport = PairedTransport(server.url("/api/v1").toString(), pin(cert))
+            val url = server.url("/api/v1/printers/test/fan")
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            server.enqueue(MockResponse().setBody("replayed"))
+            try {
+                transport.clientForRequest(url, "POST")
+                    .newCall(Request.Builder().url(url).post("{}".toRequestBody()).build())
+                    .execute().use { fail("Expected a lost response") }
+            } catch (_: java.io.IOException) {
+                // The request reached the server, but retrying could run it twice.
+            }
+            assertEquals(1, server.requestCount)
             transport.close()
         }
     }

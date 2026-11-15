@@ -22,14 +22,13 @@
 
 import { CapabilityCard, CapabilityList } from "../../src/components/CapabilityCard";
 import { printerCapabilities } from "../../src/lib/capabilities";
-import { Alert, ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, View } from "react-native";
 import { useState } from "react";
-import { ChoiceTiles } from "../../src/components/ChoiceTiles";
+import { MaintenanceControls } from "../../src/components/MaintenanceControls";
 import { FanSlider } from "../../src/components/FanSlider";
 
 import {
   home,
-  move,
   setFan,
   setIpcamRecord,
   setIpcamTimelapse,
@@ -50,7 +49,6 @@ import { useTheme } from "../../src/theme/ThemeProvider";
 
 // OrcaSlicer's jog steps (StatusPanel::on_axis_ctrl_xy / on_axis_ctrl_z_*);
 // the bridge's ALLOWED_STEPS refuses anything else.
-const STEP_MM = [1, 10] as const;
 const SPEED_LEVELS = [
   { level: 1 as const, label: "Silent" },
   { level: 2 as const, label: "Standard" },
@@ -68,7 +66,6 @@ export default function ControlsScreen() {
   const registeredModel = usePrintersStore((s) => s.list.find((p) => p.serial === selectedId)?.model);
   const capabilities = printerCapabilities(live?.snapshot, registeredModel);
 
-  const [step, setStep] = useState<typeof STEP_MM[number]>(10);
   const [nozzleTarget, setNozzleTarget] = useState("");
   const [bedTarget, setBedTarget] = useState("");
 
@@ -253,10 +250,6 @@ export default function ControlsScreen() {
           printer must be idle.
         </Text>
 
-        <ChoiceTiles label="Movement step" value={String(step)}
-          options={STEP_MM.map(s => ({ id: String(s), topLabel: String(s), label: "mm" }))}
-          onSelect={id => setStep(Number(id) as typeof step)} />
-
         <View style={{ flexDirection: "row", gap: space.sm }}>
           <Button label="Home all" variant="secondary"
             onPress={() => safeCall(() => home(selectedId), "Homing")} />
@@ -264,12 +257,10 @@ export default function ControlsScreen() {
 
         {isPrinting && (
           <Text style={[type.small, { color: c.warn }]}>
-            Printer is active — jog buttons disabled. Pause or stop the print first.
+            Printer is active — maintenance movement is disabled.
           </Text>
         )}
-        <JogRow axis="X" step={step} selectedId={selectedId} onResult={safeCall} disabled={isPrinting} hasPosition={view.layer !== null} />
-        <JogRow axis="Y" step={step} selectedId={selectedId} onResult={safeCall} disabled={isPrinting} hasPosition={view.layer !== null} />
-        <JogRow axis="Z" step={step} selectedId={selectedId} onResult={safeCall} disabled={isPrinting} hasPosition={view.layer !== null} />
+        <MaintenanceControls printerId={selectedId} />
 
         {view.printError && (
           <Text style={[type.small, { color: c.warn }]}>
@@ -280,87 +271,5 @@ export default function ControlsScreen() {
       </CapabilityCard>
       </CapabilityList>
     </ScrollView>
-  );
-}
-
-/**
- * JogRow — one axis of jog controls.
- *
- * Z-axis physics (P1S CoreXY):
- *   distance_mm > 0 (Z+)  → G1 Z+N  → bed moves DOWN  → gap OPENS  (safer)
- *   distance_mm < 0 (Z−)  → G1 Z−N  → bed moves UP    → gap CLOSES (crash risk)
- *
- * For Z we show explicit sub-labels so there is no ambiguity about physical motion.
- * Gap-closing (Z−) shows a confirm dialog when position telemetry is unavailable.
- */
-function JogRow({
-  axis,
-  step,
-  selectedId,
-  onResult,
-  disabled,
-  hasPosition,
-}: {
-  axis: "X" | "Y" | "Z";
-  step: number;
-  selectedId: string;
-  onResult: (fn: () => Promise<unknown>, msg: string) => void;
-  disabled?: boolean;
-  hasPosition?: boolean;
-}) {
-  const { c, space, type } = useTheme();
-
-  function jogMinus() {
-    if (axis === "Z" && !hasPosition) {
-      Alert.alert(
-        "Position unknown",
-        `Move bed toward nozzle ${step} mm? If the bed is near the nozzle this could cause a crash.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Move anyway",
-            style: "destructive",
-            onPress: () =>
-              onResult(
-                () => move(selectedId, { axis, distance_mm: -step }),
-                `Z −${step}mm (bed up, gap −)`,
-              ),
-          },
-        ],
-      );
-    } else {
-      onResult(
-        () => move(selectedId, { axis, distance_mm: -step }),
-        axis === "Z" ? `Z −${step}mm (bed up, gap −)` : `${axis} −${step}mm`,
-      );
-    }
-  }
-
-  function jogPlus() {
-    onResult(
-      () => move(selectedId, { axis, distance_mm: step }),
-      axis === "Z" ? `Z +${step}mm (bed down, gap +)` : `${axis} +${step}mm`,
-    );
-  }
-
-  const minusLabel = axis === "Z" ? `−${step}\nbed ↑ gap −` : `−${step}`;
-  const plusLabel  = axis === "Z" ? `+${step}\nbed ↓ gap +` : `+${step}`;
-
-  return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-      <Text style={[type.mono, { color: c.text, width: 24 }]}>{axis}</Text>
-      <Button
-        label={minusLabel}
-        variant="secondary"
-        disabled={disabled}
-        onPress={jogMinus}
-      />
-      <Button
-        label={plusLabel}
-        variant="secondary"
-        disabled={disabled}
-        onPress={jogPlus}
-      />
-    </View>
   );
 }

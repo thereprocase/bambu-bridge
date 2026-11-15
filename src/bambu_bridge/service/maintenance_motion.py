@@ -7,6 +7,7 @@ This avoids cumulative overrun even when delivery/completion is unverified.
 from __future__ import annotations
 
 import re
+import uuid
 from collections import deque
 from typing import Any, Literal
 
@@ -17,12 +18,23 @@ _MOTION = re.compile(
     r"(?im)^\s*(?:N\d+\s+)?(?:G(?:0?[0123]|28|29|38\d*|92)|M(?:17|18|84))(?=[\sXYZEF;]|$)"
 )
 
+# AMS load and unload both go out as print.ams_change_filament; the printer
+# drives the toolhead to the cutter and purge positions for them.
+_MOVING_COMMANDS = frozenset(
+    {"project_file", "gcode_file", "axis_control", "home", "calibration", "ams_change_filament"}
+)
+_REPORTED_MOVING_COMMANDS = frozenset(
+    {"gcode_line", "gcode_file", "project_file", "axis_control", "home", "ams_change_filament"}
+)
+
 
 class MaintenanceMotion:
     def __init__(self) -> None:
         self.targets: dict[str, float | None] = dict.fromkeys(LIMITS)
         self.reason = "No maintenance target requested"
         self.epoch = 0
+        self.revision = 0
+        self.session_id = uuid.uuid4().hex
         self._own_sequences: deque[str] = deque(maxlen=128)
 
     def snapshot(self) -> dict[str, Any]:
@@ -30,18 +42,23 @@ class MaintenanceMotion:
             "last_requested": dict(self.targets),
             "position_verified": False,
             "reason": self.reason,
+            "revision": self.revision,
+            "session_id": self.session_id,
         }
 
     def reset(self, reason: str) -> None:
         self.targets = dict.fromkeys(LIMITS)
         self.reason = reason
         self.epoch += 1
+        self.revision += 1
 
     def register(self, envelope: dict[str, Any]) -> None:
         self._own_sequences.append(str(envelope["print"]["sequence_id"]))
 
     def requested(self, targets: dict[str, float]) -> None:
         self.targets.update(targets)
+        self.epoch += 1
+        self.revision += 1
         self.reason = "Last requested target; physical completion is unverified"
 
     def step_target(self, axis: str, direction: int, step_mm: int) -> float:
@@ -52,10 +69,10 @@ class MaintenanceMotion:
         current = self.targets[axis]
         if current is None:
             raise LookupError("Select an absolute maintenance target first")
-        target = current + direction * step_mm
         lo, hi = LIMITS[axis]
-        if not lo <= target <= hi:
-            raise ValueError(f"{axis} target would exceed {lo:g}..{hi:g} mm")
+        target = max(lo, min(hi, current + direction * step_mm))
+        if target == current:
+            raise ValueError(f"{axis} is already at the {lo:g}..{hi:g} mm travel limit")
         return target
 
     def observe_command(self, envelope: dict[str, Any]) -> bool:
@@ -63,7 +80,7 @@ class MaintenanceMotion:
         command = body.get("command")
         if "sequence_id" in body:
             self._own_sequences.append(str(body["sequence_id"]))
-        if command in {"project_file", "gcode_file", "axis_control", "home", "calibration"} or (
+        if command in _MOVING_COMMANDS or (
             command == "gcode_line" and _MOTION.search(str(body.get("param", "")))
         ):
             self.reset("Another movement command invalidated maintenance targets")
@@ -82,7 +99,7 @@ class MaintenanceMotion:
         command = incoming.get("command")
         # Acknowledgements of our own targets are not physical completion.
         # Other command reports are conservatively treated as untracked motion.
-        if command in {"gcode_line", "gcode_file", "project_file", "axis_control", "home"}:
+        if command in _REPORTED_MOVING_COMMANDS:
             own = str(incoming.get("sequence_id", "")) in self._own_sequences
             failed = "result" in incoming and str(incoming["result"]).lower() != "success"
             if not own or failed:

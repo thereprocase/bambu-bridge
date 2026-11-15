@@ -710,6 +710,10 @@ All under `/api/v1/printers/{printer_id}/`. All require the printer to be `conne
 | POST | `/move/absolute-xy` | `{x_mm, y_mm, feed_mm_min?}` | P1S absolute XY, 0–256 mm each, max 3000 mm/min; fresh idle/homed X and Y required | v0.7 |
 | POST | `/move/maintenance-step` | `{axis, direction, step_mm}` | One bounded absolute target from the last requested maintenance target; steps 1/10/50 mm | v0.7 |
 | POST | `/move/maintenance-xy-step` | `{direction_x, direction_y, step_mm}` | Eight-direction finite XY step from last requested XY target; each direction −1/0/1, not both zero | v0.7 |
+| POST | `/move/hold/qualify` | — | Idle, non-motion M400/M73 execution verification; fails closed without fresh exact P/R echo | v0.7 |
+| POST | `/move/hold/start` | `{axes, direction_x?, direction_y?, direction_z?}` | Start a short deadman lease after qualification and an absolute anchor | v0.7 |
+| POST | `/move/hold/renew` | `{lease}` | Renew the same host lease; never queues axis motion itself | v0.7 |
+| POST | `/move/hold/stop` | `{lease}` | Cancel future segments, retaining observation/lock while the outstanding fence drains | v0.7 |
 | POST | `/move` | `{"axis": "X\|Y\|Z", "distance_mm": float, "feed_mm_min": int}` | relative jog. `distance_mm` ∈ ±{1, 10} (OrcaSlicer's steps; UIs send XY at 3000, Z at 900 mm/min). `409 conflict` while a print runs (allowed when paused), as OrcaSlicer disables motion. | v0.1 |
 | POST | `/ams/control` | `{"action": "resume"}` | Resume the AMS after a runout or failed feed (the only action Orca sends; pause/reset are refused with 422) | v0.1 |
 | POST | `/ams/change` | `{"target_tray": 0-3, "cur_temp": int, "tar_temp": int}` | filament change. `409 conflict` while a print runs; when paused only the external spool (`254`), as in OrcaSlicer. **`target_tray` is a 0-based protocol index** (0–3); the APK converts from physical slot (1–4) before sending. | v0.1 |
@@ -1168,16 +1172,46 @@ Home, disconnect, print transitions, other movement commands and observed
 external command reports invalidate them. Movements from an external screen
 or LAN client are not guaranteed to be observable in P1S telemetry; select an
 absolute preset again after using those controls. Unknown references return
-`maintenance_target_unknown`; an overrun returns
+`maintenance_target_unknown`. Finite final steps clamp to the software travel
+edge; trying to continue past an existing edge returns
 `maintenance_target_out_of_bounds`, with no command publication. G28 never
 seeds a verified coordinate, and legacy relative-jog guards remain unchanged.
 
 The browser Maintenance section has four Z presets on the left (Top 0,
 Upper 83, Lower 167, Bottom 250) and Raise/Lower plus a 1/10/50 mm step selector
 on the right. XY offers a center, four half-corners and four full corners in
-a nested directional grid. Its eight-direction pad sends one finite target
-per click; it has no hold-to-repeat loop, because MQTT publication does not
-prove motion completion or bound a repeated-command backlog.
+a nested directional grid. Android provides the same controls. A short click
+sends one finite target; holding a direction uses independent 1 mm segments,
+not the 1/10/50 mm click selector.
 
-These additions are branch work until separately deployed. Automated tests
-use synthetic printer fixtures; physical operation remains unqualified.
+Held jogging must first be enabled by the user while idle and homed. This
+qualification sends M400/M73 without axis motion and requires both progress
+and remaining-time fields in a fresh exact marker report. It never treats an
+HTTP response or a gcode_line ACK as physical completion. Markers are durable,
+monotonic P/R pairs reserved with SQLite synchronous commits before publication
+(per-printer .motion-fences.sqlite alongside diagnostic history). Preserve
+these files during upgrades/rollback; marker pairs must never be recycled.
+Both fields differ from the latest baseline, and baseline P/R are restored
+while idle after qualification and held jogging. Ignored/clamped/missing
+firmware reports disable holding rather than enabling an unverified loop.
+
+Each hold first fences the previously requested absolute anchor, then permits
+only one bounded motion segment before waiting for its unique M400/M73 fence.
+A release stops NEW segments but retains the outstanding completion observer
+and motion lock until completion or a fail-closed timeout. A late report from a
+cancelled hold cannot release a new anchor. Renewals occur about every 250 ms;
+the server lease expires after 750 ms. Lost freshness, homing, print transitions
+and reconnects invalidate qualification and references. Pointer cancellation,
+drag-off, blur, screen changes and app backgrounding stop client renewals.
+No ambiguous movement request is automatically replayed. Roughly one-second
+release response is a normal-operation target, not a guarantee during firmware
+or network failure; at most the outstanding bounded segment can remain.
+
+M73 uses the documented progress domain and a conservative bounded remaining-
+minute marker domain (1..9999, within unsigned 16-bit minutes). Exact echo is
+checked for every fence. See the [M73 command reference](https://marlinfw.org/docs/gcode/M073.html).
+Execution fences establish command completion, not measured coordinates.
+
+Automated tests use synthetic printer fixtures. Held-jog qualification is
+initially false after startup and cannot run during an active print; physical
+operation remains unqualified until the supervised idle workflow succeeds.

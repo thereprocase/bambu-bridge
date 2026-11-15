@@ -42,10 +42,11 @@ const LAN    = "http://192.168.1.10:8080/api/v1";
 const REMOTE = "http://100.64.1.2:8080/api/v1";
 
 // Bridge store — controls which URLs are configured.
-const mockStoreState: { baseUrl: string; baseUrlLan: string | null; savedNetworks: { prefix: string; addedAt: number }[] } = {
+const mockStoreState: { baseUrl: string; baseUrlLan: string | null; savedNetworks: { prefix: string; addedAt: number }[]; pairing: { spki: string } | null } = {
   baseUrl: REMOTE,
   baseUrlLan: LAN,
   savedNetworks: [{ prefix: "192.168.1", addedAt: 0 }],
+  pairing: null,
 };
 
 jest.mock("../../store/bridge", () => ({
@@ -82,6 +83,7 @@ beforeEach(() => {
   mockStoreState.baseUrl    = REMOTE;
   mockStoreState.baseUrlLan = LAN;
   mockStoreState.savedNetworks = [{ prefix: "192.168.1", addedAt: 0 }];
+  mockStoreState.pairing = null;
 
   // Default network state: on the saved LAN Wi-Fi.
   mockNetwork.type = "WIFI";
@@ -105,6 +107,25 @@ describe("resetEndpointCache", () => {
     mockNetwork.ip   = "10.0.0.1";
     const url = await resolveBaseUrl();
     expect(url).toBe(REMOTE);
+  });
+
+  it("paired mode uses LAN only on its subnet or a saved network", async () => {
+    mockStoreState.pairing = { spki: "synthetic-pin" };
+    mockStoreState.savedNetworks = [];
+    mockNetwork.ip = "10.0.0.42";
+    expect(await resolveBaseUrl()).toBe(REMOTE);
+
+    resetEndpointCache();
+    mockNetwork.ip = "192.168.1.42";
+    expect(await resolveBaseUrl()).toBe(LAN);
+  });
+
+  it("a different Wi-Fi clears recent LAN liveness", async () => {
+    expect(await resolveBaseUrl()).toBe(LAN);
+    notifyRequestSucceeded(LAN);
+    mockNetwork.ip = "10.0.0.42";
+    notifyRequestFailed(REMOTE); // drop the cached decision without cooling LAN
+    expect(await resolveBaseUrl()).toBe(REMOTE);
   });
 });
 

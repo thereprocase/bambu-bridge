@@ -247,3 +247,14 @@ def test_all_maintenance_routes_need_idle(rig, state, path, body):
     snapshot["_raw"]["gcode_state"] = state
     assert client.post("/printers/p/move/" + path, json=body).status_code == 409
     service.send_raw.assert_not_awaited()
+
+
+def test_selected_fifty_mm_click_clamps_near_top_without_overrun(rig):
+    client, service, _ = ready(rig)
+    service.maintenance_motion.requested({"Z": 10})
+    result = client.post(
+        "/printers/p/move/maintenance-step", json={"axis": "Z", "direction": -1, "step_mm": 50}
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["maintenance"]["last_requested"]["Z"] == 0
+    assert "G1 Z0 " in service.send_raw.await_args.args[0]["print"]["param"]

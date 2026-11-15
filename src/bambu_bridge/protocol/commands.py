@@ -192,6 +192,18 @@ def print_stop() -> Envelope:
     return build_command("print", "stop", param="")
 
 
+def _finite(name: str, value: Any) -> None:
+    """Refuse NaN/Infinity (and non-numbers) before they reach a G-code line."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+
+
+# Relative-jog feed ceilings: OrcaSlicer's jog rates, which both clients send
+# (Z 900, X/Y 3000 mm/min). A parity test keeps the clients within them.
+JOG_FEED_MAX_Z = 900
+JOG_FEED_MAX_XY = 3000
+
+
 def print_speed(level: int) -> Envelope:
     """Speed profile: 1 silent · 2 standard · 3 sport · 4 ludicrous."""
     if level not in SPEED_LEVELS:
@@ -217,12 +229,14 @@ def set_nozzle_temp(celsius: int, *, max_c: int = NOZZLE_MAX_C) -> Envelope:
     ``max_c`` is the printer-reported ``nozzle_temp_range`` maximum when the
     printer sends one, else :data:`NOZZLE_MAX_C`.
     """
+    _finite("nozzle temp", celsius)
     if not 0 <= celsius <= max_c:
         raise ValueError(f"nozzle temp {celsius} out of range 0..{max_c}")
     return _gcode(f"M104 S{celsius}")
 
 
 def set_bed_temp(celsius: int) -> Envelope:
+    _finite("bed temp", celsius)
     if not 0 <= celsius <= BED_MAX_C:
         raise ValueError(f"bed temp out of range 0..{BED_MAX_C}")
     return _gcode(f"M140 S{celsius}")
@@ -274,8 +288,13 @@ def move_axis(axis: str, distance_mm: float, *, feed_mm_min: int = 600) -> Envel
     axis = axis.upper()
     if axis not in {"X", "Y", "Z"}:
         raise ValueError("axis must be X, Y or Z")
+    _finite("distance_mm", distance_mm)
+    _finite("feed", feed_mm_min)
     if feed_mm_min <= 0:
         raise ValueError("feed must be positive")
+    cap = JOG_FEED_MAX_Z if axis == "Z" else JOG_FEED_MAX_XY
+    if feed_mm_min > cap:
+        raise ValueError(f"{axis} feed must be at most {cap} mm/min")
     return _gcode(f"G91\nG1 {axis}{distance_mm} F{feed_mm_min}\nG90")
 
 
@@ -395,6 +414,13 @@ def ams_control(action: str) -> Envelope:
 EXTERNAL_SPOOL = 255
 
 
+def _check_ams_temps(cur_temp: int, tar_temp: int) -> None:
+    for name, value in (("cur_temp", cur_temp), ("tar_temp", tar_temp)):
+        _finite(name, value)
+        if not 0 <= value <= NOZZLE_MAX_C:
+            raise ValueError(f"{name} {value} out of range 0..{NOZZLE_MAX_C}")
+
+
 def ams_change_filament(
     target_tray: int, *, cur_temp: int = 220, tar_temp: int = 220
 ) -> Envelope:
@@ -407,6 +433,7 @@ def ams_change_filament(
     """
     if target_tray < 0:
         raise ValueError("target tray must be >= 0")
+    _check_ams_temps(cur_temp, tar_temp)
     if target_tray in (254, EXTERNAL_SPOOL):
         ams_id = slot_id = target = EXTERNAL_SPOOL
     else:
@@ -424,6 +451,7 @@ def ams_change_filament(
 
 def unload_filament(*, cur_temp: int = 220, tar_temp: int = 220) -> Envelope:
     """Unload the loaded filament: Orca sends ams_change_filament with target and slot 255."""
+    _check_ams_temps(cur_temp, tar_temp)
     return build_command(
         "print",
         "ams_change_filament",
@@ -796,6 +824,7 @@ def extrude(
     Gcode emitted: ``M83\\nG1 E{distance} F{feedrate}\\nM82``
     (relative extrusion mode, move, restore absolute mode).
     """
+    _finite("extrude distance", distance_mm)
     if distance_mm == 0.0:
         raise ValueError("extrude distance must be non-zero")
     if abs(distance_mm) > EXTRUDE_MAX_MM:
