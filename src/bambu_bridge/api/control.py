@@ -54,7 +54,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bambu_bridge.api import errors
 from bambu_bridge.api.auth import require_auth
@@ -198,6 +198,14 @@ def _check_raw_params(params: dict[str, Any]) -> None:
 
     Raises :class:`HTTPException` 422 on violation.
     """
+    reserved = sorted({"category", "command"} & params.keys())
+    if reserved:
+        # These names are build_command's own arguments; as params they would
+        # collide and raise TypeError (500).
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"params may not use the reserved key(s) {reserved}",
+        )
     serialised = _json.dumps(params)
     if len(serialised.encode()) > 4096:
         raise HTTPException(
@@ -513,8 +521,16 @@ def require_not_busy(service: PrinterService, *, tray: int | None = None) -> Non
 
 class MoveBody(BaseModel):
     axis: str = Field(examples=["X", "Y", "Z"])
-    distance_mm: float
+    distance_mm: float = Field(allow_inf_nan=False)
     feed_mm_min: int = Field(default=600, gt=0)
+
+    @model_validator(mode="after")
+    def _feed_within_axis_limit(self) -> MoveBody:
+        # Same ceilings as the absolute routes: Z 600, X/Y 3000 mm/min.
+        cap = commands.JOG_FEED_MAX_Z if self.axis.upper() == "Z" else commands.JOG_FEED_MAX_XY
+        if self.feed_mm_min > cap:
+            raise ValueError(f"feed_mm_min must be at most {cap} for axis {self.axis.upper()}")
+        return self
 
 
 @router.post("/{printer_id}/move")
@@ -779,7 +795,13 @@ async def stop_hold(
     printer_id: str, body: HoldLeaseBody, registry: Registry = Depends(get_registry)
 ) -> dict[str, Any]:
     # Stopping a host lease is safe even after a disconnect or print start.
-    service = registry.get(printer_id)
+    try:
+        service = registry.get(printer_id)
+    except PrinterNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"printer {printer_id} not found",
+        ) from exc
     service.maintenance_hold.stop(body.lease)
     return {"hold": service.maintenance_hold.snapshot()}
 
@@ -796,8 +818,8 @@ async def ams_control(
 
 class AmsChangeBody(BaseModel):
     target_tray: int = Field(ge=0, description="0-based AMS protocol index")
-    cur_temp: int = 220
-    tar_temp: int = 220
+    cur_temp: int = Field(default=220, ge=0, le=commands.NOZZLE_MAX_C)
+    tar_temp: int = Field(default=220, ge=0, le=commands.NOZZLE_MAX_C)
 
 
 @router.post("/{printer_id}/ams/change")

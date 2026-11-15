@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import lzma
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -86,7 +87,17 @@ def _read(container: bytes, r: ValidationReport) -> tuple[bytes, bytes, bytes] |
             else:
                 # read() verifies each CRC; the declared sizes are bounded above.
                 return zf.read(GCODE_MEMBER), zf.read(MD5_MEMBER), zf.read(SLICE_INFO_MEMBER)
-    except (zipfile.BadZipFile, zlib.error, NotImplementedError, RuntimeError, EOFError) as exc:
+    except (
+        zipfile.BadZipFile,
+        zlib.error,
+        NotImplementedError,
+        RuntimeError,
+        EOFError,
+        lzma.LZMAError,
+        OSError,  # bz2 raises OSError("Invalid data stream")
+        ValueError,
+        UnicodeError,
+    ) as exc:
         r.issues.append(f"G1 not a valid zip: {exc}")
     return None
 

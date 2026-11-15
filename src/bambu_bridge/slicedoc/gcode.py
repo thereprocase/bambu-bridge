@@ -29,8 +29,18 @@ MAX_BED_C = 100  # P1S manufacturer limit; other adapters require separate polic
 _FILAMENTS = 64  # Orca's project filament limit; larger indices are sentinels
 _SELECT_RE = re.compile(rb"^[ \t]*(M620|M621)[ \t]+S(\d+)A?\b", re.MULTILINE)
 _TOOL_RE = re.compile(rb"^[ \t]*T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
-_NOZZLE_RE = re.compile(rb"^[ \t]*M10[49][ \t]+S(\d+(?:\.\d+)?)", re.MULTILINE)
-_BED_RE = re.compile(rb"^[ \t]*M1[49]0[ \t]+S(\d+(?:\.\d+)?)", re.MULTILINE)
+# Heater lines: optional ``N<line number>``, the command, then any words up to a
+# ``;`` comment. Firmware reads every S word on the line, so the scan does too:
+# any letter case, other words first (``T0``, ``P0``), space after the letter,
+# an explicit ``+``/``-`` sign and exponent notation (``S3.5e2`` is 350).
+_HEATER_RE = re.compile(
+    rb"^[ \t]*(?:N[ \t]*\d+[ \t]*)?M(104|109|140|190)(?!\d)([^;\r\n]*)",
+    re.MULTILINE | re.IGNORECASE,
+)
+_S_WORD_RE = re.compile(
+    rb"(?<![A-Za-z])S[ \t]*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", re.IGNORECASE
+)
+_NOZZLE_CMDS = frozenset({b"104", b"109"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +59,11 @@ class GcodeScan:
 
 def scan_gcode(gcode: bytes) -> GcodeScan:
     selects = [(cmd, int(n)) for cmd, n in _SELECT_RE.findall(gcode)]
-    nozzles = [float(m) for m in _NOZZLE_RE.findall(gcode)]
-    beds = [float(m) for m in _BED_RE.findall(gcode)]
+    nozzles: list[float] = []
+    beds: list[float] = []
+    for cmd, args in _HEATER_RE.findall(gcode):
+        target = nozzles if cmd in _NOZZLE_CMDS else beds
+        target.extend(float(m) for m in _S_WORD_RE.findall(args))
     return GcodeScan(
         loads=frozenset(n for cmd, n in selects if cmd == b"M620" and n < _FILAMENTS),
         finishes=frozenset(n for cmd, n in selects if cmd == b"M621" and n < _FILAMENTS),
