@@ -234,6 +234,9 @@ export default function FilamentScreen() {
     return () => { clearInterval(timer); refillAsked.current++; refillInFlight.current = false; };
   }, [settling, selectedId, inventoryOn]));
 
+  // The bridge refuses an unload while a print runs; offer it when it can work.
+  const unloadBlocked = view.phase === "printing" || view.phase === "preparing";
+
   function safeCall(fn: () => Promise<unknown>) {
     fn()
       .then(() => showToast("Command sent", { severity: "success" }))
@@ -647,8 +650,9 @@ export default function FilamentScreen() {
           )}
           {capabilities.get("filamentMotion").available && !rescanning && slotsToRender.some((s) => !s.empty) && (
             <Button
-              label="Unload current filament"
+              label={unloadBlocked ? "Unload current filament (after the print)" : "Unload current filament"}
               variant="secondary"
+              disabled={unloadBlocked}
               onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
             />
           )}
@@ -691,6 +695,7 @@ export default function FilamentScreen() {
                     label="Unload"
                     variant="secondary"
                     size="small"
+                    disabled={unloadBlocked}
                     onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
                   />
                 )}

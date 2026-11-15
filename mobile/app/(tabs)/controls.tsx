@@ -252,12 +252,12 @@ export default function ControlsScreen() {
           external spool. Loading a slot is on the Filament tab.
         </Text>
         <View style={{ flexDirection: "row", gap: space.sm }}>
-          <Button label="Unload filament" variant="secondary"
+          <Button label="Unload filament" variant="secondary" disabled={isPrinting}
             onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId), "Unloading"))} />
         </View>
         {isPrinting && (
           <Text style={[type.small, { color: c.warn }]}>
-            Printer is active — unloading is refused until the print ends.
+            Printer is active — unloading is available when the print ends.
           </Text>
         )}
       </Surface>
