@@ -17,7 +17,8 @@ import { IBMPlexSans_700Bold } from "@expo-google-fonts/ibm-plex-sans/700Bold";
 import { IBMPlexMono_500Medium } from "@expo-google-fonts/ibm-plex-mono/500Medium";
 import { StatusBar } from "expo-status-bar";
 
-import { ToastHost } from "../src/components/Toast";
+import { setCommandRepeatListener } from "../src/api/client";
+import { ToastHost, useToastStore } from "../src/components/Toast";
 import { qaLog } from "../src/lib/qalog";
 import { useBridgeStore } from "../src/store/bridge";
 import { ThemeProvider, useTheme } from "../src/theme/ThemeProvider";
@@ -48,6 +49,15 @@ function Bootstrap() {
   useEffect(() => {
     bootstrap();
   }, [bootstrap]);
+
+  // A command whose connection dropped is sent again for up to its own
+  // timeout; say so, so a quiet button does not invite a second tap. The
+  // command's own result toast replaces this one.
+  useEffect(() => {
+    setCommandRepeatListener(() => useToastStore.getState().show(
+      "Connection dropped — sending again…", { severity: "warn", ttlMs: 15_000 }));
+    return () => setCommandRepeatListener(null);
+  }, []);
 
   useEffect(() => {
     // Emit on every pathname change (route transition). Route names only —
