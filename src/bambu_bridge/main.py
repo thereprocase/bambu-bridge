@@ -41,6 +41,7 @@ from bambu_bridge.api import (
     viz,
 )
 from bambu_bridge.api import errors as api_errors
+from bambu_bridge.api.idempotency import IdempotencyMiddleware
 from bambu_bridge.config import Settings, configure_logging
 from bambu_bridge.db.jobs import (
     Database,
@@ -316,6 +317,9 @@ def create_app(
 
     app = FastAPI(title="Bambu Bridge", version=__version__, lifespan=lifespan)
     api_errors.install(app)  # universal envelope on every error path (contract §2)
+    # Lets a client repeat a command whose response was lost without running
+    # it twice (api/idempotency.py).
+    app.add_middleware(IdempotencyMiddleware)
 
     # One app (shared app.state); a prefixed router rather than a mounted
     # sub-app so request.app / websocket.app stays the main app.
