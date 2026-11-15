@@ -36,9 +36,11 @@ import {
   setSpeed,
   setTemperature,
   setWorkLight,
+  unloadFilament,
 } from "../../src/api/control";
 import { BridgeError } from "../../src/api/errors";
 import { Button } from "../../src/components/Button";
+import { confirmUnload } from "../../src/components/confirmUnload";
 import { Field } from "../../src/components/Field";
 import { Surface } from "../../src/components/Surface";
 import { useToastStore } from "../../src/components/Toast";
@@ -89,7 +91,7 @@ export default function ControlsScreen() {
             : "";
           showToast(`${e.envelope.message}${hint}`, { severity: "danger", ttlMs: 6000 });
         } else {
-          showToast(String(e), { severity: "danger" });
+          showToast(e instanceof Error ? e.message : String(e), { severity: "danger" });
         }
       });
   }
@@ -238,6 +240,26 @@ export default function ControlsScreen() {
           <Button label="Timelapse off" variant="secondary"
             onPress={() => safeCall(() => setIpcamTimelapse(selectedId, false), "Timelapse off")} />
         </View>
+      </Surface>
+      </CapabilityCard>
+
+      {/* Filament ------------------------------------------------------------ */}
+      <CapabilityCard title="Filament" availability={capabilities.get("filamentMotion")}>
+      <Surface padded style={{ gap: space.md }}>
+        <Text style={[type.h2, { color: c.text }]}>Filament</Text>
+        <Text style={[type.small, { color: c.muted }]}>
+          Unloads whatever is loaded in the toolhead, from the AMS or the
+          external spool. Loading a slot is on the Filament tab.
+        </Text>
+        <View style={{ flexDirection: "row", gap: space.sm }}>
+          <Button label="Unload filament" variant="secondary"
+            onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId), "Unloading"))} />
+        </View>
+        {isPrinting && (
+          <Text style={[type.small, { color: c.warn }]}>
+            Printer is active — unloading is refused until the print ends.
+          </Text>
+        )}
       </Surface>
       </CapabilityCard>
 

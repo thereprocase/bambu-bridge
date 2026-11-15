@@ -40,6 +40,7 @@ import {
   type InventoryStatus,
 } from "../../src/api/inventory";
 import { Button } from "../../src/components/Button";
+import { confirmUnload } from "../../src/components/confirmUnload";
 import { NeedsYouCard } from "../../src/components/NeedsYouCard";
 import { ProgressBar } from "../../src/components/ProgressBar";
 import { RecentPrints } from "../../src/components/RecentPrints";
@@ -236,7 +237,7 @@ export default function FilamentScreen() {
   function safeCall(fn: () => Promise<unknown>) {
     fn()
       .then(() => showToast("Command sent", { severity: "success" }))
-      .catch((e) => showToast(e instanceof BridgeError ? e.envelope.message : String(e), { severity: "danger" }));
+      .catch((e) => showToast(e instanceof BridgeError ? e.envelope.message : e instanceof Error ? e.message : String(e), { severity: "danger" }));
   }
 
   const views = selectedId ? slotViews(selectedId, sources, status, spools) : [];
@@ -648,7 +649,7 @@ export default function FilamentScreen() {
             <Button
               label="Unload current filament"
               variant="secondary"
-              onPress={() => safeCall(() => unloadFilament(selectedId))}
+              onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
             />
           )}
         </Surface>
@@ -683,6 +684,14 @@ export default function FilamentScreen() {
                     variant="secondary"
                     size="small"
                     onPress={() => router.push({ pathname: "/spool", params: { id: String(external.assignment!.spool_id), printer: selectedId, source: external.source.source } })}
+                  />
+                )}
+                {capabilities.get("filamentMotion").available && (
+                  <Button
+                    label="Unload"
+                    variant="secondary"
+                    size="small"
+                    onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
                   />
                 )}
               </>
