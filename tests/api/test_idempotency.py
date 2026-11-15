@@ -41,6 +41,11 @@ def _app(clock=None):
         calls["n"] += 1
         return Response(b'{"error":"conflict","message":"busy"}', status_code=409)
 
+    @app.post("/crash")
+    async def crash() -> None:
+        calls["n"] += 1
+        raise RuntimeError("failed part-way")
+
     @app.get("/read")
     async def read() -> dict[str, int]:
         calls["n"] += 1
@@ -48,7 +53,8 @@ def _app(clock=None):
 
     kwargs = {"clock": clock} if clock else {}
     wrapped = IdempotencyMiddleware(app, **kwargs)
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=wrapped), base_url="http://bridge")
+    transport = httpx.ASGITransport(app=wrapped, raise_app_exceptions=False)
+    client = httpx.AsyncClient(transport=transport, base_url="http://bridge")
     return client, calls, gate
 
 
@@ -115,6 +121,16 @@ async def test_oversized_response_is_not_rerun():
     assert calls["n"] == 1
     assert second.status_code == 409
     assert second.json()["error"] == "conflict"
+
+
+@pytest.mark.asyncio
+async def test_command_that_raised_is_not_rerun():
+    client, calls, _ = _app()
+    first = await client.post("/crash", headers={"Idempotency-Key": KEY})
+    second = await client.post("/crash", headers={"Idempotency-Key": KEY})
+    assert first.status_code == 500
+    assert second.status_code == 409
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,7 @@ Scope and limits:
 * Stored responses are kept in memory for ``TTL_S`` seconds, at most
   ``MAX_ENTRIES`` of them, and only up to ``MAX_BODY`` bytes each. A larger
   response is not stored; its repeat receives a 409 that says the command was
-  already received.
+  already received. The same applies to a command whose handler raised.
 * Every HTTP response carries ``X-Bridge-Features: idempotency-key`` so a
   client knows a retry is safe before it needs one.
 """
@@ -125,9 +125,9 @@ class IdempotencyMiddleware:
         try:
             await self.app(scope, receive, capture)
         except BaseException:
-            # No response exists to repeat. Drop the key so a retry runs the
-            # command; waiters see an entry with nothing stored.
-            self._entries.pop(slot, None)
+            # The handler failed part-way and may already have sent something
+            # to the printer. Keep the key with nothing stored, so a repeat is
+            # answered with a 409 and the command is never run a second time.
             entry.finished_at = self._clock()
             entry.done.set()
             raise
