@@ -526,7 +526,7 @@ class MoveBody(BaseModel):
 
     @model_validator(mode="after")
     def _feed_within_axis_limit(self) -> MoveBody:
-        # Same ceilings as the absolute routes: Z 600, X/Y 3000 mm/min.
+        # OrcaSlicer's jog rates are the ceilings: Z 900, X/Y 3000 mm/min.
         cap = commands.JOG_FEED_MAX_Z if self.axis.upper() == "Z" else commands.JOG_FEED_MAX_XY
         if self.feed_mm_min > cap:
             raise ValueError(f"feed_mm_min must be at most {cap} for axis {self.axis.upper()}")

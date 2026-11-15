@@ -74,3 +74,25 @@ def test_app_and_web_maintenance_steps_agree() -> None:
 def test_classic_jog_steps_are_orcas() -> None:
     assert sorted(ALLOWED_STEPS) == [1.0, 10.0]
     assert _find(WEB, r"export const JOG_STEPS = \[([^\]]*)\]") == sorted(ALLOWED_STEPS)
+
+
+def test_client_jog_feeds_within_bridge_ceilings() -> None:
+    """Both clients' relative-jog feed rates are accepted by the bridge's caps."""
+    import re
+    from pathlib import Path
+
+    from bambu_bridge.protocol import commands
+
+    root = Path(__file__).resolve().parents[1]
+    sources = {
+        "web": root / "src/bambu_bridge/static/app/controls.js",
+        "android": root / "mobile/src/api/control.ts",
+    }
+    for name, path in sources.items():
+        match = re.search(
+            r"JOG_FEED\w*\s*=\s*\{\s*X:\s*(\d+),\s*Y:\s*(\d+),\s*Z:\s*(\d+)\s*\}", path.read_text()
+        )
+        assert match, f"jog feed table not found in {path}"
+        x, y, z = (int(v) for v in match.groups())
+        assert max(x, y) <= commands.JOG_FEED_MAX_XY, name
+        assert z <= commands.JOG_FEED_MAX_Z, name

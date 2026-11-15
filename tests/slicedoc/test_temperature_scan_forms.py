@@ -19,6 +19,8 @@ _FORMS = [
     (b"M104 S 350", "nozzle", 350),
     (b"M104 S+350", "nozzle", 350),
     (b"M104 S3.5e2", "nozzle", 350),
+    (b"M109 R400", "nozzle", 400),
+    (b"M190 R130", "bed", 130),
     (b"M104 T0S350", "nozzle", 350),
     (b"M104S350", "nozzle", 350),
     (b"M140 S 130", "bed", 130),

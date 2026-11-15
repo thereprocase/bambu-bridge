@@ -29,8 +29,8 @@ def test_temperature_builders_reject_non_finite(fn, bad: float) -> None:
 @pytest.mark.parametrize(
     ("axis", "feed", "ok"),
     [
-        ("Z", 600, True),
-        ("Z", 601, False),
+        ("Z", 900, True),
+        ("Z", 901, False),
         ("X", 3000, True),
         ("Y", 3001, False),
         ("x", 100000, False),

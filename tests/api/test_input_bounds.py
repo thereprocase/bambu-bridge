@@ -82,7 +82,7 @@ def test_raw_command_reserved_param_key_is_422(client, key: str) -> None:
 
 @pytest.mark.parametrize(
     ("axis", "feed", "status"),
-    [("Z", 601, 422), ("X", 3001, 422), ("y", 99999, 422), ("Z", 600, 200), ("X", 3000, 200)],
+    [("Z", 901, 422), ("X", 3001, 422), ("y", 99999, 422), ("Z", 900, 200), ("X", 3000, 200)],
 )
 def test_relative_move_feed_ceiling_in_model(axis: str, feed: int, status: int) -> None:
     if status == 200:

@@ -30,7 +30,8 @@ _FILAMENTS = 64  # Orca's project filament limit; larger indices are sentinels
 _SELECT_RE = re.compile(rb"^[ \t]*(M620|M621)[ \t]+S(\d+)A?\b", re.MULTILINE)
 _TOOL_RE = re.compile(rb"^[ \t]*T(\d+)(?=[ \t;\r\n]|$)", re.MULTILINE)
 # Heater lines: optional ``N<line number>``, the command, then any words up to a
-# ``;`` comment. Firmware reads every S word on the line, so the scan does too:
+# ``;`` comment. Firmware reads every S word on the line (and R, the M109/M190
+# heat-or-cool target), so the scan does too:
 # any letter case, other words first (``T0``, ``P0``), space after the letter,
 # an explicit ``+``/``-`` sign and exponent notation (``S3.5e2`` is 350).
 _HEATER_RE = re.compile(
@@ -38,7 +39,7 @@ _HEATER_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 _S_WORD_RE = re.compile(
-    rb"(?<![A-Za-z])S[ \t]*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", re.IGNORECASE
+    rb"(?<![A-Za-z])[SR][ \t]*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", re.IGNORECASE
 )
 _NOZZLE_CMDS = frozenset({b"104", b"109"})
 

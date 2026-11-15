@@ -198,8 +198,9 @@ def _finite(name: str, value: Any) -> None:
         raise ValueError(f"{name} must be a finite number")
 
 
-# Relative-jog feed ceilings, the same limits the absolute routes enforce.
-JOG_FEED_MAX_Z = 600
+# Relative-jog feed ceilings: OrcaSlicer's jog rates, which both clients send
+# (Z 900, X/Y 3000 mm/min). A parity test keeps the clients within them.
+JOG_FEED_MAX_Z = 900
 JOG_FEED_MAX_XY = 3000
 
 
