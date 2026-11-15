@@ -396,14 +396,16 @@ export function maintenanceXYStep(id: string, directionX: -1 | 0 | 1, directionY
 export interface HeldJogStatus {
   qualified: boolean; active: boolean; phase: string; reason: string; lease_ms: number; segment_mm: number;
 }
+// Starting or renewing a hold is tied to a finger on the screen and a 750 ms
+// lease, so a late repeat must never arrive. Stopping is safe to repeat.
 export function qualifyHeldJog(id: string) {
   return request<{hold: HeldJogStatus; maintenance: MaintenanceState}>(`/printers/${id}/move/hold/qualify`, {method:"POST"});
 }
 export function startHeldJog(id: string, direction: {axes:"Z"|"XY";direction_x?:-1|0|1;direction_y?:-1|0|1;direction_z?:-1|1}) {
-  return request<{lease:string;lease_ms:number;hold:HeldJogStatus}>(`/printers/${id}/move/hold/start`, {method:"POST",body:direction});
+  return request<{lease:string;lease_ms:number;hold:HeldJogStatus}>(`/printers/${id}/move/hold/start`, {method:"POST",body:direction,repeat:false});
 }
 export function renewHeldJog(id: string, lease: string) {
-  return request<{lease_ms:number;hold:HeldJogStatus}>(`/printers/${id}/move/hold/renew`, {method:"POST",body:{lease}});
+  return request<{lease_ms:number;hold:HeldJogStatus}>(`/printers/${id}/move/hold/renew`, {method:"POST",body:{lease},repeat:false});
 }
 export function stopHeldJog(id: string, lease: string) {
   return request<{hold:HeldJogStatus}>(`/printers/${id}/move/hold/stop`, {method:"POST",body:{lease}});

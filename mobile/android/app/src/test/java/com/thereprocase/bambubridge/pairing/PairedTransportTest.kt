@@ -112,6 +112,63 @@ class PairedTransportTest {
         }
     }
 
+    private fun failureOf(transport: PairedTransport, server: MockWebServer): Throwable = try {
+        transport.localClient.newCall(Request.Builder().url(server.url("/api/v1/health")).build())
+            .execute().use { fail("Expected the request to fail") }
+        throw AssertionError("unreachable")
+    } catch (e: java.io.IOException) { e }
+
+    @Test fun rejectedCertificatesAreIdentityFailures() {
+        val actual = HeldCertificate.Builder().build()
+        server(actual).use { server ->
+            val transport = PairedTransport(server.url("/api/v1").toString(), pin(HeldCertificate.Builder().build()))
+            assertTrue(PairedTransport.identityFailure(failureOf(transport, server)))
+            transport.close()
+        }
+        val expired = HeldCertificate.Builder().validityInterval(1, 1000).build()
+        server(expired).use { server ->
+            val transport = PairedTransport(server.url("/api/v1").toString(), pin(expired))
+            assertTrue(PairedTransport.identityFailure(failureOf(transport, server)))
+            transport.close()
+        }
+    }
+
+    @Test fun droppedTlsConnectionsAreNetworkFailures() {
+        val cert = HeldCertificate.Builder().build()
+        for (policy in listOf(SocketPolicy.FAIL_HANDSHAKE, SocketPolicy.DISCONNECT_AT_START,
+            SocketPolicy.DISCONNECT_AFTER_REQUEST, SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)) {
+            server(cert).use { server ->
+                server.enqueue(MockResponse().setBody("x".repeat(4096)).setSocketPolicy(policy))
+                val transport = PairedTransport(server.url("/api/v1").toString(), pin(cert))
+                val failure = try {
+                    transport.localClient.newCall(Request.Builder().url(server.url("/api/v1/health")).build())
+                        .execute().use { it.body!!.string() }
+                    null
+                } catch (e: java.io.IOException) { e }
+                assertNotNull("$policy should fail the request", failure)
+                assertFalse("$policy is a dropped connection: $failure", PairedTransport.identityFailure(failure!!))
+                transport.close()
+            }
+        }
+        // The class alone is not evidence: a reset on a TLS socket is an SSLException.
+        assertFalse(PairedTransport.identityFailure(SSLException("Read error: Connection reset by peer")))
+        assertFalse(PairedTransport.identityFailure(java.net.SocketTimeoutException("timeout")))
+        assertTrue(PairedTransport.identityFailure(
+            javax.net.ssl.SSLHandshakeException("handshake").apply {
+                initCause(java.security.cert.CertificateException("Bridge identity changed"))
+            }))
+    }
+
+    @Test fun pairedAddressGivesUpConnectingSooner() {
+        val cert = HeldCertificate.Builder().build()
+        server(cert).use { server ->
+            val transport = PairedTransport(server.url("/api/v1").toString(), pin(cert))
+            assertEquals(4000, transport.localClient.connectTimeoutMillis)
+            assertEquals(4000, transport.clientForRequest(server.url("/api/v1/x"), "POST").connectTimeoutMillis)
+            transport.close()
+        }
+    }
+
     @Test fun expiredIdentityFailsClosed() {
         val expired = HeldCertificate.Builder().validityInterval(1, 1000).build()
         server(expired).use { server ->

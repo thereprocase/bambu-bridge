@@ -15,6 +15,12 @@
  *   succeeds, mark that path successful and emit a `net.fallback` QA event.
  *   If the retry also fails (or no other URL exists), mark it failed too and
  *   set reachability "down" — the user needs to act (banner will appear).
+ *
+ * Commands (everything except GET) carry an `Idempotency-Key`. A bridge that
+ * advertises `X-Bridge-Features: idempotency-key` runs a key once and answers
+ * a repeat with the stored response, so a command whose connection failed
+ * quickly is sent again: once on the same address, then on the other one.
+ * Against a bridge without that feature a command is still sent exactly once.
  */
 
 import { qaLog } from "../lib/qalog";
@@ -48,7 +54,37 @@ export interface RequestOptions {
   /** Send `Accept: application/octet-stream` and return the raw bytes
    * (used for camera snapshots). Errors still envelope through. */
   rawBytes?: boolean;
+  /** Set false for a command that must not arrive late, such as starting or
+   * renewing a held jog whose lease has a deadline. Default: repeat a failed
+   * command when the bridge supports idempotency keys. */
+  repeat?: boolean;
 }
+
+/** A command is repeated only if its first attempt failed within this long;
+ * a request that hung for longer may still be running on the bridge and the
+ * person may already have moved on. */
+const COMMAND_REPEAT_WINDOW_MS = 10_000;
+const COMMAND_REPEAT_TIMEOUT_MS = 8_000;
+const COMMAND_REPEAT_PAUSE_MS = 300;
+
+/** Whether the bridge's latest response advertised idempotency keys. Updated
+ * on every response so a bridge rolled back to an older release is noticed. */
+let commandRepeatSafe = false;
+function noteFeatures(value: string | null | undefined): void {
+  commandRepeatSafe = (value ?? "").split(",").some((f) => f.trim() === "idempotency-key");
+}
+/** Test hook. */
+export function resetCommandRepeat(): void { commandRepeatSafe = false; }
+
+let keySerial = 0;
+/** Unique per command; the bridge scopes it to this device's credential, so
+ * it needs to be distinct, and carries no secret. */
+function newIdempotencyKey(): string {
+  keySerial = (keySerial + 1) % 1_679_616;
+  const random = () => Math.floor(Math.random() * 0x7fffffff).toString(36).padStart(6, "0");
+  return `${Date.now().toString(36)}-${keySerial.toString(36)}-${random()}${random()}`;
+}
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface RawResponse {
   status: number;
@@ -85,8 +121,11 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     throw new Error("bridge baseUrl not configured — open Settings");
   }
 
+  const command = (opts.method ?? "GET") !== "GET";
+  const key = command ? newIdempotencyKey() : undefined;
+  const startedAt = Date.now();
   try {
-    const result = await requestVia<T>(base, path, opts);
+    const result = await requestVia<T>(base, path, opts, key);
     // Success on the primary path.
     notifyRequestSucceeded(base);
     reportReach(base);
@@ -100,11 +139,16 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     if (e instanceof BridgeNetworkError) {
       notifyRequestFailed(base);
       // A lost response does not prove a command was rejected. Replaying a
-      // print/jog/upload over the other path can execute it twice.
+      // print/jog/upload can execute it twice unless the bridge deduplicates
+      // by idempotency key.
       const other = otherUrlFor(base);
-      if ((opts.method ?? "GET") !== "GET") {
-        if (!other) useNetStore.getState().setReach("down");
-        throw e;
+      if (command) {
+        if (!commandRepeatSafe || opts.repeat === false ||
+            Date.now() - startedAt > COMMAND_REPEAT_WINDOW_MS) {
+          if (!other) useNetStore.getState().setReach("down");
+          throw e;
+        }
+        return repeatCommand<T>([base, ...(other ? [other] : [])], path, opts, key!, e);
       }
       if (other) {
         try {
@@ -145,6 +189,42 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
 }
 
+/** Send an already-attempted command again with the same idempotency key:
+ * first on the address that failed, after a short pause, then on the other
+ * one. The bridge runs the key once, so whichever attempt gets through
+ * returns the single result. */
+async function repeatCommand<T>(
+  targets: string[],
+  path: string,
+  opts: RequestOptions,
+  key: string,
+  firstError: BridgeNetworkError,
+): Promise<T> {
+  const timeoutMs = Math.min(opts.timeoutMs ?? 15_000, COMMAND_REPEAT_TIMEOUT_MS);
+  let last = firstError;
+  for (const [index, target] of targets.entries()) {
+    if (index === 0) await pause(COMMAND_REPEAT_PAUSE_MS);
+    try {
+      const result = await requestVia<T>(target, path, { ...opts, timeoutMs }, key);
+      notifyRequestSucceeded(target);
+      reportReach(target);
+      qaLog("net.command_repeat", { path, via: pathLabel(target), ok: true });
+      return result;
+    } catch (e) {
+      if (!(e instanceof BridgeNetworkError)) {
+        // The bridge answered: the address works and this is the command's result.
+        if (e instanceof BridgeError) { notifyRequestSucceeded(target); reportReach(target); }
+        throw e;
+      }
+      notifyRequestFailed(target);
+      last = e;
+    }
+  }
+  qaLog("net.command_repeat", { path, ok: false });
+  useNetStore.getState().setReach("down");
+  throw last;
+}
+
 /**
  * Probe a *specific* base URL, bypassing the LAN/remote resolver. Used by
  * Settings to test the LAN URL on its own (so the user gets a per-field
@@ -165,6 +245,7 @@ async function requestVia<T>(
   base: string,
   path: string,
   opts: RequestOptions,
+  idempotencyKey?: string,
 ): Promise<T> {
   const { bearer } = useBridgeStore.getState();
 
@@ -175,6 +256,7 @@ async function requestVia<T>(
     Accept: opts.rawBytes ? "application/octet-stream" : "application/json",
   };
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   let body: string | undefined;
   if (opts.body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -191,6 +273,7 @@ async function requestVia<T>(
       ? await pairedFetch(url, method, headers, body, opts.timeoutMs ?? 15_000,
         !!opts.rawBytes, controller.signal)
       : await fetch(url, { method, headers, body, signal: controller.signal });
+    noteFeatures(response.headers?.get?.("x-bridge-features"));
     if (response.status === 204) return undefined as T;
     if (!response.ok) {
       const envelope = await safeEnvelope(response);

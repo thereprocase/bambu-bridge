@@ -11,6 +11,7 @@ import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.X509TrustManager
 
 /** Out-of-band public-key trust, scoped to one exact HTTPS origin.
@@ -36,7 +37,11 @@ class PairedTransport(base: String, pin: String, remote: String? = null) {
     private val context = SSLContext.getInstance("TLS").apply {
         init(null, arrayOf(trust), null)
     }
+    // The paired address is on the local network, where a connection either
+    // opens within a few hundred milliseconds or the phone has left that
+    // network. A short limit hands reads to the remote address sooner.
     val localClient: OkHttpClient = builder()
+        .connectTimeout(LOCAL_CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
         .sslSocketFactory(context.socketFactory, trust)
         .hostnameVerifier { hostname, session ->
             // The scanned key is the identity authority; an IP/DNS name is
@@ -84,6 +89,29 @@ class PairedTransport(base: String, pin: String, remote: String? = null) {
     }
 
     companion object {
+        const val LOCAL_CONNECT_TIMEOUT_S = 4L
+
+        /** True when the failure says the peer is the wrong bridge or the
+         * request is outside the pairing; false for a connection that dropped.
+         *
+         * A reset, timeout or closed socket on a TLS connection also arrives
+         * as an SSLException, so the exception class alone cannot tell the two
+         * apart. Only a rejected certificate or hostname is an identity
+         * failure; everything else is the network and is safe to retry on the
+         * other address. Either way no credential is sent before the pinned
+         * key has been checked.
+         */
+        fun identityFailure(e: Throwable): Boolean {
+            var current: Throwable? = e
+            val seen = HashSet<Throwable>()
+            while (current != null && seen.add(current)) {
+                if (current is CertificateException || current is SSLPeerUnverifiedException ||
+                    current is SecurityException || current is IllegalArgumentException) return true
+                current = current.cause
+            }
+            return false
+        }
+
         fun validateBase(value: String): HttpUrl {
             val url = value.toHttpUrl()
             require(url.isHttps && url.username.isEmpty() && url.password.isEmpty()

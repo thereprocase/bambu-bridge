@@ -40,6 +40,7 @@ import {
   type InventoryStatus,
 } from "../../src/api/inventory";
 import { Button } from "../../src/components/Button";
+import { confirmUnload } from "../../src/components/confirmUnload";
 import { NeedsYouCard } from "../../src/components/NeedsYouCard";
 import { ProgressBar } from "../../src/components/ProgressBar";
 import { RecentPrints } from "../../src/components/RecentPrints";
@@ -233,10 +234,13 @@ export default function FilamentScreen() {
     return () => { clearInterval(timer); refillAsked.current++; refillInFlight.current = false; };
   }, [settling, selectedId, inventoryOn]));
 
+  // The bridge refuses an unload while a print runs; offer it when it can work.
+  const unloadBlocked = view.phase === "printing" || view.phase === "preparing";
+
   function safeCall(fn: () => Promise<unknown>) {
     fn()
       .then(() => showToast("Command sent", { severity: "success" }))
-      .catch((e) => showToast(e instanceof BridgeError ? e.envelope.message : String(e), { severity: "danger" }));
+      .catch((e) => showToast(e instanceof BridgeError ? e.envelope.message : e instanceof Error ? e.message : String(e), { severity: "danger" }));
   }
 
   const views = selectedId ? slotViews(selectedId, sources, status, spools) : [];
@@ -646,9 +650,10 @@ export default function FilamentScreen() {
           )}
           {capabilities.get("filamentMotion").available && !rescanning && slotsToRender.some((s) => !s.empty) && (
             <Button
-              label="Unload current filament"
+              label={unloadBlocked ? "Unload current filament (after the print)" : "Unload current filament"}
               variant="secondary"
-              onPress={() => safeCall(() => unloadFilament(selectedId))}
+              disabled={unloadBlocked}
+              onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
             />
           )}
         </Surface>
@@ -683,6 +688,15 @@ export default function FilamentScreen() {
                     variant="secondary"
                     size="small"
                     onPress={() => router.push({ pathname: "/spool", params: { id: String(external.assignment!.spool_id), printer: selectedId, source: external.source.source } })}
+                  />
+                )}
+                {capabilities.get("filamentMotion").available && (
+                  <Button
+                    label="Unload"
+                    variant="secondary"
+                    size="small"
+                    disabled={unloadBlocked}
+                    onPress={() => confirmUnload(() => safeCall(() => unloadFilament(selectedId)))}
                   />
                 )}
               </>
